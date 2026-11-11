@@ -1,0 +1,6 @@
+**
+!package.json
+!receipt-ocr.js
+!cloudflare/
+!cloudflare/ocr-server.js
+!cloudflare/Dockerfile

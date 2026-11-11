@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "arena-volei",
+  "main": "cloudflare/worker.js",
+  "compatibility_date": "2026-11-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "ARENA", "class_name": "Arena" },
+      { "name": "RECEIPT_OCR", "class_name": "ReceiptOCR" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Arena", "ReceiptOCR"] }
+  ],
+  "containers": [
+    {
+      "class_name": "ReceiptOCR",
+      "image": "./cloudflare/Dockerfile",
+      "image_build_context": ".",
+      "instance_type": "basic",
+      "max_instances": 1
+    }
+  ],
+  "vars": {
+    "MERCADOPAGO_MODE": "test",
+    "COOKIE_SECURE": "1"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  }
+}
