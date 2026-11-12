@@ -122,6 +122,12 @@ try{
   const largeOriginal=await api(`/api/receipts/${largeProof.data.id}/file`);assert.equal(largeOriginal.status,200);assert.deepEqual(largeOriginal.data,large);
   passed('advertised 5 MiB receipt limit supported by Durable SQLite BLOB storage');
  }else console.log('UNRUN: container OCR and receipt lifecycle (--without-ocr selected).');
+ const publicDate=new Date(Date.now()+4*86400000).toISOString().slice(0,10);
+ const onlineCatalog=await api(`/api/public/catalog?date=${publicDate}`,undefined,{auth:false});
+ assert.equal(onlineCatalog.status,200);assert.equal(onlineCatalog.data.courts.length,1);
+ const publicReservation=await api('/api/public/bookings',{court_id:court,date:publicDate,start:'10:00',end:'11:00',customer:'Cliente público',phone:'11999887766',request_key:randomBytes(32).toString('hex')},{auth:false});
+ assert.equal(publicReservation.status,201,JSON.stringify(publicReservation.data));
+ passed('public catalog and automatic booking run without administrator authentication');
  const motherCookie=cookie;
  const beforeCopy=(await api('/api/bookings')).data;
  const logo='data:image/png;base64,'+fixture.toString('base64');
@@ -137,6 +143,9 @@ try{
  assert.equal((await api('/api/bookings',undefined,{headers:childHeaders})).status,401,'mother session must not authenticate in child');
  assert.equal((await api('/api/login',{username:'admin',password:'child-password-123'},{headers:childHeaders})).status,200);
  assert.deepEqual((await api('/api/bookings',undefined,{headers:childHeaders})).data,beforeCopy);
+ assert.equal((await api('/api/public/bookings/'+publicReservation.data.token,undefined,{auth:false,headers:childHeaders})).status,404);
+ const childPublicDate=new Date(Date.now()+5*86400000).toISOString().slice(0,10);
+ assert.equal((await api('/api/public/bookings',{court_id:court,date:childPublicDate,start:'10:00',end:'11:00',customer:'Cliente só no filho',phone:'11999887766',request_key:randomBytes(32).toString('hex')},{auth:false,headers:childHeaders})).status,201);
  assert.equal((await api('/api/systems',undefined,{headers:childHeaders})).status,403);
  assert.equal((await api('/api/payments/config',undefined,{headers:childHeaders})).data.ready,false);
  const childOriginal=await api(`/api/receipts/1/file`,undefined,{headers:childHeaders});
@@ -162,7 +171,7 @@ try{
  assert.equal((await api('/api/session')).data.authenticated,true);
  const persisted=await api('/api/bookings');assert.equal(persisted.status,200);assert.equal(persisted.data.find(b=>b.id===id).total,18000);
  if(withReceipts){assert.equal(persisted.data.find(b=>b.id===id).paid,1);const originals=await api(`/api/bookings/${id}/receipts`);assert.equal(originals.data.length,1);assert.equal(originals.data[0].status,'approved');}
- assert.equal((await api('/api/bookings',undefined,{headers:{...childHeaders,Cookie:childCookie}})).data.length,beforeCopy.length);
+ assert.equal((await api('/api/bookings',undefined,{headers:{...childHeaders,Cookie:childCookie}})).data.length,beforeCopy.length+1);
  assert.equal((await api('/api/system/branding',undefined,{headers:childHeaders})).data.name,'Logo do filho');
  passed('administrator, session, bookings and receipts persist after runtime restart');
  console.log(`Cloudflare runtime smoke: ${checks} checks passed without Containers.`);

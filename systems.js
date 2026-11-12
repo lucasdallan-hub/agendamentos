@@ -31,7 +31,7 @@ export function hostname(value){
  return host;
 }
 export function captureSystem(db){
- const snapshot={branding:setting(db,'branding',{name:'Arena Vôlei',logo:''}),tables:{}};
+ const snapshot={catalog:setting(db,'catalog',{enabled:true,open:'06:00',close:'23:00'}),branding:setting(db,'branding',{name:'Arena Vôlei',logo:''}),tables:{}};
  for(const table of tables)snapshot.tables[table]=db.prepare(`SELECT * FROM ${table}`).all();
  // Bound the transfer before provisioning; never silently create a partial copy.
  if(Buffer.byteLength(JSON.stringify(snapshot))>20*1024*1024)fail('A cópia ultrapassa 20 MB. Solicite uma migração assistida para copiar todos os comprovantes.',413);
@@ -46,6 +46,7 @@ export function installSystem(db,{slug,name,password,snapshot}){
    db.prepare(`INSERT INTO ${table}(${columns.join(',')}) VALUES(${columns.map(()=>'?').join(',')})`).run(...columns.map(key=>row[key]));
   }
   save(db,'identity',{slug,parent:'main'});
+  if(snapshot.catalog)save(db,'catalog',snapshot.catalog);
   save(db,'branding',{...snapshot.branding,name});
   const salt=randomBytes(16).toString('hex');
   db.prepare('INSERT INTO admin(id,salt,hash) VALUES(1,?,?)').run(salt,scryptSync(password,salt,64).toString('hex'));

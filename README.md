@@ -20,6 +20,12 @@ Na Cloudflare, os comprovantes Pix têm conferência manual: o administrador abr
 
 No Worker Cloudflare, **Meu sistema → Criar sistema filho** cria uma cópia independente de quadras, reservas, comprovantes e histórico financeiro. Cada filho tem senha própria, logo personalizável e subdomínio. Cada filho conecta sua conta em **Financeiro → Configurar Mercado Pago**. Sessões e credenciais Mercado Pago não são compartilhadas. Conecte o subdomínio ao mesmo Worker na Cloudflare para ativar o acesso. Veja [as instruções de configuração](docs/cloudflare.md#sistema-mãe-e-sistemas-filhos).
 
+## Catálogo público e reservas automáticas
+
+Compartilhe `/catalogo` no domínio da mãe ou de qualquer filho. O cliente consulta quadras ativas, horários livres e preços, informa nome e telefone e reserva sem login. A reserva aparece imediatamente no painel, com pagamento pendente e link privado para consulta e pagamento pelo Pix ou Mercado Pago da própria arena.
+
+Em **Minhas quadras → Agendamento online**, configure abertura e fechamento ou pause novas reservas. O padrão é das 06h às 23h, com reservas de 30 minutos a 4 horas e até 180 dias de antecedência. Dados de outros clientes não aparecem no catálogo; conflitos são verificados novamente no servidor.
+
 ## Executar
 
 Requer Node.js 24.5 ou superior, Tesseract OCR (idioma `eng`) e Poppler (`pdftotext`, `pdftoppm`). Não há dependências npm externas. Em Debian/Ubuntu, os pacotes do leitor são `tesseract-ocr`, `tesseract-ocr-eng` e `poppler-utils`.

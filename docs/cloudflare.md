@@ -64,3 +64,15 @@ Configure notificações de Pagamentos na aplicação Mercado Pago de cada arena
 O histórico Mercado Pago copiado é marcado como herdado e não pode ser usado para abrir checkout ou conciliar pela conta do filho. Novas reservas podem gerar cobranças com as credenciais próprias do filho. A cópia não transfere dinheiro nem cria uma conta Mercado Pago. Pix com conferência manual continua funcionando com as configurações copiadas, que cada filho pode alterar no financeiro.
 
 A transferência automática aceita até 20 MiB de dados serializados, incluindo comprovantes. Acima disso, a criação é recusada antes do provisionamento, sem cópia parcial; faça uma migração assistida. A importação no destino é transacional. Se houver falha de provisionamento, o identificador permanece reservado com status pendente para impedir sobrescrita; investigue antes de reutilizá-lo.
+
+## Catálogo público em cada domínio
+
+O catálogo está em `https://SEU-DOMINIO/catalogo`, para a mãe e todos os filhos, inclusive os já existentes. O catálogo segue a identidade, os dados e a conexão financeira do hostname acessado. Não exige login do cliente e não mostra nomes, telefones ou observações das reservas de terceiros.
+
+Em **Minhas quadras → Agendamento online**, ajuste o funcionamento ou desative novos agendamentos. O padrão aceita reservas entre 06h e 23h, em intervalos de 30 minutos, até 180 dias à frente. A duração pode variar de 30 minutos a 4 horas. Não são aceitos horários já passados no fuso de São Paulo. Filhos novos copiam a configuração atual da mãe e podem alterá-la independentemente.
+
+A confirmação cria imediatamente uma reserva com pagamento pendente. O total é calculado no servidor pelo preço da quadra; conflitos e quadras desativadas são verificados novamente antes da gravação. Reenvios com o mesmo identificador não duplicam a reserva. Há limite de dez reservas públicas por origem por hora, separado do login administrativo.
+
+O cliente recebe um link privado em `/catalogo#TOKEN`, válido até o dia seguinte ao jogo. Esse link permite consultar apenas a própria reserva e iniciar pagamento por Pix ou Mercado Pago da arena, quando configurados. Escolher um meio de pagamento bloqueia a cobrança concorrente pelo outro. O link não dá acesso ao painel, a dados de outros clientes ou a cancelamentos administrativos. Os links privados do catálogo não são copiados para os filhos.
+
+A reserva já ocupa o horário antes do pagamento; não há liberação automática por falta de pagamento. O administrador acompanha o financeiro e trata cancelamentos conforme as regras existentes. Salvar uma reserva não comprova recebimento. Configure as credenciais e o webhook de cada arena para usar cobrança online; sem conexão financeira, o catálogo ainda confirma a reserva e orienta combinar o pagamento com a arena.

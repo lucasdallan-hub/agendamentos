@@ -3,6 +3,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { MercadoPago, paymentConfiguration, createPayments, verifyWebhook } from './payments.js';
 import {createPix} from './pix.js';
 import {Buffer} from 'node:buffer';
+import {publicCatalog} from './public-catalog.js';
 import {financialSettings} from './financial-settings.js';
 import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
@@ -32,6 +33,7 @@ function booking(body) {
  const result=db.prepare('INSERT INTO bookings(court_id,customer,phone,date,start,end,total,notes) VALUES(?,?,?,?,?,?,?,?)').run(court.id,customer,phone,date,start,end,total,typeof body.notes==='string'?body.notes.slice(0,1000):'');
  return {id:Number(result.lastInsertRowid)};
 }
+const catalog=publicCatalog(db,{book:booking,pix,payments,paymentConfig,attempts});
 const server=http.createServer(async(req,res)=>{
  res.setHeader('X-Content-Type-Options','nosniff');
  res.setHeader('X-Frame-Options','DENY');
@@ -63,6 +65,13 @@ const server=http.createServer(async(req,res)=>{
    if(req.method==='POST'&&publicPix[2])return json(res,201,await pix.upload(publicPix[1],body));
    fail('Método não permitido.',405);
   }
+  if(url.pathname==='/api/public/catalog'&&req.method==='GET')return json(res,200,catalog.catalog(url.searchParams.get('date'),url.searchParams.get('duration')||60));
+  if(url.pathname==='/api/public/bookings'&&req.method==='POST')return json(res,201,catalog.reserve(body,clientKey(req)));
+  const publicBooking=/^\/api\/public\/bookings\/([a-f0-9]{64})(?:\/(pix|checkout))?$/.exec(url.pathname);
+  if(publicBooking){
+   if(req.method==='GET'&&!publicBooking[2])return json(res,200,catalog.confirmation(publicBooking[1]));
+   if(req.method==='POST'&&publicBooking[2])return json(res,200,await catalog.payment(publicBooking[1],publicBooking[2]));
+  }
   if(req.method==='GET'&&url.pathname==='/api/system/branding')return json(res,200,branding(db));
   if(req.method==='GET' && url.pathname==='/api/session') return json(res,200,{authenticated:!!authenticated,setup:!db.prepare('SELECT id FROM admin').get()});
   if(req.method==='POST' && ['/api/setup','/api/login'].includes(url.pathname)) {
@@ -81,6 +90,10 @@ const server=http.createServer(async(req,res)=>{
    return json(res,200,{ok:true});
   }
   if(!authenticated) fail('Entre como administrador.',401);
+  if(url.pathname==='/api/catalog/settings'){
+   if(req.method==='GET')return json(res,200,catalog.settings());
+   if(req.method==='PUT')return json(res,200,catalog.saveSettings(body));
+  }
   if(url.pathname==='/api/system/domain'&&req.method==='PUT'){
    if(!setting(db,'identity')||!db.systemDomainUpdater)fail('Esta opção está disponível no sistema filho.',403);
    return json(res,200,await db.systemDomainUpdater(body.hostname));
