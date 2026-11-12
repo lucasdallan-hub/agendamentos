@@ -14,7 +14,8 @@ async function init(){
   $('#auth').hidden=session.authenticated;$('#app').hidden=!session.authenticated;
   $('#auth-description').textContent=setup?'Bem-vindo! Crie a senha do administrador para começar.':'Bem-vindo de volta. Entre para gerenciar sua arena.';
   $('#auth-submit').textContent=setup?'Criar acesso e começar →':'Entrar na arena →';
-  $('#auth-form input').autocomplete=setup?'new-password':'current-password';
+  $('#auth-form input[name="password"]').minLength=setup?10:1;
+  $('#auth-form input[name="password"]').autocomplete=setup?'new-password':'current-password';
   if(session.authenticated)await refresh();
  }catch(e){
   $('#auth').hidden=true;$('#app').hidden=true;$('#startup-error').hidden=false;
@@ -22,7 +23,7 @@ async function init(){
  }finally{retry.disabled=false;retry.textContent='Tentar novamente';}
 }
 $('#startup-retry').onclick=()=>init();
-$('#auth-form').onsubmit=async e=>{e.preventDefault();$('#auth-error').textContent='';$('#auth-submit').disabled=true;try{await api(setup?'setup':'login',{password:new FormData(e.target).get('password')});e.target.reset();await init();}catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=false;}};
+$('#auth-form').onsubmit=async e=>{e.preventDefault();$('#auth-error').textContent='';$('#auth-submit').disabled=true;try{await api(setup?'setup':'login',{username:new FormData(e.target).get('username'),password:new FormData(e.target).get('password')});e.target.reset();await init();}catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=false;}};
 $('#logout').onclick=async()=>{try{await api('logout',{});await init();}catch(e){toast(e.message);}};
 async function refresh(){[courts,bookings,paymentConfig,pixSettings]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings')]);render();}
 const stat=(title,value,note,icon)=>`<div class="stat"><div class="stat-top">${title}<span class="stat-icon">${icon}</span></div><strong>${value}</strong><small>${note}</small></div>`;

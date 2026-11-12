@@ -8,7 +8,7 @@ No Worker conectado a `lucasdallan-hub/agendamentos`, configure branch `main`, d
 
 O token precisa permitir publicação de Workers e Durable Objects na conta escolhida. Containers não são necessários. Consulte a disponibilidade e os limites de SQLite Durable Objects no plano da conta.
 
-Configure o segredo `ADMIN_INITIAL_PASSWORD` no Worker (10 a 200 caracteres). Sem ele, um banco novo permanece bloqueado. Não compartilhe senhas ou tokens no Git ou no chat.
+Em um banco novo, entre com usuário `admin` e senha `admin`. O segredo opcional `ADMIN_INITIAL_PASSWORD` permite definir outra senha inicial (10 a 200 caracteres). Contas existentes mantêm sua senha. O acesso padrão é público no código; configure uma senha própria para uso público.
 
 ## Validar e executar
 

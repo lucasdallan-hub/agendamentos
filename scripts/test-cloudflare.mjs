@@ -11,7 +11,7 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const directory=await mkdtemp(path.join(os.tmpdir(),'arena-cloudflare-test-'));
 const withReceipts=true;
 console.log('Cloudflare smoke: production Worker, SQLite and manual receipt review');
-const password=randomBytes(24).toString('hex');
+const password='admin';
 const configFile=path.join(directory,'wrangler.json');
 const persist=path.join(directory,'state');
 let worker,output='',cookie='',checks=0;
@@ -65,8 +65,12 @@ async function api(route,body,{auth=true,headers={},method}={}){
 
 try{
  await start({bootstrap:false,containers:false});
- const unconfigured=await api('/api/session');assert.equal(unconfigured.status,503,JSON.stringify(unconfigured.data));
- passed('public deployment cannot claim an unconfigured administrator');
+ const unconfigured=await api('/api/session');assert.equal(unconfigured.status,200,JSON.stringify(unconfigured.data));
+ assert.equal(unconfigured.data.setup,false);
+ assert.equal((await api('/api/login',{username:'other',password})).status,401);
+ assert.equal((await api('/api/login',{username:'admin',password})).status,200);
+ cookie='';
+ passed('default admin login works without a bootstrap secret and rejects other usernames');
  await stop();
  await start({bootstrap:true,containers:false});
  for(const route of ['/','/pix','/pagamento','/app.js','/pix.js','/style.css']){

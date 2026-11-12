@@ -68,7 +68,7 @@ const server=http.createServer(async(req,res)=>{
     if(admin) fail('Administrador já configurado.',409);
     if(password.length<10) fail('Use uma senha com pelo menos 10 caracteres.');
     const salt=randomBytes(16).toString('hex'); db.prepare('INSERT INTO admin VALUES(1,?,?)').run(salt,scryptSync(password,salt,64).toString('hex'));
-   } else if(!admin || !timingSafeEqual(scryptSync(password,admin.salt,64),Buffer.from(admin.hash,'hex'))) {
+   } else if((body.username!==undefined&&body.username!=='admin') || !admin || !timingSafeEqual(scryptSync(password,admin.salt,64),Buffer.from(admin.hash,'hex'))) {
     attempts.set(key,{count:attempt?.until>Date.now()?attempt.count+1:1,until:Date.now()+900000}); fail('Senha incorreta.',401);
    }
    attempts.delete(key); const session=randomBytes(32).toString('hex'); sessions.set(session,Date.now()+12*3600000);

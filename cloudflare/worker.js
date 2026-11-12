@@ -25,8 +25,8 @@ export class Arena extends DurableObject {
    clientKey:req=>req.headers['cf-connecting-ip']||req.socket.remoteAddress
   });
   if(!db.prepare('SELECT id FROM admin WHERE id=1').get()) {
-   const password=typeof env.ADMIN_INITIAL_PASSWORD==='string'?env.ADMIN_INITIAL_PASSWORD.trim():'';
-   if(password.length<10||password.length>200)this.configurationError='Configure a senha inicial do administrador nos segredos da Cloudflare (10 a 200 caracteres).';
+   const password=typeof env.ADMIN_INITIAL_PASSWORD==='string'?env.ADMIN_INITIAL_PASSWORD.trim():'admin';
+   if((password!=='admin'&&password.length<10)||password.length>200)this.configurationError='Configure a senha inicial do administrador nos segredos da Cloudflare (10 a 200 caracteres).';
    else {
     const salt=randomBytes(16).toString('hex');
     db.prepare('INSERT INTO admin(id,salt,hash) VALUES(1,?,?)').run(salt,scryptSync(password,salt,64).toString('hex'));

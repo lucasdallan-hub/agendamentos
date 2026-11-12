@@ -12,7 +12,7 @@ npm run build
 npm run deploy:cloudflare
 ```
 
-No painel conectado ao GitHub: branch `main`, raiz `/`, build `npm run build` e deploy `npm run deploy:cloudflare`. Configure o segredo `ADMIN_INITIAL_PASSWORD` antes do primeiro acesso.
+No painel conectado ao GitHub: branch `main`, raiz `/`, build `npm run build` e deploy `npm run deploy:cloudflare`. Em um banco novo, o acesso inicial é usuário `admin` e senha `admin`. O segredo opcional `ADMIN_INITIAL_PASSWORD` substitui a senha inicial.
 
 Na Cloudflare, os comprovantes Pix têm conferência manual: o administrador abre o arquivo, informa o valor recebido e confirma o crédito na conta antes de aprovar. O OCR descrito abaixo aplica-se somente ao modo Node local.
 
