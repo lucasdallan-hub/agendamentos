@@ -3,11 +3,13 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { MercadoPago, paymentConfiguration, createPayments, verifyWebhook } from './payments.js';
 import {createPix} from './pix.js';
 import {Buffer} from 'node:buffer';
+import {transaction} from './storage.js';
+import {bookingNotifications} from './notifications.js';
 import {publicCatalog} from './public-catalog.js';
 import {financialSettings} from './financial-settings.js';
 import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
-export function createApplication({db,receiptReader,ocrReady=false,manualReceiptReview=false,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress}={}) {
+export function createApplication({db,receiptReader,ocrReady=false,manualReceiptReview=false,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch}={}) {
 db.exec(`CREATE TABLE IF NOT EXISTS admin(id INTEGER PRIMARY KEY CHECK(id=1), salt TEXT NOT NULL, hash TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS courts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, price INTEGER NOT NULL CHECK(price>0), active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, court_id INTEGER NOT NULL REFERENCES courts(id), customer TEXT NOT NULL, phone TEXT NOT NULL, date TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, total INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'confirmed', paid INTEGER NOT NULL DEFAULT 0, method TEXT, paid_at TEXT, notes TEXT NOT NULL DEFAULT '');`);
@@ -15,6 +17,7 @@ initializeSystems(db);
 const payments=createPayments(db,paymentConfig,paymentClient);
 const financial=financialSettings(db,paymentConfig);
 const pix=createPix(db,{receiptReader,ocrReady,manualReceiptReview});
+const notifications=bookingNotifications(db,{fetchImpl:notificationFetch});
 const sessions = sessionStore;
 const attempts = attemptStore;
 const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
@@ -31,7 +34,8 @@ function booking(body) {
  if(db.prepare("SELECT id FROM bookings WHERE court_id=? AND date=? AND status='confirmed' AND start<? AND end>?").get(court.id,date,end,start)) fail('Este horário já está reservado nesta quadra.',409);
  const total=Math.round(court.price*duration/60);
  const result=db.prepare('INSERT INTO bookings(court_id,customer,phone,date,start,end,total,notes) VALUES(?,?,?,?,?,?,?,?)').run(court.id,customer,phone,date,start,end,total,typeof body.notes==='string'?body.notes.slice(0,1000):'');
- return {id:Number(result.lastInsertRowid)};
+ const id=Number(result.lastInsertRowid);notifications.enqueue(id);
+ return {id};
 }
 const catalog=publicCatalog(db,{book:booking,pix,payments,paymentConfig,attempts});
 const server=http.createServer(async(req,res)=>{
@@ -66,7 +70,11 @@ const server=http.createServer(async(req,res)=>{
    fail('Método não permitido.',405);
   }
   if(url.pathname==='/api/public/catalog'&&req.method==='GET')return json(res,200,catalog.catalog(url.searchParams.get('date'),url.searchParams.get('duration')||60));
-  if(url.pathname==='/api/public/bookings'&&req.method==='POST')return json(res,201,catalog.reserve(body,clientKey(req)));
+  if(url.pathname==='/api/public/bookings'&&req.method==='POST'){
+   const result=catalog.reserve(body,clientKey(req));
+   await notifications.dispatch(result.reservation.id);
+   return json(res,201,result);
+  }
   const publicBooking=/^\/api\/public\/bookings\/([a-f0-9]{64})(?:\/(pix|checkout))?$/.exec(url.pathname);
   if(publicBooking){
    if(req.method==='GET'&&!publicBooking[2])return json(res,200,catalog.confirmation(publicBooking[1]));
@@ -90,6 +98,12 @@ const server=http.createServer(async(req,res)=>{
    return json(res,200,{ok:true});
   }
   if(!authenticated) fail('Entre como administrador.',401);
+  if(url.pathname==='/api/notifications/config'){
+   if(req.method==='GET')return json(res,200,notifications.summary());
+   if(req.method==='PUT')return json(res,200,notifications.save(body));
+  }
+  if(url.pathname==='/api/notifications/events'&&req.method==='GET')return json(res,200,await notifications.recoverPending());
+  if(url.pathname==='/api/notifications/check'&&req.method==='POST')return json(res,200,await notifications.check());
   if(url.pathname==='/api/catalog/settings'){
    if(req.method==='GET')return json(res,200,catalog.settings());
    if(req.method==='PUT')return json(res,200,catalog.saveSettings(body));
@@ -138,7 +152,11 @@ const server=http.createServer(async(req,res)=>{
   const courtMatch=/^\/api\/courts\/(\d+)$/.exec(url.pathname);
   if(req.method==='PATCH' && courtMatch) { if(typeof body.active!=='boolean') fail('Estado inválido.'); const r=db.prepare('UPDATE courts SET active=? WHERE id=?').run(body.active?1:0,Number(courtMatch[1])); if(!r.changes) fail('Quadra não encontrada.',404); return json(res,200,{ok:true}); }
   if(req.method==='GET' && url.pathname==='/api/bookings') return json(res,200,db.prepare('SELECT b.*, c.name court_name,c.type court_type,o.state online_status,o.checkout_url,o.expires_at,EXISTS(SELECT 1 FROM archived_payment_orders a WHERE a.order_id=o.id) online_archived,EXISTS(SELECT 1 FROM pix_links p WHERE p.booking_id=b.id) pix_link,r.status receipt_status,r.match_status receipt_match,r.amount_cents receipt_amount FROM bookings b JOIN courts c ON c.id=b.court_id LEFT JOIN payment_orders o ON o.booking_id=b.id LEFT JOIN pix_receipts r ON r.id=(SELECT id FROM pix_receipts WHERE booking_id=b.id ORDER BY id DESC LIMIT 1) ORDER BY date,start,b.id').all());
-  if(req.method==='POST' && url.pathname==='/api/bookings') return json(res,201,booking(body));
+  if(req.method==='POST' && url.pathname==='/api/bookings'){
+   const result=transaction(db,()=>booking(body));
+   await notifications.dispatch(result.id);
+   return json(res,201,result);
+  }
   const match=/^\/api\/bookings\/(\d+)\/(payment|cancel)$/.exec(url.pathname);
   if(req.method==='POST' && match) {
    const b=db.prepare('SELECT * FROM bookings WHERE id=?').get(Number(match[1])); if(!b) fail('Agendamento não encontrado.',404);

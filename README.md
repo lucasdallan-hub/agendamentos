@@ -26,6 +26,14 @@ Compartilhe `/catalogo` no domínio da mãe ou de qualquer filho. O cliente cons
 
 Em **Minhas quadras → Agendamento online**, configure abertura e fechamento ou pause novas reservas. O padrão é das 06h às 23h, com reservas de 30 minutos a 4 horas e até 180 dias de antecedência. Dados de outros clientes não aparecem no catálogo; conflitos são verificados novamente no servidor.
 
+## Notificações de agendamento por WhatsApp
+
+Em **Meu sistema → Notificações WhatsApp**, configure a URL HTTPS da Evolution Go e o token da instância conectada ao WhatsApp. Cadastre o WhatsApp do administrador que receberá os avisos de novos agendamentos. O telefone do cliente da reserva não é usado como destinatário. A configuração é independente em cada mãe ou filho; as credenciais e o histórico de notificações não são copiados ao criar sistemas filhos.
+
+O envio é opcional e começa desativado. Novos agendamentos pelo painel ou catálogo geram avisos quando habilitado, sem disparar mensagens para reservas antigas. Salvar a configuração não envia mensagens; **Verificar conexão** consulta a sessão do WhatsApp. Falhas no envio não cancelam reservas. O painel mostra os últimos resultados; **Aceita pela API** não significa entregue ou lida no WhatsApp. Resultados incertos não são reenviados automaticamente.
+
+A integração usa a rota da Evolution Go **`POST /send/text`**, autenticada pelo cabeçalho **`apikey`** com o token da instância. Não usa `/message/sendText/{instance}` da Evolution API. Cadastre o token somente no formulário, sem colocá-lo no Git ou no chat. Para ativar o envio real, são necessários a URL do servidor, o token e uma sessão WhatsApp conectada. Veja [a configuração na Cloudflare](docs/cloudflare.md#notificações-whatsapp-com-evolution-go).
+
 ## Executar
 
 Requer Node.js 24.5 ou superior, Tesseract OCR (idioma `eng`) e Poppler (`pdftotext`, `pdftoppm`). Não há dependências npm externas. Em Debian/Ubuntu, os pacotes do leitor são `tesseract-ocr`, `tesseract-ocr-eng` e `poppler-utils`.
@@ -97,7 +105,7 @@ O modo de teste usa `sandbox_init_point`; produção usa `init_point`. Credencia
 
 ## Escopo atual
 
-O administrador cria as reservas e envia o link de cobrança. Não há portal público de reservas, envio automático de mensagens ou emissão de estornos nesta versão. Para devolver valores ou tratar contestações, use o painel Mercado Pago; o webhook ou a consulta de status atualiza o registro local. Pagamentos duplicados ou estornos parciais ficam sinalizados para conferência. O histórico inclui cobranças pendentes, aprovadas, estornadas e contestadas; os totais recebidos contam reservas integralmente pagas uma vez, sem deduzir taxas do provedor.
+As reservas podem ser criadas pelo administrador ou pelo catálogo público. Avisos de novos agendamentos podem ser enviados por WhatsApp quando a Evolution Go estiver configurada. Não há emissão de estornos nesta versão. Para devolver valores ou tratar contestações, use o painel Mercado Pago; o webhook ou a consulta de status atualiza o registro local. Pagamentos duplicados ou estornos parciais ficam sinalizados para conferência. O histórico inclui cobranças pendentes, aprovadas, estornadas e contestadas; os totais recebidos contam reservas integralmente pagas uma vez, sem deduzir taxas do provedor.
 
 O link expira em 24 horas. O horário permanece reservado até uma decisão administrativa: não há liberação automática. Reservas com cobrança online não permitem cancelamento ou baixa manual no sistema, para evitar liberar um horário com pagamento pendente ou duplicar recebimentos. Gerencie a cobrança no Mercado Pago antes de qualquer ajuste; uma resposta incerta na criação bloqueia outra tentativa até investigação no provedor. Não há renovação automática de preferências expiradas. Registros manuais antigos são preservados. Novos recebimentos usam o checkout Mercado Pago ou o fluxo Pix com análise de comprovante. Valores são armazenados em centavos; o resumo de hoje usa o fuso de São Paulo.
 

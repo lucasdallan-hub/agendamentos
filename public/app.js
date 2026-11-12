@@ -1,5 +1,6 @@
 const $=s=>document.querySelector(s);
 let systemBranding={name:'Arena Vôlei',logo:'',is_mother:false},childSystems=[];
+let notificationConfig={enabled:false,base_url:'',token_configured:false,target:'arena',arena_number:'',country_code:'55',ready:false},notificationEvents=[];
 let courts=[], bookings=[], paymentConfig={ready:false,mode:'test'}, pixSettings={ready:false,ocr_ready:false}, view='overview', setup=false, submitModal;
 const money=n=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(n/100);
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -26,7 +27,7 @@ async function init(){
 $('#startup-retry').onclick=()=>init();
 $('#auth-form').onsubmit=async e=>{e.preventDefault();$('#auth-error').textContent='';$('#auth-submit').disabled=true;try{await api(setup?'setup':'login',{username:new FormData(e.target).get('username'),password:new FormData(e.target).get('password')});e.target.reset();await init();}catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=false;}};
 $('#logout').onclick=async()=>{try{await api('logout',{});await init();}catch(e){toast(e.message);}};
-async function refresh(){[courts,bookings,paymentConfig,pixSettings]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings')]);await loadSystems();render();}
+async function refresh(){[courts,bookings,paymentConfig,pixSettings,notificationConfig,notificationEvents]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings'),api('notifications/config'),api('notifications/events')]);await loadSystems();render();}
 const stat=(title,value,note,icon)=>`<div class="stat"><div class="stat-top">${title}<span class="stat-icon">${icon}</span></div><strong>${value}</strong><small>${note}</small></div>`;
 function receiptLabel(b){
  if(b.receipt_status==='rejected')return 'Comprovante recusado';
@@ -54,6 +55,7 @@ function bookingActions(b){
  return html||'—';
 }
 function render(){
+ renderNotifications();
  const active=bookings.filter(b=>b.status==='confirmed'), daily=active.filter(b=>b.date===today()), paid=active.filter(b=>b.paid), pending=active.filter(b=>!b.paid&&!['refunded','charged_back','review'].includes(b.online_status));
  document.querySelectorAll('[data-payment-banner]').forEach(el=>{el.classList.toggle('payment-ready',paymentConfig.ready);el.innerHTML=`<div><strong>Mercado Pago · ${paymentConfig.ready?(paymentConfig.mode==='test'?'Modo de teste':'Cobrança online ativa'):'Aguardando ativação'}</strong><p>${paymentConfig.ready?(paymentConfig.mode==='test'?'Links de teste: use contas de teste do Mercado Pago. Não representam recebimentos reais.':'Envie o link ao cliente. A confirmação é consultada diretamente no Mercado Pago.'):'Configure a conta Mercado Pago, a assinatura das notificações e o endereço público para gerar cobranças.'}</p></div><span class="badge ${paymentConfig.ready?'paid':''}">${paymentConfig.ready?'Checkout Pro':'Configuração pendente'}</span>`;});
  $('#financial-connection-description').textContent=paymentConfig.ready?`Conta ${paymentConfig.account_id||'configurada'} · ${paymentConfig.mode==='production'?'Produção':'Teste'} · conexão exclusiva desta arena.`:'Configure as credenciais da conta que receberá os pagamentos desta arena.';
@@ -147,6 +149,27 @@ async function loadSystems(){
  childSystems=systemBranding.is_mother&&systemBranding.systems_available?await api('systems'):[];
  $('#children-list').innerHTML=childSystems.length?childSystems.map(system=>`<article class="court-card"><div class="court-info"><h3>${esc(system.name)}</h3><p>${esc(system.hostname)}</p><span class="badge">${system.status==='ready'?'Cópia criada':'Cópia pendente'}</span><p>Dados copiados em ${new Date(system.created_at).toLocaleString('pt-BR')}</p>${system.status==='ready'?`<a class="outline" href="https://${esc(system.hostname)}" target="_blank" rel="noopener noreferrer">Abrir sistema ↗</a>`:''}<p>O acesso depende do DNS e HTTPS configurados na Cloudflare.</p></div></article>`).join(''):'<p>Nenhum sistema filho criado.</p>';
 }
+function renderNotifications(){
+ $('#notifications-description').textContent=notificationConfig.enabled?(notificationConfig.ready?`Envio habilitado para o administrador no número ${notificationConfig.arena_number||'cadastrado'}. Verifique a conexão para confirmar a sessão do WhatsApp.`:'Envio habilitado, mas a configuração ainda está incompleta.'):'Envio desativado. Configure a Evolution Go desta arena para avisar sobre novos agendamentos.';
+ $('#check-notifications').disabled=!notificationConfig.ready;
+ const labels={pending:'Aguardando envio',sending:'Envio em andamento',accepted:'Aceita pela API',failed:'Falha no envio',unknown:'Resultado incerto'};
+ $('#notifications-rows').innerHTML=notificationEvents.map(event=>`<tr><td>#${esc(event.booking_id)}</td><td>Administrador<small>${esc(event.recipient)}</small></td><td><span class="badge ${event.status==='accepted'?'paid':event.status==='failed'?'cancelled':''}">${labels[event.status]||'Status desconhecido'}</span></td><td>${new Date(event.updated_at||event.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</td><td>${esc(event.error|| (event.status==='unknown'?'Confira a Evolution Go antes de enviar novamente.':event.status==='accepted'?'A entrega no WhatsApp ainda não foi confirmada.':''))}</td></tr>`).join('');
+ $('#notifications-empty').hidden=notificationEvents.length>0;
+}
+$('#configure-notifications').onclick=()=>{
+ openModal('WhatsApp do administrador',`<p>Conexão exclusiva desta arena. Use a URL HTTPS da sua Evolution Go e o token da instância conectada ao WhatsApp.</p><label class="check-label"><input id="notifications-enabled" name="enabled" type="checkbox" ${notificationConfig.enabled?'checked':''}> Avisar o administrador sobre novos agendamentos</label><label>URL HTTPS da Evolution Go<input id="notifications-url" name="base_url" type="url" value="${esc(notificationConfig.base_url||'')}" maxlength="2000" placeholder="https://whatsapp.seudominio.com.br"></label><label>Token da instância<input id="notifications-api-key" name="api_key" type="password" autocomplete="new-password" maxlength="2000" placeholder="${notificationConfig.token_configured?'Já configurado; deixe vazio para manter':'Token da instância, não a chave administrativa global'}"></label><label>WhatsApp do administrador<input id="notifications-arena-number" name="arena_number" type="tel" maxlength="30" value="${esc(notificationConfig.arena_number||'')}" placeholder="55 11 99999-9999"></label><label>Código do país para números locais<input id="notifications-country-code" name="country_code" inputmode="numeric" maxlength="3" value="${esc(notificationConfig.country_code||'55')}"></label><p>Salvar a configuração não envia uma mensagem. Apenas novos agendamentos geram avisos; uma falha no WhatsApp não cancela a reserva. A chave não será exibida novamente nem copiada para sistemas filhos.</p>`,async data=>{
+  notificationConfig=await api('notifications/config',{...data,enabled:data.enabled==='on',target:'arena'},'PUT');
+  $('#notifications-connection').textContent='Configuração salva. Use Verificar conexão para consultar a sessão do WhatsApp.';
+ });
+ const requirements=()=>{const enabled=$('#notifications-enabled').checked;$('#notifications-url').required=enabled;$('#notifications-api-key').required=enabled&&!notificationConfig.token_configured;$('#notifications-arena-number').required=enabled;$('#notifications-country-code').required=enabled;};
+ $('#modal-fields').onchange=requirements;requirements();
+};
+$('#check-notifications').onclick=async()=>{
+ const button=$('#check-notifications');button.disabled=true;$('#notifications-connection').textContent='Consultando a sessão do WhatsApp…';
+ try{const result=await api('notifications/check',{});$('#notifications-connection').textContent=result.connected&&result.logged_in?'WhatsApp conectado à Evolution Go. A entrega de cada aviso depende do processamento da mensagem.':'A Evolution Go respondeu, mas a sessão do WhatsApp precisa ser conectada.';}
+ catch(error){$('#notifications-connection').textContent=error.message;}
+ finally{button.disabled=!notificationConfig.ready;}
+};
 $('#configure-catalog').onclick=async()=>{
  try{const config=await api('catalog/settings');openModal('Catálogo e agendamento online',`<p>Divulgue <a href="/catalogo" target="_blank" rel="noopener noreferrer">${esc(location.origin)}/catalogo</a> para seus clientes reservarem diretamente.</p><label class="check-label"><input name="enabled" type="checkbox" ${config.enabled?'checked':''}> Aceitar reservas pelo catálogo</label><label>Abertura<input name="open" type="time" step="1800" value="${esc(config.open)}" required></label><label>Fechamento<input name="close" type="time" step="1800" value="${esc(config.close)}" required></label><p>Reservas de 30 minutos a 4 horas, até 180 dias à frente. O pagamento é confirmado separadamente.</p>`,data=>api('catalog/settings',{...data,enabled:data.enabled==='on'},'PUT'));}catch(error){toast(error.message);}
 };
@@ -159,6 +182,6 @@ $('#edit-branding').onclick=()=>{
  });
 };
 $('#edit-domain').onclick=()=>openModal('Alterar subdomínio',`<p>O endereço atual deixará de apontar para este filho. Configure o DNS e HTTPS do novo endereço na Cloudflare antes de salvar. Será necessário entrar novamente no novo endereço.</p><label>Novo subdomínio<input name="hostname" placeholder="unidade.seudominio.com.br" required></label>`,async data=>{const result=await api('system/domain',data,'PUT');location.assign(result.url);return false;});
-$('#new-system').onclick=()=>openModal('Criar sistema filho',`<p>Serão copiados quadras, reservas, configurações Pix, comprovantes e histórico financeiro. A cópia é independente; mudanças futuras não são sincronizadas. Sessões, senhas e credenciais Mercado Pago não são copiadas.</p><label>Nome do sistema<input name="name" maxlength="80" required></label><label>Identificador<input name="slug" pattern="[a-z0-9][a-z0-9-]{0,39}" maxlength="40" placeholder="arena-centro" required></label><label>Subdomínio completo<input name="hostname" placeholder="centro.seudominio.com.br" maxlength="253" required></label><label>Senha do administrador do filho<input name="password" type="password" minlength="10" maxlength="200" autocomplete="new-password" required></label><p>Usuário do filho: admin. Conecte o subdomínio ao mesmo Worker na Cloudflare após criar a cópia.</p>`,data=>api('systems',data),'Criar cópia completa');
+$('#new-system').onclick=()=>openModal('Criar sistema filho',`<p>Serão copiados quadras, reservas, configurações Pix, comprovantes e histórico financeiro. A cópia é independente; mudanças futuras não são sincronizadas. Sessões, senhas e credenciais Mercado Pago ou Evolution Go não são copiadas.</p><label>Nome do sistema<input name="name" maxlength="80" required></label><label>Identificador<input name="slug" pattern="[a-z0-9][a-z0-9-]{0,39}" maxlength="40" placeholder="arena-centro" required></label><label>Subdomínio completo<input name="hostname" placeholder="centro.seudominio.com.br" maxlength="253" required></label><label>Senha do administrador do filho<input name="password" type="password" minlength="10" maxlength="200" autocomplete="new-password" required></label><p>Usuário do filho: admin. Conecte o subdomínio ao mesmo Worker na Cloudflare após criar a cópia.</p>`,data=>api('systems',data),'Criar cópia completa');
 init();
 setInterval(()=>{if(!$('#app').hidden&&!document.hidden)refresh().catch(e=>toast(e.message));},30000);

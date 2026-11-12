@@ -128,6 +128,14 @@ try{
  const publicReservation=await api('/api/public/bookings',{court_id:court,date:publicDate,start:'10:00',end:'11:00',customer:'Cliente público',phone:'11999887766',request_key:randomBytes(32).toString('hex')},{auth:false});
  assert.equal(publicReservation.status,201,JSON.stringify(publicReservation.data));
  passed('public catalog and automatic booking run without administrator authentication');
+ assert.equal((await api('/api/notifications/config',undefined,{auth:false})).status,401);
+ const notificationConfig={enabled:false,base_url:'https://evolution.example.com',api_key:'fake-smoke-instance-key',target:'arena',arena_number:'(21) 98888-7777',country_code:'55'};
+ const notificationSaved=await api('/api/notifications/config',notificationConfig,{method:'PUT'});
+ assert.equal(notificationSaved.status,200);assert.equal(notificationSaved.data.token_configured,true);
+ assert.equal(JSON.stringify(notificationSaved.data).includes('fake-smoke-instance-key'),false);
+ assert.equal((await api('/api/notifications/check',{})).status,409);
+ assert.equal((await api('/api/notifications/events')).data.length,0);
+ passed('Evolution Go settings persist privately without sending messages while disabled');
  const motherCookie=cookie;
  const beforeCopy=(await api('/api/bookings')).data;
  const logo='data:image/png;base64,'+fixture.toString('base64');
@@ -147,6 +155,8 @@ try{
  const childPublicDate=new Date(Date.now()+5*86400000).toISOString().slice(0,10);
  assert.equal((await api('/api/public/bookings',{court_id:court,date:childPublicDate,start:'10:00',end:'11:00',customer:'Cliente só no filho',phone:'11999887766',request_key:randomBytes(32).toString('hex')},{auth:false,headers:childHeaders})).status,201);
  assert.equal((await api('/api/systems',undefined,{headers:childHeaders})).status,403);
+ assert.equal((await api('/api/notifications/config',undefined,{headers:childHeaders})).data.token_configured,false);
+ assert.equal((await api('/api/notifications/events',undefined,{headers:childHeaders})).data.length,0);
  assert.equal((await api('/api/payments/config',undefined,{headers:childHeaders})).data.ready,false);
  const childOriginal=await api(`/api/receipts/1/file`,undefined,{headers:childHeaders});
  assert.equal(childOriginal.status,200);assert.deepEqual(childOriginal.data,fixture);
@@ -173,6 +183,7 @@ try{
  if(withReceipts){assert.equal(persisted.data.find(b=>b.id===id).paid,1);const originals=await api(`/api/bookings/${id}/receipts`);assert.equal(originals.data.length,1);assert.equal(originals.data[0].status,'approved');}
  assert.equal((await api('/api/bookings',undefined,{headers:{...childHeaders,Cookie:childCookie}})).data.length,beforeCopy.length+1);
  assert.equal((await api('/api/system/branding',undefined,{headers:childHeaders})).data.name,'Logo do filho');
+ assert.equal((await api('/api/notifications/config')).data.token_configured,true);
  passed('administrator, session, bookings and receipts persist after runtime restart');
  console.log(`Cloudflare runtime smoke: ${checks} checks passed without Containers.`);
 }catch(error){console.error(error);console.error(logs());process.exitCode=1;}
