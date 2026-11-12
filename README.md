@@ -12,6 +12,8 @@ npm run build:cloudflare
 npm run deploy:cloudflare
 ```
 
+Se o deploy for pelo GitHub no painel do Worker, configure **Build command: `npm run build`**, **Deploy command: `npm run deploy:cloudflare`**, branch `main` e diretório raiz `/`. A versão do Node está fixada em `.node-version`. O build valida o Worker sem Docker; a etapa de deploy constrói a imagem OCR. Não use os testes de OCR como comando de build do painel.
+
 O primeiro comando instala as ferramentas de desenvolvimento fixadas no lockfile. O build apenas prepara e valida os artefatos; o deploy publica e exige autenticação. A senha inicial do administrador deve ser configurada como segredo da Cloudflare antes do primeiro acesso; sem ela, a API nova fica bloqueada. Consulte o guia para os comandos e os segredos do Mercado Pago.
 
 O banco local em `data/arena.sqlite` permanece separado do banco na Cloudflare e não é enviado pelo deploy. O Container nunca hospeda o banco principal, pois seu disco é temporário. O modo Node abaixo continua disponível para desenvolvimento local.

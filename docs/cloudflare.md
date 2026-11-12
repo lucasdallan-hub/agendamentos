@@ -18,12 +18,30 @@ Use a autenticação da sua conta Cloudflare. Em CI, configure `CLOUDFLARE_API_T
 
 O nome do Worker é `arena-volei`. Em uma conta com múltiplos projetos, confirme o projeto e a conta antes de publicar. Para usar um domínio próprio, configure um Custom Domain para o Worker na Cloudflare e use essa origem HTTPS nos links e no Mercado Pago.
 
+## Deploy pelo GitHub no painel da Cloudflare
+
+No Worker conectado a `lucasdallan-hub/agendamentos`, use estas configurações de **Builds**:
+
+| Campo | Valor |
+| --- | --- |
+| Branch de produção | `main` |
+| Diretório raiz | `/` (raiz do repositório) |
+| Comando de build | `npm run build` |
+| Comando de deploy | `npm run deploy:cloudflare` |
+| Node.js | `.node-version` fixa a versão testada `24.22.1` |
+
+A instalação das dependências usa o `package-lock.json`. O comando padrão `npm run build` valida e empacota o Worker sem construir a imagem do OCR; o deploy constrói e publica o Container uma única vez. Os testes de OCR local dependem de Tesseract/Poppler no host e **não devem ser usados como comando de build** no painel.
+
+Workers Builds suporta a construção de Containers. A conta precisa ter Workers Paid com Containers habilitados, mesmo com o build do JavaScript concluído. O comando de build não ativa planos nem cria credenciais. Depois de salvar os campos, execute **Retry deployment** na implantação que falhou para usar o commit corrigido.
+
+Se o deploy concluir, mas a página informar que falta a senha inicial, configure o segredo `ADMIN_INITIAL_PASSWORD` nas configurações do Worker (10 a 200 caracteres). Isso é necessário para abrir o acesso administrativo e não exige refazer o banco. A tela apresenta a mensagem permanente e permite tentar novamente; não há senha padrão.
+
 ## Testar antes de publicar
 
 ```sh
 npm test
 npm run test:cloudflare
-npx wrangler deploy --dry-run --outdir .wrangler/dry-run
+npm run build
 npx wrangler dev
 ```
 

@@ -8,10 +8,11 @@
     "dev": "node --use-env-proxy --watch server.js",
     "test": "node --test test/*.test.js",
     "dev:cloudflare": "wrangler dev",
-    "build:cloudflare": "wrangler deploy --dry-run --outdir dist/cloudflare",
+    "build:cloudflare": "wrangler deploy --dry-run --containers-rollout=none --outdir dist/cloudflare",
     "deploy:cloudflare": "wrangler deploy",
     "test:cloudflare": "node scripts/test-cloudflare.mjs",
-    "test:cloudflare:containers": "node scripts/test-cloudflare.mjs --with-containers"
+    "test:cloudflare:containers": "node scripts/test-cloudflare.mjs --with-containers",
+    "build": "npm run build:cloudflare"
   },
   "engines": {
     "node": ">=24.5"

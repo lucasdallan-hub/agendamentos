@@ -6,7 +6,22 @@ const dateLabel=d=>new Date(d+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-di
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(url,body,method='POST') { const r=await fetch('/api/'+url,body===undefined?{}:{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); const data=await r.json(); if(!r.ok) { if(r.status===401 && !['login','setup'].includes(url)) await init(); throw Error(data.error); } return data; }
 function toast(message){$('#toast').textContent=message;$('#toast').hidden=false;setTimeout(()=>$('#toast').hidden=true,4000);}
-async function init(){try{const session=await api('session');setup=session.setup;$('#auth').hidden=session.authenticated;$('#app').hidden=!session.authenticated;$('#auth-description').textContent=setup?'Bem-vindo! Crie a senha do administrador para começar.':'Bem-vindo de volta. Entre para gerenciar sua arena.';$('#auth-submit').textContent=setup?'Criar acesso e começar →':'Entrar na arena →';$('#auth-form input').autocomplete=setup?'new-password':'current-password';if(session.authenticated) await refresh();}catch(e){toast(e.message);}}
+async function init(){
+ const retry=$('#startup-retry');retry.disabled=true;retry.textContent='Conectando…';
+ try{
+  const session=await api('session');setup=session.setup;
+  $('#startup-error').hidden=true;$('#startup-error-message').textContent='';
+  $('#auth').hidden=session.authenticated;$('#app').hidden=!session.authenticated;
+  $('#auth-description').textContent=setup?'Bem-vindo! Crie a senha do administrador para começar.':'Bem-vindo de volta. Entre para gerenciar sua arena.';
+  $('#auth-submit').textContent=setup?'Criar acesso e começar →':'Entrar na arena →';
+  $('#auth-form input').autocomplete=setup?'new-password':'current-password';
+  if(session.authenticated)await refresh();
+ }catch(e){
+  $('#auth').hidden=true;$('#app').hidden=true;$('#startup-error').hidden=false;
+  $('#startup-error-message').textContent=e.message||'Não foi possível conectar ao servidor. Tente novamente.';
+ }finally{retry.disabled=false;retry.textContent='Tentar novamente';}
+}
+$('#startup-retry').onclick=()=>init();
 $('#auth-form').onsubmit=async e=>{e.preventDefault();$('#auth-error').textContent='';$('#auth-submit').disabled=true;try{await api(setup?'setup':'login',{password:new FormData(e.target).get('password')});e.target.reset();await init();}catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=false;}};
 $('#logout').onclick=async()=>{try{await api('logout',{});await init();}catch(e){toast(e.message);}};
 async function refresh(){[courts,bookings,paymentConfig,pixSettings]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings')]);render();}
