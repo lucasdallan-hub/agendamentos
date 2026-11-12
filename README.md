@@ -16,6 +16,10 @@ No painel conectado ao GitHub: branch `main`, raiz `/`, build `npm run build` e 
 
 Na Cloudflare, os comprovantes Pix têm conferência manual: o administrador abre o arquivo, informa o valor recebido e confirma o crédito na conta antes de aprovar. O OCR descrito abaixo aplica-se somente ao modo Node local.
 
+## Sistemas filhos e identidade própria
+
+No Worker Cloudflare, **Meu sistema → Criar sistema filho** cria uma cópia independente de quadras, reservas, comprovantes e histórico financeiro. Cada filho tem senha própria, logo personalizável e subdomínio. Sessões e credenciais Mercado Pago não são compartilhadas. Conecte o subdomínio ao mesmo Worker na Cloudflare para ativar o acesso. Veja [as instruções de configuração](docs/cloudflare.md#sistema-mãe-e-sistemas-filhos).
+
 ## Executar
 
 Requer Node.js 24.5 ou superior, Tesseract OCR (idioma `eng`) e Poppler (`pdftotext`, `pdftoppm`). Não há dependências npm externas. Em Debian/Ubuntu, os pacotes do leitor são `tesseract-ocr`, `tesseract-ocr-eng` e `poppler-utils`.

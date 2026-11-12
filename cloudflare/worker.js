@@ -4,6 +4,7 @@ import {randomBytes,scryptSync} from 'node:crypto';
 import {createApplication} from '../server-core.js';
 import {MercadoPago,paymentConfiguration} from '../payments.js';
 import {DurableDatabase,DurableMap} from './database.js';
+import {initializeSystems,setting,installSystem,updateChildDomain} from '../systems.js';
 
 const securityHeaders={
  'X-Content-Type-Options':'nosniff',
@@ -16,25 +17,59 @@ const json=(status,data)=>Response.json(data,{status,headers:{...securityHeaders
 export class Arena extends DurableObject {
  constructor(ctx,env) {
   super(ctx,env);
-  const db=new DurableDatabase(ctx.storage);
-  const paymentConfig=paymentConfiguration(env);
+  this.db=new DurableDatabase(ctx.storage);
+  initializeSystems(this.db);
+  this.configure();
+ }
+ configure(){
+  const db=this.db;
+  const child=!!setting(db,'identity');
+  db.systemProvisioner=child?null:async payload=>this.env.ARENA.getByName('child:'+payload.slug).initializeChild(payload);
+  db.systemDomainUpdater=child?async host=>{
+   const response=await this.env.ARENA.getByName('main').changeChildDomain(setting(db,'identity').slug,host);
+   if(response.error)throw Object.assign(new Error(response.error),{status:response.status});
+   return response;
+  }:null;
+  // Children retain financial history but never inherit the mother's provider credentials.
+  const paymentConfig=child?{ready:false,mode:'test'}:paymentConfiguration(this.env);
   const {server}=createApplication({
    db,paymentConfig,paymentClient:new MercadoPago(paymentConfig),
    receiptReader:async()=>({amount_cents:null,candidates:[]}),ocrReady:false,manualReceiptReview:true,
    sessionStore:new DurableMap(db,'session'),attemptStore:new DurableMap(db,'login-attempt'),cookieSecure:true,
    clientKey:req=>req.headers['cf-connecting-ip']||req.socket.remoteAddress
   });
+  this.nodeHandler=httpServerHandler(server);
+ }
+ async initializeChild(payload){
+  installSystem(this.db,payload);
+  this.configure();
+ }
+ changeChildDomain(slug,host){
+  try{return updateChildDomain(this.db,slug,host,this.env.MOTHER_HOST);}
+  catch(error){if(error.status)return {error:error.message,status:error.status};throw error;}
+ }
+ resolveHost(host){
+  if(setting(this.db,'identity'))throw new Error('Only the mother resolves systems.');
+  const child=this.db.prepare("SELECT slug FROM child_systems WHERE hostname=? AND status='ready'").get(host);
+  if(child)return 'child:'+child.slug;
+  const mother=this.env.MOTHER_HOST||setting(this.db,'mother_host');
+  if(mother&&host!==mother)return null;
+  return 'main';
+ }
+ bootstrap(){
+  const db=this.db;
   if(!db.prepare('SELECT id FROM admin WHERE id=1').get()) {
-   const password=typeof env.ADMIN_INITIAL_PASSWORD==='string'?env.ADMIN_INITIAL_PASSWORD.trim():'admin';
+   const password=typeof this.env.ADMIN_INITIAL_PASSWORD==='string'?this.env.ADMIN_INITIAL_PASSWORD.trim():'admin';
    if((password!=='admin'&&password.length<10)||password.length>200)this.configurationError='Configure a senha inicial do administrador nos segredos da Cloudflare (10 a 200 caracteres).';
    else {
     const salt=randomBytes(16).toString('hex');
     db.prepare('INSERT INTO admin(id,salt,hash) VALUES(1,?,?)').run(salt,scryptSync(password,salt,64).toString('hex'));
    }
   }
-  this.nodeHandler=httpServerHandler(server);
+
  }
  fetch(request) {
+  this.bootstrap();
   if(this.configurationError)return json(503,{error:this.configurationError});
   // Forward trusted origin information from the actual Worker URL, rather than
   // accepting a client-provided proxy protocol or Host value.
@@ -53,14 +88,18 @@ export class ReceiptOCR extends DurableObject {
 
 const publicFiles=new Map([
  ['/','/index.html'],['/pix','/pix.html'],['/pagamento','/payment.html'],
- ['/app.js','/app.js'],['/pix.js','/pix.js'],['/style.css','/style.css']
+ ['/branding.js','/branding.js'],['/app.js','/app.js'],['/pix.js','/pix.js'],['/style.css','/style.css']
 ]);
 
 export default {
  async fetch(request,env) {
   const url=new URL(request.url);
   if(url.pathname.startsWith('/api/')) {
-   try{return await env.ARENA.getByName('main').fetch(request);}
+   try{
+    const system=await env.ARENA.getByName('main').resolveHost(url.hostname);
+    if(!system)return json(404,{error:'Sistema não encontrado para este subdomínio.'});
+    return await env.ARENA.getByName(system).fetch(request);
+   }
    catch{return json(503,{error:'A arena está temporariamente indisponível. Tente novamente em instantes.'});}
   }
   if(!['GET','HEAD'].includes(request.method))return json(405,{error:'Método não permitido.'});

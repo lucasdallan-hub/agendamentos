@@ -1,4 +1,5 @@
 const $=s=>document.querySelector(s);
+let systemBranding={name:'Arena Vôlei',logo:'',is_mother:false},childSystems=[];
 let courts=[], bookings=[], paymentConfig={ready:false,mode:'test'}, pixSettings={ready:false,ocr_ready:false}, view='overview', setup=false, submitModal;
 const money=n=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(n/100);
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -9,7 +10,7 @@ function toast(message){$('#toast').textContent=message;$('#toast').hidden=false
 async function init(){
  const retry=$('#startup-retry');retry.disabled=true;retry.textContent='Conectando…';
  try{
-  const session=await api('session');setup=session.setup;
+  const [session,identity]=await Promise.all([api('session'),api('system/branding')]);systemBranding=identity;applyBranding();setup=session.setup;
   $('#startup-error').hidden=true;$('#startup-error-message').textContent='';
   $('#auth').hidden=session.authenticated;$('#app').hidden=!session.authenticated;
   $('#auth-description').textContent=setup?'Bem-vindo! Crie a senha do administrador para começar.':'Bem-vindo de volta. Entre para gerenciar sua arena.';
@@ -25,7 +26,7 @@ async function init(){
 $('#startup-retry').onclick=()=>init();
 $('#auth-form').onsubmit=async e=>{e.preventDefault();$('#auth-error').textContent='';$('#auth-submit').disabled=true;try{await api(setup?'setup':'login',{username:new FormData(e.target).get('username'),password:new FormData(e.target).get('password')});e.target.reset();await init();}catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=false;}};
 $('#logout').onclick=async()=>{try{await api('logout',{});await init();}catch(e){toast(e.message);}};
-async function refresh(){[courts,bookings,paymentConfig,pixSettings]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings')]);render();}
+async function refresh(){[courts,bookings,paymentConfig,pixSettings]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings')]);await loadSystems();render();}
 const stat=(title,value,note,icon)=>`<div class="stat"><div class="stat-top">${title}<span class="stat-icon">${icon}</span></div><strong>${value}</strong><small>${note}</small></div>`;
 function receiptLabel(b){
  if(b.receipt_status==='rejected')return 'Comprovante recusado';
@@ -65,8 +66,8 @@ function render(){
  $('#court-list').innerHTML=courts.length?courts.map(c=>`<article class="court-card ${c.active?'':'inactive'}"><div class="court-visual"><div class="court-lines"><div></div></div></div><div class="court-info"><h3>${esc(c.name)}</h3><p>${esc(c.type)}</p><div class="court-price">${money(c.price)} <small>/ hora</small></div><span class="badge ${c.active?'paid':'cancelled'}">${c.active?'● Ativa':'Inativa'}</span><button class="outline" data-toggle="${c.id}">${c.active?'Desativar quadra':'Ativar quadra'}</button></div></article>`).join(''):'<div class="empty"><h3>A sua arena começa aqui</h3><p>Adicione a primeira quadra para criar agendamentos.</p></div>';
  $('#finance-rows').innerHTML=bookings.filter(b=>b.paid||b.online_status||b.pix_link||b.receipt_status).sort((a,b)=>(b.paid_at||b.date).localeCompare(a.paid_at||a.date)).map(b=>`<tr><td>${esc(b.customer)}</td><td>${esc(b.court_name)}</td><td>${b.paid_at?new Date(b.paid_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'—'}</td><td>${esc(b.method||(b.pix_link?'Pix direto':'Mercado Pago'))}</td><td>${money(b.total)}</td><td><span class="badge ${b.paid?'paid':''}">${b.paid?'Pago':bookingPaymentLabel(b)}</span></td></tr>`).join('');$('#finance-empty').hidden=bookings.some(b=>b.paid||b.online_status||b.pix_link||b.receipt_status);
 }
-const titles={overview:['Tudo pronto para o próximo jogo.','Acompanhe sua arena e mantenha cada reserva em dia.','Visão geral'],bookings:['Cada jogo tem seu horário.','Organize as reservas e acompanhe os pagamentos.','Agendamentos'],courts:['A casa dos próximos jogos.','Gerencie os espaços e valores da sua arena.','Minhas quadras'],finance:['Suas contas em dia.','Acompanhe os valores recebidos e os pagamentos pendentes.','Financeiro']};
-function setView(next){view=next;document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('selected',b.dataset.view===view));$('#page-title').textContent=titles[view][0];$('#page-subtitle').textContent=titles[view][1];$('#breadcrumb').textContent=titles[view][2];$('#overview-content').hidden=view!=='overview';$('#bookings-content').hidden=!['overview','bookings'].includes(view);$('#courts-content').hidden=view!=='courts';$('#finance-content').hidden=view!=='finance';$('#filter-date').value=view==='overview'?today():'';$('#list-title').firstChild.textContent=view==='overview'?'Agenda de hoje ':'Agendamentos ';$('#list-description').textContent=view==='overview'?'Confira os horários e prepare a quadra.':'Use os filtros para encontrar uma reserva.';render();}
+const titles={overview:['Tudo pronto para o próximo jogo.','Acompanhe sua arena e mantenha cada reserva em dia.','Visão geral'],bookings:['Cada jogo tem seu horário.','Organize as reservas e acompanhe os pagamentos.','Agendamentos'],courts:['A casa dos próximos jogos.','Gerencie os espaços e valores da sua arena.','Minhas quadras'],systems:['Seu sistema, sua identidade.','Personalize sua arena e gerencie as cópias do sistema mãe.','Meu sistema'],finance:['Suas contas em dia.','Acompanhe os valores recebidos e os pagamentos pendentes.','Financeiro']};
+function setView(next){view=next;$('#new-booking').hidden=view==='systems';document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('selected',b.dataset.view===view));$('#page-title').textContent=titles[view][0];$('#page-subtitle').textContent=titles[view][1];$('#breadcrumb').textContent=titles[view][2];$('#overview-content').hidden=view!=='overview';$('#bookings-content').hidden=!['overview','bookings'].includes(view);$('#courts-content').hidden=view!=='courts';$('#finance-content').hidden=view!=='finance';$('#systems-content').hidden=view!=='systems';$('#filter-date').value=view==='overview'?today():'';$('#list-title').firstChild.textContent=view==='overview'?'Agenda de hoje ':'Agendamentos ';$('#list-description').textContent=view==='overview'?'Confira os horários e prepare a quadra.':'Use os filtros para encontrar uma reserva.';render();}
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>setView(b.dataset.view));
 $('#today-label').textContent=new Date().toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo',weekday:'long',day:'numeric',month:'long'}).toUpperCase();$('#filter-date').value=today();$('#filter-date').onchange=render;$('#filter-status').onchange=render;
 function openModal(title,fields,action,label='Salvar'){$('#modal-fields').onclick=null;$('#modal-fields').onchange=null;$('#modal-title').textContent=title;$('#modal-fields').innerHTML=fields;$('#modal-error').textContent='';$('#save-modal').textContent=label;submitModal=action;$('#modal').showModal();}
@@ -125,5 +126,33 @@ async function showReceipts(b){
  };
 }
 $('#court-list').onclick=e=>{const btn=e.target.closest('[data-toggle]');if(!btn)return;const c=courts.find(c=>c.id===Number(btn.dataset.toggle));openModal(c.active?'Desativar quadra':'Ativar quadra',`<p>${c.active?'A quadra deixará de aceitar novas reservas. Os agendamentos existentes serão preservados.':'A quadra voltará a aceitar agendamentos.'}</p>`,()=>api(`courts/${c.id}`,{active:!c.active},'PATCH'),'Confirmar');};
+
+function applyBranding(){
+ document.title=systemBranding.name+' · Gestão de quadras';
+ for(const element of [$('.logo'),$('#auth .brand-icon')]){
+  element.replaceChildren();
+  if(systemBranding.logo){const img=document.createElement('img');img.src=systemBranding.logo;img.alt='Logo de '+systemBranding.name;img.className='system-logo';element.append(img);}
+  const name=document.createElement('span');name.textContent=systemBranding.name;element.append(name);
+ }
+ $('#auth h1').textContent=systemBranding.name;
+ $('footer span').textContent=systemBranding.name;
+ $('#system-name').textContent=systemBranding.name;
+ $('#child-domain-section').hidden=systemBranding.is_mother;
+ $('#child-domain-name').textContent=location.hostname;
+ $('#children-section').hidden=!systemBranding.is_mother||!systemBranding.systems_available;
+}
+async function loadSystems(){
+ childSystems=systemBranding.is_mother&&systemBranding.systems_available?await api('systems'):[];
+ $('#children-list').innerHTML=childSystems.length?childSystems.map(system=>`<article class="court-card"><div class="court-info"><h3>${esc(system.name)}</h3><p>${esc(system.hostname)}</p><span class="badge">${system.status==='ready'?'Cópia criada':'Cópia pendente'}</span><p>Dados copiados em ${new Date(system.created_at).toLocaleString('pt-BR')}</p>${system.status==='ready'?`<a class="outline" href="https://${esc(system.hostname)}" target="_blank" rel="noopener noreferrer">Abrir sistema ↗</a>`:''}<p>O acesso depende do DNS e HTTPS configurados na Cloudflare.</p></div></article>`).join(''):'<p>Nenhum sistema filho criado.</p>';
+}
+$('#edit-branding').onclick=()=>{
+ openModal('Nome e logo do sistema',`<label>Nome<input name="name" value="${esc(systemBranding.name)}" maxlength="80" required></label><label>Logo PNG ou JPEG (até 250 KB)<input id="system-logo-file" type="file" accept="image/png,image/jpeg"></label><label class="check-label"><input name="remove_logo" type="checkbox"> Remover logo atual</label>`,async data=>{
+  let logo=data.remove_logo?'':systemBranding.logo;const file=$('#system-logo-file').files[0];
+  if(file){if(file.size>250*1024)throw Error('A logo deve ter até 250 KB.');logo=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(Error('Não foi possível ler a logo.'));reader.readAsDataURL(file);});}
+  systemBranding=await api('system/branding',{name:data.name,logo},'PUT');applyBranding();
+ });
+};
+$('#edit-domain').onclick=()=>openModal('Alterar subdomínio',`<p>O endereço atual deixará de apontar para este filho. Configure o DNS e HTTPS do novo endereço na Cloudflare antes de salvar. Será necessário entrar novamente no novo endereço.</p><label>Novo subdomínio<input name="hostname" placeholder="unidade.seudominio.com.br" required></label>`,async data=>{const result=await api('system/domain',data,'PUT');location.assign(result.url);return false;});
+$('#new-system').onclick=()=>openModal('Criar sistema filho',`<p>Serão copiados quadras, reservas, configurações Pix, comprovantes e histórico financeiro. A cópia é independente; mudanças futuras não são sincronizadas. Sessões, senhas e credenciais Mercado Pago não são copiadas.</p><label>Nome do sistema<input name="name" maxlength="80" required></label><label>Identificador<input name="slug" pattern="[a-z0-9][a-z0-9-]{0,39}" maxlength="40" placeholder="arena-centro" required></label><label>Subdomínio completo<input name="hostname" placeholder="centro.seudominio.com.br" maxlength="253" required></label><label>Senha do administrador do filho<input name="password" type="password" minlength="10" maxlength="200" autocomplete="new-password" required></label><p>Usuário do filho: admin. Conecte o subdomínio ao mesmo Worker na Cloudflare após criar a cópia.</p>`,data=>api('systems',data),'Criar cópia completa');
 init();
 setInterval(()=>{if(!$('#app').hidden&&!document.hidden)refresh().catch(e=>toast(e.message));},30000);

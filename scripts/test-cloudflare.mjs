@@ -3,6 +3,7 @@ import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import http from 'node:http';
 import {fileURLToPath} from 'node:url';
 import {randomBytes} from 'node:crypto';
 import assert from 'node:assert/strict';
@@ -57,7 +58,8 @@ async function start(options){
  throw Error('Wrangler did not become ready\n'+logs());
 }
 async function api(route,body,{auth=true,headers={},method}={}){
- const response=await fetch(base+route,{method:method||(body===undefined?'GET':'POST'),headers:{'Content-Type':'application/json',...(auth&&cookie?{Cookie:cookie}:{}),...headers},body:body===undefined?undefined:JSON.stringify(body),redirect:'manual'});
+ const requestFetch=headers.Host?async(url,options)=>new Promise((resolve,reject)=>{const request=http.request(url,{method:options.method,headers:options.headers},response=>{const chunks=[];response.on('data',chunk=>chunks.push(chunk));response.on('end',()=>resolve(new Response(Buffer.concat(chunks),{status:response.statusCode,headers:response.headers})));});request.on('error',reject);request.end(options.body);}):fetch;
+ const response=await requestFetch(base+route,{method:method||(body===undefined?'GET':'POST'),headers:{'Content-Type':'application/json',...(auth&&cookie?{Cookie:cookie}:{}),...headers},body:body===undefined?undefined:JSON.stringify(body),redirect:'manual'});
  const setCookie=response.headers.get('set-cookie');if(setCookie&&auth)cookie=setCookie.split(';')[0];
  const data=response.headers.get('content-type')?.includes('application/json')?await response.json():Buffer.from(await response.arrayBuffer());
  return {status:response.status,headers:response.headers,data};
@@ -120,6 +122,39 @@ try{
   const largeOriginal=await api(`/api/receipts/${largeProof.data.id}/file`);assert.equal(largeOriginal.status,200);assert.deepEqual(largeOriginal.data,large);
   passed('advertised 5 MiB receipt limit supported by Durable SQLite BLOB storage');
  }else console.log('UNRUN: container OCR and receipt lifecycle (--without-ocr selected).');
+ const motherCookie=cookie;
+ const beforeCopy=(await api('/api/bookings')).data;
+ const logo='data:image/png;base64,'+fixture.toString('base64');
+ assert.equal((await api('/api/system/branding',{name:'Arena Mãe',logo}, {method:'PUT'})).status,200);
+ assert.equal((await api('/api/systems',{slug:'centro',hostname:'centro.arena.example',name:'Arena Centro',password:'child-password-123'},{auth:false})).status,401);
+ const child=await api('/api/systems',{slug:'centro',hostname:'centro.arena.example',name:'Arena Centro',password:'child-password-123'});
+ assert.equal(child.status,201,JSON.stringify(child.data)+'\n'+logs());
+ assert.equal((await api('/api/systems',{slug:'centro',hostname:'outra.arena.example',name:'Duplicado',password:'child-password-123'})).status,409);
+ const childHeaders={Host:'centro.arena.example'};
+ const childBrand=await api('/api/system/branding',undefined,{auth:false,headers:childHeaders});
+ assert.equal(childBrand.data.name,'Arena Centro');
+ assert.equal(childBrand.data.logo,logo);
+ assert.equal((await api('/api/bookings',undefined,{headers:childHeaders})).status,401,'mother session must not authenticate in child');
+ assert.equal((await api('/api/login',{username:'admin',password:'child-password-123'},{headers:childHeaders})).status,200);
+ assert.deepEqual((await api('/api/bookings',undefined,{headers:childHeaders})).data,beforeCopy);
+ assert.equal((await api('/api/systems',undefined,{headers:childHeaders})).status,403);
+ assert.equal((await api('/api/payments/config',undefined,{headers:childHeaders})).data.ready,false);
+ const childOriginal=await api(`/api/receipts/1/file`,undefined,{headers:childHeaders});
+ assert.equal(childOriginal.status,200);assert.deepEqual(childOriginal.data,fixture);
+ assert.equal((await api('/api/courts',{name:'Só no filho',type:'Vôlei',price:50},{headers:childHeaders})).status,201);
+ assert.equal((await api('/api/system/branding',{name:'Logo do filho',logo:''},{headers:childHeaders,method:'PUT'})).status,200);
+ assert.equal((await api('/api/system/domain',{hostname:'mae.example.com'},{auth:false,headers:childHeaders,method:'PUT'})).status,401);
+ assert.equal((await api('/api/system/domain',{hostname:'https://invalid.example/path'},{headers:childHeaders,method:'PUT'})).status,400);
+ assert.equal((await api('/api/system/domain',{hostname:'novo.arena.example'},{headers:childHeaders,method:'PUT'})).status,200);
+ assert.equal((await api('/api/system/branding',undefined,{auth:false,headers:childHeaders})).status,404);
+ childHeaders.Host='novo.arena.example';
+ assert.equal((await api('/api/system/branding',undefined,{headers:childHeaders})).data.name,'Logo do filho');
+ const childCookie=cookie;
+ assert.equal((await api('/api/bookings')).status,401,'child session must not authenticate in mother');
+ cookie=motherCookie;
+ assert.equal((await api('/api/courts')).data.some(c=>c.name==='Só no filho'),false);
+ assert.equal((await api('/api/system/branding')).data.name,'Arena Mãe');
+ passed('full child clone, receipts, independent credentials, branding and database isolation');
  const session=cookie;
  await stop();
  // No bootstrap secret on restart: persisted admin and session must still work.
@@ -127,6 +162,8 @@ try{
  assert.equal((await api('/api/session')).data.authenticated,true);
  const persisted=await api('/api/bookings');assert.equal(persisted.status,200);assert.equal(persisted.data.find(b=>b.id===id).total,18000);
  if(withReceipts){assert.equal(persisted.data.find(b=>b.id===id).paid,1);const originals=await api(`/api/bookings/${id}/receipts`);assert.equal(originals.data.length,1);assert.equal(originals.data[0].status,'approved');}
+ assert.equal((await api('/api/bookings',undefined,{headers:{...childHeaders,Cookie:childCookie}})).data.length,beforeCopy.length);
+ assert.equal((await api('/api/system/branding',undefined,{headers:childHeaders})).data.name,'Logo do filho');
  passed('administrator, session, bookings and receipts persist after runtime restart');
  console.log(`Cloudflare runtime smoke: ${checks} checks passed without Containers.`);
 }catch(error){console.error(error);console.error(logs());process.exitCode=1;}

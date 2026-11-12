@@ -3,11 +3,13 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { MercadoPago, paymentConfiguration, createPayments, verifyWebhook } from './payments.js';
 import {createPix} from './pix.js';
 import {Buffer} from 'node:buffer';
+import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
 export function createApplication({db,receiptReader,ocrReady=false,manualReceiptReview=false,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress}={}) {
 db.exec(`CREATE TABLE IF NOT EXISTS admin(id INTEGER PRIMARY KEY CHECK(id=1), salt TEXT NOT NULL, hash TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS courts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, price INTEGER NOT NULL CHECK(price>0), active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, court_id INTEGER NOT NULL REFERENCES courts(id), customer TEXT NOT NULL, phone TEXT NOT NULL, date TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, total INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'confirmed', paid INTEGER NOT NULL DEFAULT 0, method TEXT, paid_at TEXT, notes TEXT NOT NULL DEFAULT '');`);
+initializeSystems(db);
 const payments=createPayments(db,paymentConfig,paymentClient);
 const pix=createPix(db,{receiptReader,ocrReady,manualReceiptReview});
 const sessions = sessionStore;
@@ -42,7 +44,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(url.pathname!=='/api/payments/webhook' && req.headers.origin && req.headers.origin!==`${req.headers['x-forwarded-proto']==='https'?'https':'http'}://${req.headers.host}`) fail('Origem não permitida.',403);
   let body={};
-  if(['POST','PATCH','PUT'].includes(req.method)) { let raw=''; const maxBody=/^\/api\/pix\/payments\/[a-f0-9]{64}\/receipt$/.test(url.pathname)?7*1024*1024:16000;for await(const chunk of req) { raw+=chunk; if(Buffer.byteLength(raw)>maxBody) fail('Requisição muito grande.',413); } try { body=JSON.parse(raw||'{}'); } catch { fail('JSON inválido.'); } if(!body||typeof body!=='object'||Array.isArray(body)) fail('Corpo inválido.'); }
+  if(['POST','PATCH','PUT'].includes(req.method)) { let raw=''; const maxBody=url.pathname==='/api/system/branding'?400000:/^\/api\/pix\/payments\/[a-f0-9]{64}\/receipt$/.test(url.pathname)?7*1024*1024:16000;for await(const chunk of req) { raw+=chunk; if(Buffer.byteLength(raw)>maxBody) fail('Requisição muito grande.',413); } try { body=JSON.parse(raw||'{}'); } catch { fail('JSON inválido.'); } if(!body||typeof body!=='object'||Array.isArray(body)) fail('Corpo inválido.'); }
   if(req.method==='POST'&&url.pathname==='/api/payments/webhook') {
    if(!paymentConfig.ready)fail('Integração não ativada.',503);
    if(!verifyWebhook({url,headers:req.headers,secret:paymentConfig.webhookSecret}))fail('Assinatura de notificação inválida.',401);
@@ -59,6 +61,7 @@ const server=http.createServer(async(req,res)=>{
    if(req.method==='POST'&&publicPix[2])return json(res,201,await pix.upload(publicPix[1],body));
    fail('Método não permitido.',405);
   }
+  if(req.method==='GET'&&url.pathname==='/api/system/branding')return json(res,200,branding(db));
   if(req.method==='GET' && url.pathname==='/api/session') return json(res,200,{authenticated:!!authenticated,setup:!db.prepare('SELECT id FROM admin').get()});
   if(req.method==='POST' && ['/api/setup','/api/login'].includes(url.pathname)) {
    const key=clientKey(req), attempt=attempts.get(key);
@@ -76,6 +79,16 @@ const server=http.createServer(async(req,res)=>{
    return json(res,200,{ok:true});
   }
   if(!authenticated) fail('Entre como administrador.',401);
+  if(url.pathname==='/api/system/domain'&&req.method==='PUT'){
+   if(!setting(db,'identity')||!db.systemDomainUpdater)fail('Esta opção está disponível no sistema filho.',403);
+   return json(res,200,await db.systemDomainUpdater(body.hostname));
+  }
+  if(url.pathname==='/api/system/branding'&&req.method==='PUT')return json(res,200,saveBranding(db,body));
+  if(url.pathname==='/api/systems'){
+   if(setting(db,'identity'))fail('Somente o sistema mãe pode gerenciar sistemas filhos.',403);
+   if(req.method==='GET')return json(res,200,db.prepare('SELECT * FROM child_systems ORDER BY created_at DESC,slug').all());
+   if(req.method==='POST')return json(res,201,await createChild(db,body,req.headers.host?.split(':')[0]));
+  }
   if(url.pathname==='/api/pix/settings'){
    if(req.method==='GET')return json(res,200,pix.settings());
    if(req.method==='PUT')return json(res,200,pix.saveSettings(body));
