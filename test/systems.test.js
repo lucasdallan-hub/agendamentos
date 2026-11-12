@@ -19,11 +19,13 @@ test('sistemas: cópia integral conserva dados financeiros e BLOBs, sem sessões
  INSERT INTO pix_links VALUES(1,'private-token','2026-12-08','pix@example.com','Arena');
  INSERT INTO admin VALUES(1,'mother-salt','mother-hash');`);
  mother.prepare("INSERT INTO pix_receipts VALUES(1,1,'comprovante.png','image/png',?,'hash',10000,'matched','approved','2026-12-01','Conferido','2026-12-01')").run(Buffer.from([1,2,3]));
+ mother.prepare("INSERT INTO financial_connection VALUES(1,'mother-token','mother-webhook','https://mother.example.com','test','mother-account')").run();
  mother.systemProvisioner=async payload=>installSystem(child,payload);
  const original=captureSystem(mother);
  await createChild(mother,{slug:'centro',hostname:'centro.example.com',name:'Filho',password:'password-child-123'},'mae.example.com');
  assert.deepEqual(captureSystem(child).tables,original.tables);
  assert.equal(branding(child).is_mother,false);
+ assert.equal(child.prepare('SELECT COUNT(*) AS count FROM financial_connection').get().count,0);
  assert.notEqual(child.prepare('SELECT hash FROM admin').get().hash,'mother-hash');
  child.prepare("UPDATE courts SET name='Só no filho'").run();
  assert.equal(mother.prepare('SELECT name FROM courts').get().name,'Quadra');

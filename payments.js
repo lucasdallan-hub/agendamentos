@@ -48,6 +48,9 @@ export function verifyWebhook({url,headers,secret}) {
 
 export function createPayments(db,config,client) {
  const queues=new Map();
+ db.exec('CREATE TABLE IF NOT EXISTS archived_payment_orders(order_id TEXT PRIMARY KEY)');
+ const archived=id=>!!db.prepare('SELECT order_id FROM archived_payment_orders WHERE order_id=?').get(id);
+ const copiedOrder=()=>{throw failure('Esta cobrança pertence ao histórico copiado do sistema mãe e só pode ser conciliada na origem.',409);};
  db.exec(`CREATE TABLE IF NOT EXISTS payment_orders(
   id TEXT PRIMARY KEY,booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),preference_id TEXT,checkout_url TEXT,
   state TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL);
@@ -60,6 +63,7 @@ export function createPayments(db,config,client) {
   requireReady();const b=getBooking(id);
   if(b.paid||b.status!=='confirmed')throw failure('Esta reserva não pode receber uma nova cobrança.',409);
   let order=db.prepare('SELECT * FROM payment_orders WHERE booking_id=?').get(id);
+  if(order&&archived(order.id))copiedOrder();
   if(order && order.state!=='failed'){
    if(order.checkout_url && new Date(order.expires_at)>new Date()&&['open','pending','rejected'].includes(order.state))return {checkout_url:order.checkout_url,expires_at:order.expires_at};
    throw failure(order.state==='creating'||order.state==='unknown'?'A criação da cobrança está em verificação. Consulte o Mercado Pago antes de gerar outra cobrança.':'Esta cobrança não permite um novo checkout. Consulte o status no Mercado Pago.',409);
@@ -86,6 +90,7 @@ export function createPayments(db,config,client) {
   requireReady();const payment=await client.getPayment(paymentId);
   const order=db.prepare('SELECT * FROM payment_orders WHERE id=?').get(typeof payment.external_reference==='string'?payment.external_reference:'');
   if(!order){if(expectedReference)throw failure('O pagamento não pertence a esta reserva.',409);return {ignored:true};}
+  if(archived(order.id))return {ignored:true};
   if(expectedReference && order.id!==expectedReference)throw failure('O pagamento não pertence a esta reserva.',409);
   const b=getBooking(order.booking_id),account=await client.getAccount();
   const amount=Math.round(Number(payment.transaction_amount)*100),refunded=Math.round(Number(payment.transaction_amount_refunded||0)*100);
@@ -118,6 +123,7 @@ export function createPayments(db,config,client) {
  }
  async function sync(id){
   requireReady();const b=getBooking(id);const order=db.prepare('SELECT * FROM payment_orders WHERE booking_id=?').get(b.id);if(!order)throw failure('Esta reserva ainda não tem cobrança online.',404);
+  if(archived(order.id))copiedOrder();
   const result=await client.searchPayments(order.id);
   if(!Array.isArray(result.results)||result.paging?.total>100)throw failure('Não foi possível consultar todos os pagamentos. Verifique a cobrança no Mercado Pago.',502);
   for(const payment of result.results) {if(!payment.id)throw failure('Resposta de pagamento inválida.',502);await reconcile(String(payment.id),order.id);}

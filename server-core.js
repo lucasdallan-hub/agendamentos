@@ -3,6 +3,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { MercadoPago, paymentConfiguration, createPayments, verifyWebhook } from './payments.js';
 import {createPix} from './pix.js';
 import {Buffer} from 'node:buffer';
+import {financialSettings} from './financial-settings.js';
 import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
 export function createApplication({db,receiptReader,ocrReady=false,manualReceiptReview=false,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress}={}) {
@@ -11,6 +12,7 @@ CREATE TABLE IF NOT EXISTS courts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, ty
 CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, court_id INTEGER NOT NULL REFERENCES courts(id), customer TEXT NOT NULL, phone TEXT NOT NULL, date TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, total INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'confirmed', paid INTEGER NOT NULL DEFAULT 0, method TEXT, paid_at TEXT, notes TEXT NOT NULL DEFAULT '');`);
 initializeSystems(db);
 const payments=createPayments(db,paymentConfig,paymentClient);
+const financial=financialSettings(db,paymentConfig);
 const pix=createPix(db,{receiptReader,ocrReady,manualReceiptReview});
 const sessions = sessionStore;
 const attempts = attemptStore;
@@ -100,7 +102,18 @@ const server=http.createServer(async(req,res)=>{
    if(req.method==='POST'&&receiptRoute[2]==='review')return json(res,200,pix.review(Number(receiptRoute[1]),body));
    if(req.method==='GET'&&receiptRoute[2]==='file'){const file=pix.file(Number(receiptRoute[1]));const ext={'image/png':'png','image/jpeg':'jpg','application/pdf':'pdf'}[file.mime_type];res.writeHead(200,{'Content-Type':file.mime_type,'Content-Disposition':`${ext==='pdf'?'attachment':'inline'}; filename="comprovante-${file.id}.${ext}"`,'Cache-Control':'no-store','Content-Security-Policy':"sandbox; default-src 'none'"});return res.end(file.content);}
   }
-  if(req.method==='GET'&&url.pathname==='/api/payments/config')return json(res,200,{provider:'Mercado Pago',ready:paymentConfig.ready,mode:paymentConfig.mode});
+  if(url.pathname==='/api/payments/config'){
+   if(req.method==='GET')return json(res,200,financial.summary());
+   if(req.method==='PUT'){
+    const next=financial.candidate(body);
+    const account=await new MercadoPago(next,paymentClient.fetch).getAccount();
+    if(financial.hasOrders()){
+     const current=await paymentClient.getAccount();
+     if(String(current.id)!==String(account.id)||paymentConfig.mode!==next.mode)fail('Esta arena já possui cobranças. Mantenha a mesma conta e ambiente para preservar a conciliação.',409);
+    }
+    return json(res,200,financial.save(next,account.id));
+   }
+  }
   const checkoutMatch=/^\/api\/bookings\/(\d+)\/(checkout|sync-payment)$/.exec(url.pathname);
   if(req.method==='POST'&&checkoutMatch){const id=Number(checkoutMatch[1]);if(checkoutMatch[2]==='checkout'&&db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(id))fail('Esta reserva possui um link Pix direto. Use o fluxo Pix existente.',409);return json(res,200,checkoutMatch[2]==='checkout'?await payments.checkout(id):await payments.sync(id));}
   if(req.method==='POST' && url.pathname==='/api/logout') { sessions.delete(token); res.setHeader('Set-Cookie','arena_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json(res,200,{ok:true}); }
@@ -111,7 +124,7 @@ const server=http.createServer(async(req,res)=>{
   }
   const courtMatch=/^\/api\/courts\/(\d+)$/.exec(url.pathname);
   if(req.method==='PATCH' && courtMatch) { if(typeof body.active!=='boolean') fail('Estado inválido.'); const r=db.prepare('UPDATE courts SET active=? WHERE id=?').run(body.active?1:0,Number(courtMatch[1])); if(!r.changes) fail('Quadra não encontrada.',404); return json(res,200,{ok:true}); }
-  if(req.method==='GET' && url.pathname==='/api/bookings') return json(res,200,db.prepare('SELECT b.*, c.name court_name,c.type court_type,o.state online_status,o.checkout_url,o.expires_at,EXISTS(SELECT 1 FROM pix_links p WHERE p.booking_id=b.id) pix_link,r.status receipt_status,r.match_status receipt_match,r.amount_cents receipt_amount FROM bookings b JOIN courts c ON c.id=b.court_id LEFT JOIN payment_orders o ON o.booking_id=b.id LEFT JOIN pix_receipts r ON r.id=(SELECT id FROM pix_receipts WHERE booking_id=b.id ORDER BY id DESC LIMIT 1) ORDER BY date,start,b.id').all());
+  if(req.method==='GET' && url.pathname==='/api/bookings') return json(res,200,db.prepare('SELECT b.*, c.name court_name,c.type court_type,o.state online_status,o.checkout_url,o.expires_at,EXISTS(SELECT 1 FROM archived_payment_orders a WHERE a.order_id=o.id) online_archived,EXISTS(SELECT 1 FROM pix_links p WHERE p.booking_id=b.id) pix_link,r.status receipt_status,r.match_status receipt_match,r.amount_cents receipt_amount FROM bookings b JOIN courts c ON c.id=b.court_id LEFT JOIN payment_orders o ON o.booking_id=b.id LEFT JOIN pix_receipts r ON r.id=(SELECT id FROM pix_receipts WHERE booking_id=b.id ORDER BY id DESC LIMIT 1) ORDER BY date,start,b.id').all());
   if(req.method==='POST' && url.pathname==='/api/bookings') return json(res,201,booking(body));
   const match=/^\/api\/bookings\/(\d+)\/(payment|cancel)$/.exec(url.pathname);
   if(req.method==='POST' && match) {
