@@ -1,7 +1,5 @@
 import {DurableObject} from 'cloudflare:workers';
 import {httpServerHandler} from 'cloudflare:node';
-import {Container,getContainer} from '@cloudflare/containers';
-import {Buffer} from 'node:buffer';
 import {randomBytes,scryptSync} from 'node:crypto';
 import {createApplication} from '../server-core.js';
 import {MercadoPago,paymentConfiguration} from '../payments.js';
@@ -14,25 +12,6 @@ const securityHeaders={
  'Content-Security-Policy':"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'"
 };
 const json=(status,data)=>Response.json(data,{status,headers:{...securityHeaders,'Cache-Control':'no-store'}});
-const failure=(message,status)=>Object.assign(new Error(message),{status});
-
-function createReceiptReader(env) {
- return async(buffer,mime)=>{
-  if(!env.RECEIPT_OCR)throw failure('O leitor de comprovantes não está disponível neste ambiente.',503);
-  let response;
-  try {
-   const container=getContainer(env.RECEIPT_OCR,'ocr');
-   response=await container.fetch(new Request('http://container/read',{
-    method:'POST',headers:{'Content-Type':mime},body:Buffer.from(buffer),signal:AbortSignal.timeout(85000)
-   }));
-  }catch{throw failure('Não foi possível concluir a leitura do comprovante. Tente novamente em instantes.',503);}
-  let result;try{result=await response.json();}catch{throw failure('O leitor de comprovantes retornou uma resposta inválida.',502);}
-  if(!response.ok)throw failure(typeof result.error==='string'?result.error:'Não foi possível ler o comprovante.',[413,415,422,429,503].includes(response.status)?response.status:502);
-  if(result.amount_cents!==null&&(!Number.isSafeInteger(result.amount_cents)||result.amount_cents<=0))throw failure('O leitor de comprovantes retornou um valor inválido.',502);
-  return {amount_cents:result.amount_cents,candidates:Array.isArray(result.candidates)?result.candidates:[]};
- };
-}
-
 /** All arena business data, originals and sessions use durable SQLite storage. */
 export class Arena extends DurableObject {
  constructor(ctx,env) {
@@ -41,7 +20,7 @@ export class Arena extends DurableObject {
   const paymentConfig=paymentConfiguration(env);
   const {server}=createApplication({
    db,paymentConfig,paymentClient:new MercadoPago(paymentConfig),
-   receiptReader:createReceiptReader(env),ocrReady:!!env.RECEIPT_OCR,
+   receiptReader:async()=>({amount_cents:null,candidates:[]}),ocrReady:false,manualReceiptReview:true,
    sessionStore:new DurableMap(db,'session'),attemptStore:new DurableMap(db,'login-attempt'),cookieSecure:true,
    clientKey:req=>req.headers['cf-connecting-ip']||req.socket.remoteAddress
   });
@@ -66,11 +45,10 @@ export class Arena extends DurableObject {
  }
 }
 
-/** OCR has no durable data and no outbound Internet access. */
-export class ReceiptOCR extends Container {
- defaultPort=8080;
- sleepAfter='2m';
- enableInternet=false;
+// Preserve the class introduced by migration v1 without provisioning Containers.
+// Existing deployments may already have applied that migration.
+export class ReceiptOCR extends DurableObject {
+ fetch(){return json(410,{error:'A conferência de comprovantes agora é manual.'});}
 }
 
 const publicFiles=new Map([

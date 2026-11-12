@@ -24,7 +24,7 @@ function decodeUpload(body){
  return {buffer,mime,filename:body.filename.trim()};
 }
 
-export function createPix(db,{receiptReader,ocrReady=false}){
+export function createPix(db,{receiptReader,ocrReady=false,manualReceiptReview=false}){
  db.exec(`CREATE TABLE IF NOT EXISTS pix_settings(id INTEGER PRIMARY KEY CHECK(id=1),key TEXT NOT NULL,receiver TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS pix_links(booking_id INTEGER PRIMARY KEY REFERENCES bookings(id),token TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,pix_key TEXT NOT NULL,receiver TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS pix_receipts(id INTEGER PRIMARY KEY,booking_id INTEGER NOT NULL REFERENCES bookings(id),filename TEXT NOT NULL,mime_type TEXT NOT NULL,content BLOB NOT NULL,file_hash TEXT NOT NULL UNIQUE,amount_cents INTEGER,match_status TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL,review_note TEXT NOT NULL DEFAULT '',reviewed_at TEXT);`);
@@ -34,7 +34,7 @@ export function createPix(db,{receiptReader,ocrReady=false}){
  const orderExists=id=>!!db.prepare('SELECT id FROM payment_orders WHERE booking_id=?').get(id);
  const available=b=>{if(b.status!=='confirmed'||b.paid)fail('Esta reserva não aceita novos comprovantes.',409);if(orderExists(b.id))fail('Esta reserva já possui cobrança Mercado Pago. Use o checkout existente.',409);};
  const linkFor=token=>{if(!/^[a-f0-9]{64}$/.test(token))fail('Link Pix não encontrado.',404);const link=db.prepare('SELECT * FROM pix_links WHERE token=?').get(token);if(!link)fail('Link Pix não encontrado.',404);if(new Date(link.expires_at)<=new Date())fail('Este link Pix expirou. Peça um novo link à arena.',410);return link;};
- function settings(){const current=db.prepare('SELECT key,receiver FROM pix_settings WHERE id=1').get()||{key:'',receiver:''};return {...current,ready:!!(current.key&&current.receiver),ocr_ready:ocrReady};}
+ function settings(){const current=db.prepare('SELECT key,receiver FROM pix_settings WHERE id=1').get()||{key:'',receiver:''};return {...current,ready:!!(current.key&&current.receiver),ocr_ready:ocrReady,manual_review:manualReceiptReview};}
  function saveSettings(body){
   if(typeof body.key!=='string'||!body.key.trim()||body.key.trim().length>140||/[\x00-\x1f]/.test(body.key))fail('Informe uma chave Pix válida.');
   if(typeof body.receiver!=='string'||!body.receiver.trim()||body.receiver.trim().length>120||/[\x00-\x1f]/.test(body.receiver))fail('Informe o nome do recebedor.');
@@ -70,7 +70,7 @@ export function createPix(db,{receiptReader,ocrReady=false}){
    if(latest(b.id)?.status==='pending')fail('Já existe um comprovante em análise.',409);
    if(db.prepare('SELECT id FROM pix_receipts WHERE file_hash=?').get(hash))fail('Este comprovante já foi enviado.',409);
    const value=Number.isSafeInteger(result?.amount_cents)&&result.amount_cents>0?result.amount_cents:null;
-   const match=value===null?'unreadable':value===fresh.total?'matched':'mismatch';
+   const match=manualReceiptReview?'manual':value===null?'unreadable':value===fresh.total?'matched':'mismatch';
    const inserted=db.prepare('INSERT INTO pix_receipts(booking_id,filename,mime_type,content,file_hash,amount_cents,match_status,created_at) VALUES(?,?,?,?,?,?,?,?)').run(b.id,data.filename,data.mime,data.buffer,hash,value,match,new Date().toISOString());
    return db.prepare(`SELECT ${summaryColumns} FROM pix_receipts WHERE id=?`).get(Number(inserted.lastInsertRowid));
   }finally{inFlight.delete(b.id);processing--;}
@@ -83,7 +83,9 @@ export function createPix(db,{receiptReader,ocrReady=false}){
   if(!['approve','reject'].includes(body.decision))fail('Escolha aprovar ou rejeitar o comprovante.');
   const b=booking(receipt.booking_id);available(b);
   if(body.decision==='approve'){
-   if(receipt.match_status!=='matched'||receipt.amount_cents!==b.total)fail('O valor lido não confere com a reserva. Solicite outro comprovante.',409);
+   if(manualReceiptReview){
+    if(!Number.isSafeInteger(body.confirmed_amount_cents)||body.confirmed_amount_cents!==b.total)fail('Informe o valor recebido; ele deve corresponder ao total da reserva.',409);
+   }else if(receipt.match_status!=='matched'||receipt.amount_cents!==b.total)fail('O valor lido não confere com a reserva. Solicite outro comprovante.',409);
    if(body.confirmed_received!==true)fail('Confirme que conferiu o recebimento na conta antes de aprovar.');
   }
   const note=typeof body.note==='string'?body.note.trim().slice(0,1000):'';

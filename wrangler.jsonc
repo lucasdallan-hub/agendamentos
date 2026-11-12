@@ -1,9 +1,11 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "arena-volei",
+  "name": "agendamentos",
   "main": "cloudflare/worker.js",
   "compatibility_date": "2026-11-11",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "workers_dev": true,
   "assets": {
     "directory": "./public",
@@ -14,20 +16,19 @@
   },
   "durable_objects": {
     "bindings": [
-      { "name": "ARENA", "class_name": "Arena" },
-      { "name": "RECEIPT_OCR", "class_name": "ReceiptOCR" }
+      {
+        "name": "ARENA",
+        "class_name": "Arena"
+      }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["Arena", "ReceiptOCR"] }
-  ],
-  "containers": [
     {
-      "class_name": "ReceiptOCR",
-      "image": "./cloudflare/Dockerfile",
-      "image_build_context": ".",
-      "instance_type": "basic",
-      "max_instances": 1
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Arena",
+        "ReceiptOCR"
+      ]
     }
   ],
   "vars": {

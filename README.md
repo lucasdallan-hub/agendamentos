@@ -4,19 +4,17 @@ Sistema de gestão de quadras de vôlei em português, com painel administrativo
 
 ## Hospedar na Cloudflare
 
-A configuração completa está em [docs/cloudflare.md](docs/cloudflare.md). O site e a API usam Workers; o banco e os comprovantes ficam no SQLite de um Durable Object; o OCR usa um Container sem dados persistentes. Esse modelo exige **Workers Paid**, acesso à conta Cloudflare e Docker para construir a imagem de OCR.
+Veja [docs/cloudflare.md](docs/cloudflare.md). O site e a API usam Workers e SQLite em Durable Object, sem Docker ou Containers. O nome do Worker é `agendamentos`.
 
 ```sh
 npm ci
-npm run build:cloudflare
+npm run build
 npm run deploy:cloudflare
 ```
 
-Se o deploy for pelo GitHub no painel do Worker, configure **Build command: `npm run build`**, **Deploy command: `npm run deploy:cloudflare`**, branch `main` e diretório raiz `/`. A versão do Node está fixada em `.node-version`. O build valida o Worker sem Docker; a etapa de deploy constrói a imagem OCR. Não use os testes de OCR como comando de build do painel.
+No painel conectado ao GitHub: branch `main`, raiz `/`, build `npm run build` e deploy `npm run deploy:cloudflare`. Configure o segredo `ADMIN_INITIAL_PASSWORD` antes do primeiro acesso.
 
-O primeiro comando instala as ferramentas de desenvolvimento fixadas no lockfile. O build apenas prepara e valida os artefatos; o deploy publica e exige autenticação. A senha inicial do administrador deve ser configurada como segredo da Cloudflare antes do primeiro acesso; sem ela, a API nova fica bloqueada. Consulte o guia para os comandos e os segredos do Mercado Pago.
-
-O banco local em `data/arena.sqlite` permanece separado do banco na Cloudflare e não é enviado pelo deploy. O Container nunca hospeda o banco principal, pois seu disco é temporário. O modo Node abaixo continua disponível para desenvolvimento local.
+Na Cloudflare, os comprovantes Pix têm conferência manual: o administrador abre o arquivo, informa o valor recebido e confirma o crédito na conta antes de aprovar. O OCR descrito abaixo aplica-se somente ao modo Node local.
 
 ## Executar
 
