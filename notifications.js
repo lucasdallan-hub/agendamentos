@@ -1,5 +1,8 @@
 import {randomBytes} from 'node:crypto';
+import {Buffer} from 'node:buffer';
 import {branding} from './systems.js';
+
+const DEFAULT_URL='https://api.dallan.pro';
 
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 function normalizeNumber(value,country='55'){
@@ -17,8 +20,10 @@ function normalizeNumber(value,country='55'){
  return digits;
 }
 function baseURL(value){
+ if(/^\/swagger(?:\/index\.html)?\/?$/i.test(value))value=DEFAULT_URL+value;
  let url;try{url=new URL(value);}catch{fail('Informe a URL HTTPS do seu servidor Evolution Go.');}
  if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash||url.hostname==='localhost'||url.hostname.endsWith('.localhost')||url.hostname.endsWith('.local')||url.hostname.includes(':')||/^\d+(\.\d+){3}$/.test(url.hostname))fail('Use uma URL HTTPS pública para o servidor Evolution Go, sem usuário, senha ou parâmetros.');
+ url.pathname=url.pathname.replace(/\/swagger(?:\/index\.html)?\/?$/i,'')||'/';
  return url.href.replace(/\/+$/,'');
 }
 
@@ -26,8 +31,8 @@ function baseURL(value){
 export function bookingNotifications(db,{fetchImpl=fetch}={}){
  db.exec(`CREATE TABLE IF NOT EXISTS notification_connection(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL,base_url TEXT NOT NULL,api_key TEXT NOT NULL,arena_number TEXT NOT NULL,country_code TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS booking_notifications(id TEXT PRIMARY KEY,booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),recipient TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'arena',status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,error TEXT NOT NULL DEFAULT '');`);
- const stored=()=>db.prepare('SELECT * FROM notification_connection WHERE id=1').get()||{enabled:0,base_url:'',api_key:'',arena_number:'',country_code:'55'};
- const summary=()=>{const c=stored();return {enabled:!!c.enabled,base_url:c.base_url,token_configured:!!c.api_key,target:'arena',arena_number:c.arena_number,country_code:c.country_code,ready:!!(c.enabled&&c.base_url&&c.api_key&&c.arena_number)};};
+ const stored=()=>db.prepare('SELECT * FROM notification_connection WHERE id=1').get()||{enabled:0,base_url:DEFAULT_URL,api_key:'',arena_number:'',country_code:'55'};
+ const summary=()=>{const c=stored();return {enabled:!!c.enabled,base_url:c.base_url,token_configured:!!c.api_key,target:'arena',connection_ready:!!(c.base_url&&c.api_key),arena_number:c.arena_number,country_code:c.country_code,ready:!!(c.enabled&&c.base_url&&c.api_key&&c.arena_number)};};
  function save(body){
   if(typeof body.enabled!=='boolean'||body.target!==undefined&&body.target!=='arena')fail('As notificações devem ser destinadas ao administrador cadastrado.');
   const previous=stored();
@@ -95,12 +100,35 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   await Promise.all(pending.map(event=>dispatch(event.booking_id)));
   return events();
  }
- async function check(){
-  const c=stored();if(!summary().ready)fail('Ative e salve a configuração da Evolution Go antes de verificar a conexão.',409);
+ async function instanceData(path,timeout=8000){
+  const c=stored();if(!c.base_url||!c.api_key)fail('Salve o endereço do servidor e o token da instância antes de conectar o WhatsApp.',409);
   let response,result;
-  try{response=await fetchImpl(c.base_url+'/instance/status',{method:'GET',headers:{apikey:c.api_key},redirect:'error',signal:AbortSignal.timeout(8000)});if(response.ok)result=await response.json();}catch{fail('Não foi possível consultar a Evolution Go. Verifique o endereço e o acesso ao servidor.',502);}
-  if(!response.ok||result?.message!=='success'||typeof result?.data?.Connected!=='boolean'||typeof result?.data?.LoggedIn!=='boolean')fail('A Evolution Go não confirmou a sessão. Verifique o token da instância e a conexão.',502);
-  return {connected:result.data.Connected,logged_in:result.data.LoggedIn};
+  try{
+   response=await fetchImpl(c.base_url+path,{method:'GET',headers:{apikey:c.api_key},redirect:'error',signal:AbortSignal.timeout(timeout)});
+   if(response.ok)result=await response.json();
+  }catch{fail('Não foi possível consultar a Evolution Go. Verifique o endereço e o acesso ao servidor.',502);}
+  if(!response.ok||result?.message!=='success'||!result.data||typeof result.data!=='object')fail('A Evolution Go não confirmou a operação. Verifique o token da instância e a conexão.',502);
+  return result.data;
  }
- return {summary,save,enqueue,dispatch,events,recoverPending,check};
+ async function check(){
+  const data=await instanceData('/instance/status');
+  if(typeof data.Connected!=='boolean'||typeof data.LoggedIn!=='boolean')fail('A Evolution Go não confirmou a sessão. Verifique o token da instância e a conexão.',502);
+  return {connected:data.Connected,logged_in:data.LoggedIn};
+ }
+ async function connect(){
+  const session=await check();
+  // Never restart a paired session or overwrite its webhooks/subscriptions.
+  if(session.logged_in)return session;
+  const data=await instanceData('/instance/qr',12000);
+  if(!data.qrcode&&typeof data.passkeyStage==='string'&&data.passkeyStage)return {...session,state:'additional_verification'};
+  if(typeof data.qrcode!=='string'||data.qrcode.length>710000)fail('A Evolution Go não retornou um QR Code válido. Tente atualizar o código.',502);
+  const match=/^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(data.qrcode);
+  if(!match)fail('A Evolution Go não retornou uma imagem PNG válida para o QR Code.',502);
+  const bytes=Buffer.from(match[1],'base64');
+  if(bytes.length>512*1024||bytes.toString('base64')!==match[1]||!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))fail('A Evolution Go não retornou um QR Code válido. Tente atualizar o código.',502);
+  // QR codes rotate at the provider. This is a conservative display deadline,
+  // not a guarantee of validity; the user may request a fresh code at any time.
+  return {...session,qr_code:data.qrcode,expires_at:new Date(Date.now()+20000).toISOString()};
+ }
+ return {summary,save,enqueue,dispatch,events,recoverPending,check,connect};
 }

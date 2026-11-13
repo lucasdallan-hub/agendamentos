@@ -130,10 +130,11 @@ try{
  passed('public catalog and automatic booking run without administrator authentication');
  assert.equal((await api('/api/notifications/config',undefined,{auth:false})).status,401);
  const notificationConfig={enabled:false,base_url:'https://evolution.example.com',api_key:'fake-smoke-instance-key',target:'arena',arena_number:'(21) 98888-7777',country_code:'55'};
+ assert.equal((await api('/api/notifications/check',{})).status,409);
  const notificationSaved=await api('/api/notifications/config',notificationConfig,{method:'PUT'});
  assert.equal(notificationSaved.status,200);assert.equal(notificationSaved.data.token_configured,true);
  assert.equal(JSON.stringify(notificationSaved.data).includes('fake-smoke-instance-key'),false);
- assert.equal((await api('/api/notifications/check',{})).status,409);
+ assert.equal(notificationSaved.data.connection_ready,true);
  assert.equal((await api('/api/notifications/events')).data.length,0);
  passed('Evolution Go settings persist privately without sending messages while disabled');
  const motherCookie=cookie;

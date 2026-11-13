@@ -103,6 +103,7 @@ const server=http.createServer(async(req,res)=>{
    if(req.method==='PUT')return json(res,200,notifications.save(body));
   }
   if(url.pathname==='/api/notifications/events'&&req.method==='GET')return json(res,200,await notifications.recoverPending());
+  if(url.pathname==='/api/notifications/connect'&&req.method==='POST')return json(res,200,await notifications.connect());
   if(url.pathname==='/api/notifications/check'&&req.method==='POST')return json(res,200,await notifications.check());
   if(url.pathname==='/api/catalog/settings'){
    if(req.method==='GET')return json(res,200,catalog.settings());

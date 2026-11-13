@@ -1,6 +1,7 @@
 const $=s=>document.querySelector(s);
 let systemBranding={name:'Arena Vôlei',logo:'',is_mother:false},childSystems=[];
-let notificationConfig={enabled:false,base_url:'',token_configured:false,target:'arena',arena_number:'',country_code:'55',ready:false},notificationEvents=[];
+let qrSession=null;
+let notificationConfig={enabled:false,base_url:'https://api.dallan.pro',connection_ready:false,token_configured:false,target:'arena',arena_number:'',country_code:'55',ready:false},notificationEvents=[];
 let courts=[], bookings=[], paymentConfig={ready:false,mode:'test'}, pixSettings={ready:false,ocr_ready:false}, view='overview', setup=false, submitModal;
 const money=n=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(n/100);
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -26,7 +27,7 @@ async function init(){
 }
 $('#startup-retry').onclick=()=>init();
 $('#auth-form').onsubmit=async e=>{e.preventDefault();$('#auth-error').textContent='';$('#auth-submit').disabled=true;try{await api(setup?'setup':'login',{username:new FormData(e.target).get('username'),password:new FormData(e.target).get('password')});e.target.reset();await init();}catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=false;}};
-$('#logout').onclick=async()=>{try{await api('logout',{});await init();}catch(e){toast(e.message);}};
+$('#logout').onclick=async()=>{if(qrSession){stopQrSession();$('#modal').close();}try{await api('logout',{});await init();}catch(e){toast(e.message);}};
 async function refresh(){[courts,bookings,paymentConfig,pixSettings,notificationConfig,notificationEvents]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings'),api('notifications/config'),api('notifications/events')]);await loadSystems();render();}
 const stat=(title,value,note,icon)=>`<div class="stat"><div class="stat-top">${title}<span class="stat-icon">${icon}</span></div><strong>${value}</strong><small>${note}</small></div>`;
 function receiptLabel(b){
@@ -74,7 +75,7 @@ const titles={overview:['Tudo pronto para o próximo jogo.','Acompanhe sua arena
 function setView(next){view=next;$('#new-booking').hidden=view==='systems';document.querySelectorAll('nav button').forEach(b=>{const active=b.dataset.view===view;b.classList.toggle('selected',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});$('#page-title').textContent=titles[view][0];$('#page-subtitle').textContent=titles[view][1];$('#breadcrumb').textContent=titles[view][2];$('#overview-content').hidden=view!=='overview';$('#bookings-content').hidden=!['overview','bookings'].includes(view);$('#courts-content').hidden=view!=='courts';$('#finance-content').hidden=view!=='finance';$('#systems-content').hidden=view!=='systems';$('#filter-date').value=view==='overview'?today():'';$('#list-title').firstChild.textContent=view==='overview'?'Agenda de hoje ':'Agendamentos ';$('#list-description').textContent=view==='overview'?'Confira os horários e prepare a quadra.':'Use os filtros para encontrar uma reserva.';render();}
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>setView(b.dataset.view));
 $('#today-label').textContent=new Date().toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo',weekday:'long',day:'numeric',month:'long'}).toUpperCase();$('#filter-date').value=today();$('#filter-date').onchange=render;$('#filter-status').onchange=render;
-function openModal(title,fields,action,label='Salvar'){$('#modal-fields').onclick=null;$('#modal-fields').onchange=null;$('#modal-title').textContent=title;$('#modal-fields').innerHTML=fields;$('#modal-error').textContent='';$('#save-modal').textContent=label;submitModal=action;$('#modal').showModal();}
+function openModal(title,fields,action,label='Salvar'){stopQrSession();$('#modal-fields').onclick=null;$('#modal-fields').onchange=null;$('#modal-title').textContent=title;$('#modal-fields').innerHTML=fields;$('#modal-error').textContent='';$('#save-modal').textContent=label;submitModal=action;$('#modal').showModal();}
 $('#close-modal').onclick=$('#cancel-modal').onclick=()=>$('#modal').close();
 $('#modal-form').onsubmit=async e=>{e.preventDefault();$('#save-modal').disabled=true;$('#modal-error').textContent='';try{const result=await submitModal(Object.fromEntries(new FormData(e.target)));if(result!==false){$('#modal').close();await refresh();toast('Tudo certo! Alteração salva.');}}catch(e){$('#modal-error').textContent=e.message;}finally{$('#save-modal').disabled=false;}};
 function newCourt(){openModal('Adicionar quadra','<label>Nome da quadra<input name="name" placeholder="Ex.: Quadra 01" maxlength="80" required></label><label>Tipo<select name="type"><option>Vôlei de areia</option><option>Vôlei de quadra</option><option>Quadra poliesportiva</option></select></label><label>Valor por hora (R$)<input name="price" type="number" min="1" max="100000" step="0.01" placeholder="120,00" required></label>',data=>api('courts',data),'Cadastrar quadra');}
@@ -151,13 +152,14 @@ async function loadSystems(){
 }
 function renderNotifications(){
  $('#notifications-description').textContent=notificationConfig.enabled?(notificationConfig.ready?`Envio habilitado para o administrador no número ${notificationConfig.arena_number||'cadastrado'}. Verifique a conexão para confirmar a sessão do WhatsApp.`:'Envio habilitado, mas a configuração ainda está incompleta.'):'Envio desativado. Configure a Evolution Go desta arena para avisar sobre novos agendamentos.';
- $('#check-notifications').disabled=!notificationConfig.ready;
+ const canConnect=notificationConfig.connection_ready??(notificationConfig.token_configured&&!!notificationConfig.base_url);
+ $('#check-notifications').disabled=!canConnect;$('#connect-notifications').disabled=!canConnect;
  const labels={pending:'Aguardando envio',sending:'Envio em andamento',accepted:'Aceita pela API',failed:'Falha no envio',unknown:'Resultado incerto'};
  $('#notifications-rows').innerHTML=notificationEvents.map(event=>`<tr><td>#${esc(event.booking_id)}</td><td>Administrador<small>${esc(event.recipient)}</small></td><td><span class="badge ${event.status==='accepted'?'paid':event.status==='failed'?'cancelled':''}">${labels[event.status]||'Status desconhecido'}</span></td><td>${new Date(event.updated_at||event.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</td><td>${esc(event.error|| (event.status==='unknown'?'Confira a Evolution Go antes de enviar novamente.':event.status==='accepted'?'A entrega no WhatsApp ainda não foi confirmada.':''))}</td></tr>`).join('');
  $('#notifications-empty').hidden=notificationEvents.length>0;
 }
 $('#configure-notifications').onclick=()=>{
- openModal('WhatsApp do administrador',`<p>Conexão exclusiva desta arena. Use a URL HTTPS da sua Evolution Go e o token da instância conectada ao WhatsApp.</p><label class="check-label"><input id="notifications-enabled" name="enabled" type="checkbox" ${notificationConfig.enabled?'checked':''}> Avisar o administrador sobre novos agendamentos</label><label>URL HTTPS da Evolution Go<input id="notifications-url" name="base_url" type="url" value="${esc(notificationConfig.base_url||'')}" maxlength="2000" placeholder="https://whatsapp.seudominio.com.br"></label><label>Token da instância<input id="notifications-api-key" name="api_key" type="password" autocomplete="new-password" maxlength="2000" placeholder="${notificationConfig.token_configured?'Já configurado; deixe vazio para manter':'Token da instância, não a chave administrativa global'}"></label><label>WhatsApp do administrador<input id="notifications-arena-number" name="arena_number" type="tel" maxlength="30" value="${esc(notificationConfig.arena_number||'')}" placeholder="55 11 99999-9999"></label><label>Código do país para números locais<input id="notifications-country-code" name="country_code" inputmode="numeric" maxlength="3" value="${esc(notificationConfig.country_code||'55')}"></label><p>Salvar a configuração não envia uma mensagem. Apenas novos agendamentos geram avisos; uma falha no WhatsApp não cancela a reserva. A chave não será exibida novamente nem copiada para sistemas filhos.</p>`,async data=>{
+ openModal('WhatsApp do administrador',`<p>Conexão exclusiva desta arena. Use o servidor https://api.dallan.pro e o token da sua instância. Você poderá conectar o WhatsApp pelo QR Code após salvar. <a href="https://api.dallan.pro/swagger/index.html" target="_blank" rel="noopener noreferrer">Documentação da API ↗</a></p><label class="check-label"><input id="notifications-enabled" name="enabled" type="checkbox" ${notificationConfig.enabled?'checked':''}> Avisar o administrador sobre novos agendamentos</label><label>URL HTTPS da Evolution Go<input id="notifications-url" name="base_url" type="url" value="${esc(notificationConfig.base_url||'https://api.dallan.pro')}" maxlength="2000" placeholder="https://api.dallan.pro"></label><label>Token da instância<input id="notifications-api-key" name="api_key" type="password" autocomplete="new-password" maxlength="2000" placeholder="${notificationConfig.token_configured?'Já configurado; deixe vazio para manter':'Token da instância, não a chave administrativa global'}"></label><label>WhatsApp do administrador<input id="notifications-arena-number" name="arena_number" type="tel" maxlength="30" value="${esc(notificationConfig.arena_number||'')}" placeholder="55 11 99999-9999"></label><label>Código do país para números locais<input id="notifications-country-code" name="country_code" inputmode="numeric" maxlength="3" value="${esc(notificationConfig.country_code||'55')}"></label><p>Salvar a configuração não envia uma mensagem. Apenas novos agendamentos geram avisos; uma falha no WhatsApp não cancela a reserva. A chave não será exibida novamente nem copiada para sistemas filhos.</p>`,async data=>{
   notificationConfig=await api('notifications/config',{...data,enabled:data.enabled==='on',target:'arena'},'PUT');
   $('#notifications-connection').textContent='Configuração salva. Use Verificar conexão para consultar a sessão do WhatsApp.';
  });
@@ -168,8 +170,100 @@ $('#check-notifications').onclick=async()=>{
  const button=$('#check-notifications');button.disabled=true;$('#notifications-connection').textContent='Consultando a sessão do WhatsApp…';
  try{const result=await api('notifications/check',{});$('#notifications-connection').textContent=result.connected&&result.logged_in?'WhatsApp conectado à Evolution Go. A entrega de cada aviso depende do processamento da mensagem.':'A Evolution Go respondeu, mas a sessão do WhatsApp precisa ser conectada.';}
  catch(error){$('#notifications-connection').textContent=error.message;}
- finally{button.disabled=!notificationConfig.ready;}
+ finally{button.disabled=!(notificationConfig.connection_ready??(notificationConfig.token_configured&&!!notificationConfig.base_url));}
 };
+function stopQrSession(){
+ const session=qrSession;if(!session)return;
+ qrSession=null;session.active=false;
+ clearTimeout(session.pollTimer);clearTimeout(session.expiryTimer);
+ for(const controller of session.requests)controller.abort();
+ const image=$('#evolution-qr');if(image){image.hidden=true;image.removeAttribute('src');}
+}
+function qrActive(session){return qrSession===session&&session.active&&$('#modal').open;}
+function qrHideImage(session){
+ clearTimeout(session.expiryTimer);session.expiryTimer=null;session.expiresAt=0;
+ const image=$('#evolution-qr');if(image){image.hidden=true;image.removeAttribute('src');}
+}
+async function qrApi(session,path){
+ const controller=new AbortController();session.requests.add(controller);
+ const timeout=setTimeout(()=>controller.abort(),25000);
+ try{
+  const response=await fetch('/api/notifications/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal});
+  const result=await response.json();
+  if(!response.ok)throw Object.assign(new Error(result.error||'Não foi possível consultar a Evolution Go.'),{status:response.status});
+  return result;
+ }catch(error){
+  if(error.name==='AbortError')throw Error('A consulta demorou demais. Tente novamente.');
+  throw error;
+ }finally{clearTimeout(timeout);session.requests.delete(controller);}
+}
+function qrConnected(session){
+ qrHideImage(session);session.done=true;clearTimeout(session.pollTimer);
+ $('#evolution-qr-status').textContent='WhatsApp conectado. Esta arena já pode usar a sessão para enviar os avisos configurados.';
+ $('#evolution-qr-error').textContent='';$('#evolution-qr-refresh').hidden=true;
+ $('#notifications-connection').textContent='WhatsApp conectado à Evolution Go.';
+}
+function qrSchedulePoll(session){
+ clearTimeout(session.pollTimer);
+ if(qrActive(session)&&!session.done&&!document.hidden)session.pollTimer=setTimeout(()=>qrPoll(session),5000);
+}
+async function qrPoll(session){
+ if(!qrActive(session)||session.done||document.hidden)return;
+ if(session.busy){qrSchedulePoll(session);return;}
+ session.busy=true;$('#evolution-qr-refresh').disabled=true;
+ try{
+  const status=await qrApi(session,'check');if(!qrActive(session))return;
+  if(status.connected&&status.logged_in){qrConnected(session);return;}
+  if(status.logged_in){qrHideImage(session);$('#evolution-qr-status').textContent='WhatsApp já autorizado. Aguardando a sessão conectar…';$('#evolution-qr-refresh').hidden=true;}
+  else if($('#evolution-qr-refresh').hidden){$('#evolution-qr-refresh').hidden=false;$('#evolution-qr-status').textContent='A sessão precisa ser conectada. Atualize para solicitar um QR Code.';}
+ }catch(error){
+  if(!qrActive(session))return;
+  $('#evolution-qr-error').textContent=error.message;
+  if(error.status===401){session.done=true;qrHideImage(session);}
+ }finally{
+  session.busy=false;
+  if(qrActive(session)){$('#evolution-qr-refresh').disabled=false;qrSchedulePoll(session);}
+ }
+}
+async function qrLoad(session){
+ if(!qrActive(session)||session.busy)return;
+ session.busy=true;session.done=false;clearTimeout(session.pollTimer);qrHideImage(session);
+ $('#evolution-qr-refresh').disabled=true;$('#evolution-qr-status').textContent='Preparando o QR Code da sua instância…';$('#evolution-qr-error').textContent='';
+ try{
+  const result=await qrApi(session,'connect');if(!qrActive(session))return;
+  if(result.connected&&result.logged_in){qrConnected(session);return;}
+  if(result.logged_in){$('#evolution-qr-status').textContent='WhatsApp já autorizado. Aguardando a sessão conectar…';$('#evolution-qr-refresh').hidden=true;return;}
+  if(result.state==='additional_verification'){$('#evolution-qr-status').textContent='Esta conta exige uma verificação adicional. Conclua a autorização no WhatsApp ou no gerenciador da sua instância e consulte novamente.';return;}
+  if(typeof result.qr_code!=='string'||!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(result.qr_code))throw Error('A Evolution Go não retornou um QR Code válido. Atualize para tentar novamente.');
+  const expires=Date.parse(result.expires_at);
+  session.expiresAt=Math.min(Date.now()+20000,Number.isFinite(expires)?expires:Date.now()+20000);
+  if(session.expiresAt<=Date.now())throw Error('O QR Code já expirou. Atualize para gerar outro.');
+  $('#evolution-qr').src=result.qr_code;$('#evolution-qr').hidden=false;
+  $('#evolution-qr-status').textContent='Escaneie o QR Code pelo WhatsApp do celular. A conexão será verificada automaticamente.';
+  session.expiryTimer=setTimeout(()=>{
+   if(!qrActive(session))return;
+   qrHideImage(session);$('#evolution-qr-status').textContent='Este QR Code é temporário. Atualize para solicitar um código novo.';
+  },session.expiresAt-Date.now());
+ }catch(error){if(qrActive(session)){$('#evolution-qr-status').textContent='Não foi possível preparar o QR Code.';$('#evolution-qr-error').textContent=error.message;}}
+ finally{session.busy=false;if(qrActive(session)){$('#evolution-qr-refresh').disabled=false;qrSchedulePoll(session);}}
+}
+$('#connect-notifications').onclick=()=>{
+ openModal('Conectar WhatsApp por QR Code','<div class="evolution-qr-panel"><p>No WhatsApp do celular, abra <strong>Configurações ou ⋮ → Aparelhos conectados → Conectar aparelho</strong> e escaneie o código abaixo.</p><p id="evolution-qr-status" role="status"></p><img id="evolution-qr" class="evolution-qr-image" alt="QR Code temporário para conectar o WhatsApp desta arena" hidden><p id="evolution-qr-error" role="alert"></p><button type="button" class="outline" id="evolution-qr-refresh">Atualizar QR Code</button><p class="evolution-qr-note">O código é exibido apenas nesta janela. Atualizar não desconecta uma sessão já autorizada.</p></div>',async()=>{$('#modal').close();return false;},'Fechar');
+ const session={active:true,done:false,busy:false,pollTimer:null,expiryTimer:null,expiresAt:0,requests:new Set()};qrSession=session;
+ $('#evolution-qr').onerror=()=>{if(!qrActive(session)||!$('#evolution-qr').getAttribute('src'))return;qrHideImage(session);$('#evolution-qr-status').textContent='Não foi possível exibir o QR Code.';$('#evolution-qr-error').textContent='A imagem recebida não pôde ser aberta. Atualize para solicitar outro código.';$('#evolution-qr-refresh').hidden=false;};
+ $('#evolution-qr-refresh').onclick=()=>qrLoad(session);qrLoad(session);
+};
+$('#modal').addEventListener('close',()=>{if(!$('#modal').open)stopQrSession();});
+$('#modal').addEventListener('cancel',stopQrSession);
+window.addEventListener('pagehide',()=>{if(qrSession){stopQrSession();$('#modal').close();}});
+document.addEventListener('visibilitychange',()=>{
+ const session=qrSession;if(!session)return;
+ clearTimeout(session.pollTimer);
+ if(document.hidden)return;
+ if(session.expiresAt&&session.expiresAt<=Date.now()){qrHideImage(session);$('#evolution-qr-status').textContent='Este QR Code é temporário. Atualize para solicitar um código novo.';}
+ qrSchedulePoll(session);
+});
+new MutationObserver(()=>{if($('#app').hidden&&qrSession){stopQrSession();$('#modal').close();}}).observe($('#app'),{attributes:true,attributeFilter:['hidden']});
 $('#configure-catalog').onclick=async()=>{
  try{const config=await api('catalog/settings');openModal('Catálogo e agendamento online',`<p>Divulgue <a href="/catalogo" target="_blank" rel="noopener noreferrer">${esc(location.origin)}/catalogo</a> para seus clientes reservarem diretamente.</p><label class="check-label"><input name="enabled" type="checkbox" ${config.enabled?'checked':''}> Aceitar reservas pelo catálogo</label><label>Abertura<input name="open" type="time" step="1800" value="${esc(config.open)}" required></label><label>Fechamento<input name="close" type="time" step="1800" value="${esc(config.close)}" required></label><p>Reservas de 30 minutos a 4 horas, até 180 dias à frente. O pagamento é confirmado separadamente.</p>`,data=>api('catalog/settings',{...data,enabled:data.enabled==='on'},'PUT'));}catch(error){toast(error.message);}
 };
