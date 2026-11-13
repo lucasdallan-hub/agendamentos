@@ -2,6 +2,10 @@
 
 Sistema de gestão de quadras de vôlei em português, com painel administrativo, agenda, cadastro de quadras e controle de recebimentos.
 
+## Configuração do ambiente na nuvem
+
+A instalação, a inicialização e os diagnósticos estão versionados em [docs/cloud-environment.md](docs/cloud-environment.md), com a configuração em [cloud/environment-config.json](cloud/environment-config.json). Execute `npm run setup:cloud`, inicie com `npm run dev:cloud` e confira com `npm run check:runtime`. O comando `npm run check:evolution` verifica o acesso à API sem enviar mensagens. A opção de rede irrestrita registrada no arquivo precisa ser aplicada nas configurações da plataforma; o código do repositório não altera a rede da máquina automaticamente.
+
 ## Hospedar na Cloudflare
 
 Veja [docs/cloudflare.md](docs/cloudflare.md). O site e a API usam Workers e SQLite em Durable Object, sem Docker ou Containers. O nome do Worker é `agendamentos`.
