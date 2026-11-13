@@ -75,7 +75,7 @@ try{
  passed('default admin login works without a bootstrap secret and rejects other usernames');
  await stop();
  await start({bootstrap:true,containers:false});
- for(const route of ['/','/catalogo','/pix','/pagamento','/theme.js','/app.js','/pix.js','/style.css']){
+ for(const route of ['/','/catalogo','/pix','/pagamento','/theme.js','/sidebar.js','/app.js','/pix.js','/style.css']){
   const response=await api(route);assert.equal(response.status,200,`Asset ${route}: ${response.status}`);assert.equal(response.headers.get('x-content-type-options'),'nosniff');
  }
  assert.equal((await api('/missing')).status,404);

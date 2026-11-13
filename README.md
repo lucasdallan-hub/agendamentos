@@ -34,6 +34,10 @@ O envio é opcional e começa desativado. Novos agendamentos pelo painel ou cat�
 
 A integração usa a rota da Evolution Go **`POST /send/text`**, autenticada pelo cabeçalho **`apikey`** com o token da instância. Não usa `/message/sendText/{instance}` da Evolution API. Cadastre o token somente no formulário, sem colocá-lo no Git ou no chat. Para ativar o envio real, são necessários a URL do servidor, o token e uma sessão WhatsApp conectada. Veja [a configuração na Cloudflare](docs/cloudflare.md#notificações-whatsapp-com-evolution-go).
 
+## Menu lateral
+
+O painel possui menu lateral com acesso à visão geral, agendamentos, quadras, financeiro, configurações e catálogo público. No computador, use a seta ou o botão de menu para recolher e expandir; a preferência fica salva no navegador. No celular, o botão do cabeçalho abre o menu. Escolher uma página, tocar fora ou pressionar Esc fecha o menu. A opção de sair continua disponível no celular.
+
 ## Tema claro e escuro
 
 Use o botão de tema no topo do painel ou das páginas públicas. A preferência é salva no navegador para o domínio acessado. No primeiro acesso, o sistema acompanha o tema do dispositivo até você escolher outro. A opção está disponível na mãe e nos filhos, inclusive no catálogo e nas páginas de pagamento.
