@@ -168,7 +168,7 @@ $('#configure-notifications').onclick=()=>{
 };
 $('#check-notifications').onclick=async()=>{
  const button=$('#check-notifications');button.disabled=true;$('#notifications-connection').textContent='Consultando a sessão do WhatsApp…';
- try{const result=await api('notifications/check',{});$('#notifications-connection').textContent=result.connected&&result.logged_in?'WhatsApp conectado à Evolution Go. A entrega de cada aviso depende do processamento da mensagem.':'A Evolution Go respondeu, mas a sessão do WhatsApp precisa ser conectada.';}
+ try{const result=await api('notifications/check',{});$('#notifications-connection').textContent=result.connected&&result.logged_in?'WhatsApp conectado à Evolution Go. A entrega de cada aviso depende do processamento da mensagem.':(result.logged_in?'A instância já está autorizada, mas está desconectada. Verifique a sessão no servidor Evolution Go e consulte novamente.':'A instância ainda não está pareada. Clique em Conectar WhatsApp e escaneie o QR Code pelo celular.');}
  catch(error){$('#notifications-connection').textContent=error.message;}
  finally{button.disabled=!(notificationConfig.connection_ready??(notificationConfig.token_configured&&!!notificationConfig.base_url));}
 };
@@ -197,6 +197,15 @@ async function qrApi(session,path){
   throw error;
  }finally{clearTimeout(timeout);session.requests.delete(controller);}
 }
+function qrPauseForConfiguration(session,error){
+ if(error.status===401||/HTTP (?:401|403|404|429)\b/.test(error.message)){
+  session.done=true;qrHideImage(session);clearTimeout(session.pollTimer);
+  $('#evolution-qr-status').textContent='Consultas automáticas pausadas. Confira a configuração antes de atualizar.';
+  $('#evolution-qr-refresh').hidden=false;
+  return true;
+ }
+ return false;
+}
 function qrConnected(session){
  qrHideImage(session);session.done=true;clearTimeout(session.pollTimer);
  $('#evolution-qr-status').textContent='WhatsApp conectado. Esta arena já pode usar a sessão para enviar os avisos configurados.';
@@ -214,12 +223,12 @@ async function qrPoll(session){
  try{
   const status=await qrApi(session,'check');if(!qrActive(session))return;
   if(status.connected&&status.logged_in){qrConnected(session);return;}
-  if(status.logged_in){qrHideImage(session);$('#evolution-qr-status').textContent='WhatsApp já autorizado. Aguardando a sessão conectar…';$('#evolution-qr-refresh').hidden=true;}
+  if(status.logged_in){qrHideImage(session);$('#evolution-qr-status').textContent='A instância está autorizada, mas desconectada. Verifique a sessão no servidor Evolution Go; o painel continuará consultando o status.';$('#evolution-qr-refresh').hidden=true;}
   else if($('#evolution-qr-refresh').hidden){$('#evolution-qr-refresh').hidden=false;$('#evolution-qr-status').textContent='A sessão precisa ser conectada. Atualize para solicitar um QR Code.';}
  }catch(error){
   if(!qrActive(session))return;
   $('#evolution-qr-error').textContent=error.message;
-  if(error.status===401){session.done=true;qrHideImage(session);}
+  qrPauseForConfiguration(session,error);
  }finally{
   session.busy=false;
   if(qrActive(session)){$('#evolution-qr-refresh').disabled=false;qrSchedulePoll(session);}
@@ -232,7 +241,7 @@ async function qrLoad(session){
  try{
   const result=await qrApi(session,'connect');if(!qrActive(session))return;
   if(result.connected&&result.logged_in){qrConnected(session);return;}
-  if(result.logged_in){$('#evolution-qr-status').textContent='WhatsApp já autorizado. Aguardando a sessão conectar…';$('#evolution-qr-refresh').hidden=true;return;}
+  if(result.logged_in){$('#evolution-qr-status').textContent='A instância está autorizada, mas desconectada. Verifique a sessão no servidor Evolution Go; o painel continuará consultando o status.';$('#evolution-qr-refresh').hidden=true;return;}
   if(result.state==='additional_verification'){$('#evolution-qr-status').textContent='Esta conta exige uma verificação adicional. Conclua a autorização no WhatsApp ou no gerenciador da sua instância e consulte novamente.';return;}
   if(typeof result.qr_code!=='string'||!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(result.qr_code))throw Error('A Evolution Go não retornou um QR Code válido. Atualize para tentar novamente.');
   const expires=Date.parse(result.expires_at);
@@ -244,7 +253,7 @@ async function qrLoad(session){
    if(!qrActive(session))return;
    qrHideImage(session);$('#evolution-qr-status').textContent='Este QR Code é temporário. Atualize para solicitar um código novo.';
   },session.expiresAt-Date.now());
- }catch(error){if(qrActive(session)){$('#evolution-qr-status').textContent='Não foi possível preparar o QR Code.';$('#evolution-qr-error').textContent=error.message;}}
+ }catch(error){if(qrActive(session)){qrPauseForConfiguration(session,error);$('#evolution-qr-status').textContent='Não foi possível preparar o QR Code.';$('#evolution-qr-error').textContent=error.message;}}
  finally{session.busy=false;if(qrActive(session)){$('#evolution-qr-refresh').disabled=false;qrSchedulePoll(session);}}
 }
 $('#connect-notifications').onclick=()=>{

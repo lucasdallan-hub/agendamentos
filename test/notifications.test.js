@@ -178,3 +178,15 @@ test('Evolution Go: repetição simultânea de uma reserva não disputa o envio 
  const initial=await first;assert.equal(initial.status,201);assert.equal(initial.data.token,replay.data.token);
  const events=await f.api('notifications/events');assert.equal(events.data.length,1);assert.equal(events.data[0].status,'accepted');assert.equal(f.requests.length,1);
 });
+
+test('Evolution Go: atualiza endereço Swagger legado ao reiniciar e preserva credenciais e destinatário',async t=>{
+ const f=await arena(t,{send:async()=>Response.json({message:'success',data:{Connected:true,LoggedIn:true}})});
+ await f.api('notifications/config',configuration(),{method:'PUT'});
+ f.db.prepare('UPDATE notification_connection SET base_url=? WHERE id=1').run('https://evolution.example.com/swagger/index.html');
+ await f.restart();
+ const config=await f.api('notifications/config');
+ assert.equal(config.status,200);assert.equal(config.data.base_url,'https://evolution.example.com');assert.equal(config.data.enabled,true);assert.equal(config.data.token_configured,true);assert.equal(config.data.arena_number,'5521988887777');
+ assert.equal(f.db.prepare('SELECT api_key FROM notification_connection WHERE id=1').get().api_key,'fake-instance-token');
+ const checked=await f.api('notifications/check',{});assert.equal(checked.status,200);assert.equal(checked.data.logged_in,true);
+ assert.equal(f.requests.length,1);assert.equal(f.requests[0].url,'https://evolution.example.com/instance/status');assert.equal(f.requests[0].headers.get('apikey'),'fake-instance-token');
+});

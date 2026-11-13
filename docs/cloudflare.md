@@ -93,3 +93,11 @@ O protocolo utilizado é `POST /send/text`, com `Content-Type: application/json`
 O envio ocorre para novos agendamentos do painel e do catálogo, após a reserva ser gravada. Uma falha na Evolution Go não impede a reserva. O registro de resultados é persistente e aparece em **Notificações recentes**: **Aguardando envio**, **Envio em andamento**, **Aceita pela API**, **Falha no envio** ou **Resultado incerto**. Pendências que ainda não iniciaram o envio são retomadas ao carregar o histórico no painel. Respostas incertas, inclusive timeout e erro HTTP 5xx, não são reenviadas automaticamente. Uma resposta aceita pela API não comprova entrega ou leitura no WhatsApp. Em resultado incerto, consulte a Evolution Go antes de tentar qualquer reenvio; não há repetição automática desses resultados.
 
 Salvar a conexão não envia mensagens nem comprova que a instância WhatsApp está conectada. São necessários servidor acessível, token válido e sessão WhatsApp ativa. Se a saída de rede do executor estiver restrita, permita o hostname do seu servidor Evolution Go; não use uma URL interna de Container ou endereço de loopback em produção. Proteja os backups do banco da arena, que inclui as credenciais dessa conexão.
+
+### Diagnosticar conexão com a Evolution Go
+
+O painel informa o HTTP retornado pela API sem exibir tokens ou o corpo privado da resposta: HTTP 401 indica token recusado; HTTP 403 indica acesso negado por permissões ou regras do servidor; HTTP 404 indica rota ou URL base incompatível; HTTP 429 exige aguardar o limite de consultas. DNS, certificado TLS, conexão recusada, timeout e resposta sem JSON têm mensagens distintas.
+
+Configurações antigas salvas com o endereço da página `/swagger/index.html` são corrigidas automaticamente para a base da API, preservando token e número do administrador. Uma instância autorizada mas desconectada é identificada separadamente; o painel não a reinicia nem altera seus webhooks. Corrija a sessão no servidor da API e consulte novamente. Erros HTTP 401/403/404/429 pausam as consultas automáticas da janela de QR até uma nova tentativa manual.
+
+O bloqueio de rede do ambiente de desenvolvimento do Codex deve ser investigado separadamente de uma falha no Worker publicado. Para diagnosticar produção, use a mensagem exibida no site e o endereço do Worker; os testes simulados não comprovam acesso à instância real.

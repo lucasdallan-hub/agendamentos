@@ -31,6 +31,14 @@ function baseURL(value){
 export function bookingNotifications(db,{fetchImpl=fetch}={}){
  db.exec(`CREATE TABLE IF NOT EXISTS notification_connection(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL,base_url TEXT NOT NULL,api_key TEXT NOT NULL,arena_number TEXT NOT NULL,country_code TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS booking_notifications(id TEXT PRIMARY KEY,booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),recipient TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'arena',status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,error TEXT NOT NULL DEFAULT '');`);
+ // Earlier versions accepted the Swagger page as a base URL. Repair only
+ // that stored address; preserve the instance token and notification settings.
+ const legacy=db.prepare('SELECT base_url FROM notification_connection WHERE id=1').get();
+ if(legacy?.base_url){
+  let normalized;
+  try{normalized=baseURL(legacy.base_url);}catch{}
+  if(normalized&&normalized!==legacy.base_url)db.prepare('UPDATE notification_connection SET base_url=? WHERE id=1').run(normalized);
+ }
  const stored=()=>db.prepare('SELECT * FROM notification_connection WHERE id=1').get()||{enabled:0,base_url:DEFAULT_URL,api_key:'',arena_number:'',country_code:'55'};
  const summary=()=>{const c=stored();return {enabled:!!c.enabled,base_url:c.base_url,token_configured:!!c.api_key,target:'arena',connection_ready:!!(c.base_url&&c.api_key),arena_number:c.arena_number,country_code:c.country_code,ready:!!(c.enabled&&c.base_url&&c.api_key&&c.arena_number)};};
  function save(body){
@@ -102,12 +110,27 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
  }
  async function instanceData(path,timeout=8000){
   const c=stored();if(!c.base_url||!c.api_key)fail('Salve o endereço do servidor e o token da instância antes de conectar o WhatsApp.',409);
-  let response,result;
+  let response;
   try{
    response=await fetchImpl(c.base_url+path,{method:'GET',headers:{apikey:c.api_key},redirect:'error',signal:AbortSignal.timeout(timeout)});
-   if(response.ok)result=await response.json();
-  }catch{fail('Não foi possível consultar a Evolution Go. Verifique o endereço e o acesso ao servidor.',502);}
-  if(!response.ok||result?.message!=='success'||!result.data||typeof result.data!=='object')fail('A Evolution Go não confirmou a operação. Verifique o token da instância e a conexão.',502);
+  }catch(error){
+   const code=error?.cause?.code||error?.code||error?.cause?.errors?.[0]?.code;
+   if(['TimeoutError','AbortError'].includes(error?.name)||['ETIMEDOUT','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT'].includes(code))fail('A Evolution Go não respondeu dentro do tempo limite. Verifique a disponibilidade do servidor e tente novamente.',504);
+   if(['ENOTFOUND','EAI_AGAIN'].includes(code))fail('Não foi possível resolver o domínio da Evolution Go (DNS). Confira a URL e o DNS do servidor.',502);
+   if(['CERT_HAS_EXPIRED','UNABLE_TO_VERIFY_LEAF_SIGNATURE','DEPTH_ZERO_SELF_SIGNED_CERT','ERR_TLS_CERT_ALTNAME_INVALID','UNABLE_TO_GET_ISSUER_CERT_LOCALLY'].includes(code))fail('A conexão HTTPS da Evolution Go falhou na validação do certificado TLS. Corrija o certificado do servidor.',502);
+   if(code==='ECONNREFUSED')fail('O servidor Evolution Go recusou a conexão. Verifique se o serviço está em execução e aceita conexões HTTPS.',502);
+   fail('Não foi possível alcançar a Evolution Go. Confira a URL HTTPS e a saída de rede do servidor que hospeda esta arena.',502);
+  }
+  if(!response.ok){
+   if(response.status===401)fail('A Evolution Go recusou o token da instância (HTTP 401). Cadastre o token da instância correta, não a chave administrativa global.',502);
+   if(response.status===403)fail('A Evolution Go negou o acesso (HTTP 403). Verifique as permissões do token e as regras de acesso do servidor da API.',502);
+   if(response.status===404)fail(`A rota ${path} não foi encontrada na Evolution Go (HTTP 404). Confira a URL base e a versão da API.`,502);
+   if(response.status===429)fail('A Evolution Go atingiu o limite de consultas (HTTP 429). Aguarde antes de consultar novamente.',502);
+   fail(`A Evolution Go retornou HTTP ${response.status} na rota ${path}. Verifique o serviço da API e a instância.`,502);
+  }
+  let result;
+  try{result=await response.json();}catch{fail(`A rota ${path} respondeu sem JSON válido. Confira se a URL aponta para a API em vez de uma página ou proxy de autenticação.`,502);}
+  if(result?.message!=='success'||!result.data||typeof result.data!=='object')fail('A Evolution Go respondeu em um formato incompatível com a integração. Confira a versão da API.',502);
   return result.data;
  }
  async function check(){

@@ -111,3 +111,42 @@ test('Evolution Go QR: filhos têm sessão própria e não herdam token ou QR da
  assert.equal((await child.api('notifications/connect',{})).status,200);
  assert.ok(mother.requests.every(r=>r.headers.get('apikey')==='mother-qr-token'));assert.ok(child.requests.every(r=>r.headers.get('apikey')==='child-qr-token'));assert.equal(child.requests[1].url,'https://child-evolution.example.com/instance/qr');
 });
+
+test('Evolution Go diagnóstico: identifica HTTP de autenticação, rota, limite e indisponibilidade sem expor a resposta',async t=>{
+ for(const [httpStatus,expected] of [[401,/token/i],[403,/acesso|permiss/i],[404,/rota/i],[429,/limite/i],[500,/API|Evolution/i],[503,/API|Evolution/i]]){
+  for(const endpoint of ['status','qr']){
+   const f=await fixture(t,{respond:async request=>endpoint==='qr'&&request.url.endsWith('/instance/status')?status():Response.json({error:RAW_SECRET,token:'qr-instance-token'},{status:httpStatus})});
+   await f.configure();
+   const result=await f.api(endpoint==='status'?'notifications/check':'notifications/connect',{});
+   assert.equal(result.status,502,`upstream ${httpStatus}, ${endpoint}`);assert.match(result.data.error,new RegExp(String(httpStatus)));assert.match(result.data.error,expected);
+   if(httpStatus===404)assert.ok(result.data.error.includes('/instance/'+endpoint),'route failure identifies the exact upstream path');
+   assert.equal(JSON.stringify(result.data).includes(RAW_SECRET),false);assert.equal(JSON.stringify(result.data).includes('qr-instance-token'),false);
+   assert.equal(f.requests.length,endpoint==='qr'?2:1);
+  }
+ }
+});
+
+test('Evolution Go diagnóstico: diferencia DNS, conexão recusada, TLS e timeout sem copiar erros privados',async t=>{
+ const networkError=code=>new TypeError(RAW_SECRET,{cause:{code,message:RAW_SECRET}});
+ const scenarios=[
+  [()=>networkError('ENOTFOUND'),502,/DNS/i],
+  [()=>networkError('ECONNREFUSED'),502,/conexão|conexao/i],
+  ...['CERT_HAS_EXPIRED','UNABLE_TO_VERIFY_LEAF_SIGNATURE','DEPTH_ZERO_SELF_SIGNED_CERT','ERR_TLS_CERT_ALTNAME_INVALID'].map(code=>[()=>networkError(code),502,/TLS|certificado/i]),
+  [()=>new DOMException(RAW_SECRET,'TimeoutError'),504,/tempo|demor|timeout/i],
+  [()=>new DOMException(RAW_SECRET,'AbortError'),504,/tempo|demor|timeout/i],
+  [()=>new TypeError(RAW_SECRET),502,/endereço|acesso|rede|servidor/i]
+ ];
+ for(const [error,statusCode,expected] of scenarios){
+  const f=await fixture(t,{respond:async()=>{throw error();}});await f.configure();
+  const result=await f.api('notifications/check',{});assert.equal(result.status,statusCode);assert.match(result.data.error,expected);
+  assert.equal(JSON.stringify(result.data).includes(RAW_SECRET),false);assert.equal(JSON.stringify(result.data).includes('qr-instance-token'),false);assert.equal(f.requests.length,1);
+ }
+});
+
+test('Evolution Go diagnóstico: HTTP 200 com corpo não JSON informa erro de formato, sem classificá-lo como falha de rede',async t=>{
+ for(const endpoint of ['status','qr']){
+  const f=await fixture(t,{respond:async request=>endpoint==='qr'&&request.url.endsWith('/instance/status')?status():new Response('<html>'+RAW_SECRET+'</html>',{status:200,headers:{'Content-Type':'text/html'}})});await f.configure();
+  const result=await f.api(endpoint==='status'?'notifications/check':'notifications/connect',{});
+  assert.equal(result.status,502);assert.match(result.data.error,/JSON/i);assert.equal(JSON.stringify(result.data).includes(RAW_SECRET),false);assert.equal(JSON.stringify(result.data).includes('qr-instance-token'),false);
+ }
+});
