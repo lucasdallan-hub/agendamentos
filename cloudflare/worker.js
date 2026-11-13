@@ -87,6 +87,7 @@ export class ReceiptOCR extends DurableObject {
 }
 
 const publicFiles=new Map([
+ ['/theme.js','/theme.js'],
  ['/catalogo','/catalog.html'],['/catalog.js','/catalog.js'],['/','/index.html'],['/pix','/pix.html'],['/pagamento','/payment.html'],
  ['/branding.js','/branding.js'],['/app.js','/app.js'],['/pix.js','/pix.js'],['/style.css','/style.css']
 ]);

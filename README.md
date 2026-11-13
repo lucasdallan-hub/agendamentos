@@ -34,6 +34,10 @@ O envio é opcional e começa desativado. Novos agendamentos pelo painel ou cat�
 
 A integração usa a rota da Evolution Go **`POST /send/text`**, autenticada pelo cabeçalho **`apikey`** com o token da instância. Não usa `/message/sendText/{instance}` da Evolution API. Cadastre o token somente no formulário, sem colocá-lo no Git ou no chat. Para ativar o envio real, são necessários a URL do servidor, o token e uma sessão WhatsApp conectada. Veja [a configuração na Cloudflare](docs/cloudflare.md#notificações-whatsapp-com-evolution-go).
 
+## Tema claro e escuro
+
+Use o botão de tema no topo do painel ou das páginas públicas. A preferência é salva no navegador para o domínio acessado. No primeiro acesso, o sistema acompanha o tema do dispositivo até você escolher outro. A opção está disponível na mãe e nos filhos, inclusive no catálogo e nas páginas de pagamento.
+
 ## Executar
 
 Requer Node.js 24.5 ou superior, Tesseract OCR (idioma `eng`) e Poppler (`pdftotext`, `pdftoppm`). Não há dependências npm externas. Em Debian/Ubuntu, os pacotes do leitor são `tesseract-ocr`, `tesseract-ocr-eng` e `poppler-utils`.
