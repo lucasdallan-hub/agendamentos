@@ -190,3 +190,37 @@ test('Evolution Go QR: preserva a sessão quando o pareamento termina durante a 
  assert.deepEqual(result.data,{connected:true,logged_in:true});
  assert.equal(f.requests.length,3);
 });
+
+test('Evolution Go webhook: sincroniza somente após confirmação da API e preserva a configuração ao preparar QR',async t=>{
+ const url='https://integracao.example.com/evolution';
+ let synced=false,started=false;
+ const f=await fixture(t,{respond:async request=>{
+  if(request.url.endsWith('/instance/status'))return status();
+  if(request.url.endsWith('/instance/qr'))return started
+   ? Response.json({message:'success',data:{qrcode:PNG}})
+   : Response.json({error:'no QR code available'},{status:400});
+  assert.equal(request.url,'https://api.dallan.pro/instance/connect');
+  assert.equal(request.method,'POST');
+  assert.equal(request.headers.get('apikey'),'qr-instance-token');
+  assert.deepEqual(JSON.parse(request.body),{webhookUrl:url,subscribe:['CONNECTION']});
+  started=synced;
+  return Response.json({message:'success',data:{webhookUrl:url,eventString:synced?'CONNECTION':'MESSAGE'}});
+ }});
+ await f.configure();
+ assert.equal((await f.api('notifications/webhook',{url},{auth:false})).status,401);
+ assert.equal((await f.api('notifications/webhook',{url:'https://localhost'})).status,400);
+ assert.equal(f.requests.length,0);
+ assert.equal((await f.api('notifications/webhook',{url})).status,502);
+ assert.equal((await f.api('notifications/config')).data.webhook_configured,false);
+ synced=true;
+ const result=await f.api('notifications/webhook',{url});
+ assert.deepEqual(result,{status:200,data:{webhook_configured:true}});
+ started=false;
+ assert.equal((await f.api('notifications/connect',{})).data.qr_code,PNG);
+ const config=(await f.api('notifications/config')).data;
+ assert.equal(config.webhook_configured,true);
+ assert.ok(!JSON.stringify(config).includes(url));
+ assert.equal(JSON.stringify(captureSystem(f.db)).includes(url),false);
+ await f.configure({api_key:'another-instance-token'});
+ assert.equal((await f.api('notifications/config')).data.webhook_configured,false);
+});

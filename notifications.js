@@ -1,8 +1,14 @@
 import {randomBytes} from 'node:crypto';
 import {Buffer} from 'node:buffer';
 import {branding} from './systems.js';
+import {transaction} from './storage.js';
 
 const DEFAULT_URL='https://api.dallan.pro';
+const PROVIDERS={
+ evolution:{name:'Evolution Go',url:DEFAULT_URL,table:'notification_connection',header:'apikey',status:'/instance/status',send:'/send/text'},
+ wuzapi:{name:'WUZAPI',url:'https://api.dallanspace.com.br',table:'notification_wuzapi',header:'Token',status:'/session/status',send:'/chat/send/text'}
+};
+const WEBHOOK_EVENTS=['CONNECTION'];
 
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 function normalizeNumber(value,country='55'){
@@ -30,7 +36,12 @@ function baseURL(value){
 /** Per-arena settings and durable outbox. Neither is part of the system clone. */
 export function bookingNotifications(db,{fetchImpl=fetch}={}){
  db.exec(`CREATE TABLE IF NOT EXISTS notification_connection(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL,base_url TEXT NOT NULL,api_key TEXT NOT NULL,arena_number TEXT NOT NULL,country_code TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS notification_wuzapi(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL,base_url TEXT NOT NULL,api_key TEXT NOT NULL,arena_number TEXT NOT NULL,country_code TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS notification_webhook(id INTEGER PRIMARY KEY CHECK(id=1),url TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS booking_notifications(id TEXT PRIMARY KEY,booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),recipient TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'arena',status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,error TEXT NOT NULL DEFAULT '');`);
+ if(!db.prepare('PRAGMA table_info(booking_notifications)').all().some(column=>column.name==='provider')){
+  db.exec("ALTER TABLE booking_notifications ADD COLUMN provider TEXT NOT NULL DEFAULT 'evolution'");
+ }
  // Earlier versions accepted the Swagger page as a base URL. Repair only
  // that stored address; preserve the instance token and notification settings.
  const legacy=db.prepare('SELECT base_url FROM notification_connection WHERE id=1').get();
@@ -39,36 +50,57 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   try{normalized=baseURL(legacy.base_url);}catch{}
   if(normalized&&normalized!==legacy.base_url)db.prepare('UPDATE notification_connection SET base_url=? WHERE id=1').run(normalized);
  }
- const stored=()=>db.prepare('SELECT * FROM notification_connection WHERE id=1').get()||{enabled:0,base_url:DEFAULT_URL,api_key:'',arena_number:'',country_code:'55'};
- const summary=()=>{const c=stored();return {enabled:!!c.enabled,base_url:c.base_url,token_configured:!!c.api_key,target:'arena',connection_ready:!!(c.base_url&&c.api_key),arena_number:c.arena_number,country_code:c.country_code,ready:!!(c.enabled&&c.base_url&&c.api_key&&c.arena_number)};};
- function save(body){
+ const providerFor=(id='evolution')=>{
+  if(!Object.hasOwn(PROVIDERS,id))fail('Provedor de WhatsApp inválido.');
+  return PROVIDERS[id];
+ };
+ const stored=(id='evolution')=>{
+  const provider=providerFor(id);
+  return db.prepare(`SELECT * FROM ${provider.table} WHERE id=1`).get()||{enabled:0,base_url:provider.url,api_key:'',arena_number:'',country_code:'55'};
+ };
+ const sendingProvider=()=>stored('wuzapi').enabled?'wuzapi':'evolution';
+ const webhookURL=()=>db.prepare('SELECT url FROM notification_webhook WHERE id=1').get()?.url||'';
+ const summary=(id='evolution')=>{const c=stored(id);return {enabled:!!c.enabled,base_url:c.base_url,token_configured:!!c.api_key,webhook_configured:id==='evolution'&&!!webhookURL(),target:'arena',connection_ready:!!(c.base_url&&c.api_key),arena_number:c.arena_number,country_code:c.country_code,ready:!!(c.enabled&&c.base_url&&c.api_key&&c.arena_number)};};
+ function save(body,id='evolution'){
+  const provider=providerFor(id);
   if(typeof body.enabled!=='boolean'||body.target!==undefined&&body.target!=='arena')fail('As notificações devem ser destinadas ao administrador cadastrado.');
-  const previous=stored();
+  const previous=stored(id);
   const country=body.country_code||previous.country_code||'55';
   if(typeof country!=='string'||!/^[1-9]\d{0,2}$/.test(country))fail('Informe um código de país válido, como 55.');
   let url=body.base_url??previous.base_url;
-  if(typeof url!=='string'||url.length>2000)fail('Informe a URL HTTPS do seu servidor Evolution Go.');
-  url=url.trim();if(url)url=baseURL(url);
+  if(typeof url!=='string'||url.length>2000)fail('Informe a URL HTTPS do servidor.');
+  url=url.trim();
+  if(id==='wuzapi'){
+   if(url.replace(/\/$/,'')!==provider.url)fail('Use o servidor WUZAPI https://api.dallanspace.com.br.');
+   url=provider.url;
+  }else if(url)url=baseURL(url);
   const token=body.api_key===''||body.api_key===undefined?previous.api_key:body.api_key;
   if(typeof token!=='string'||token.length>2000||/[\s\x00-\x1f\x7f]/.test(token))fail('Informe um token de instância válido, sem espaços ou quebras de linha.');
   let number=body.arena_number??previous.arena_number;
   if(typeof number!=='string')fail('Informe o WhatsApp do administrador.');
   number=number.trim();if(number&&(number!==previous.arena_number||country!==previous.country_code))number=normalizeNumber(number,country);
   if(body.enabled&&(!url||!token||!number))fail('Para ativar, informe o servidor, o token da instância e o WhatsApp do administrador.');
-  db.prepare('INSERT INTO notification_connection VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,base_url=excluded.base_url,api_key=excluded.api_key,arena_number=excluded.arena_number,country_code=excluded.country_code').run(body.enabled?1:0,url,token,number,country);
-  return summary();
+  transaction(db,()=>{
+   db.prepare(`INSERT INTO ${provider.table} VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,base_url=excluded.base_url,api_key=excluded.api_key,arena_number=excluded.arena_number,country_code=excluded.country_code`).run(body.enabled?1:0,url,token,number,country);
+   if(body.enabled){
+    const other=providerFor(id==='evolution'?'wuzapi':'evolution');
+    db.exec(`UPDATE ${other.table} SET enabled=0 WHERE id=1`);
+   }
+   if(id==='evolution'&&(url!==previous.base_url||token!==previous.api_key))db.exec('DELETE FROM notification_webhook');
+  });
+  return summary(id);
  }
  function enqueue(bookingId){
-  const c=stored();if(!c.enabled||!c.base_url||!c.api_key||!c.arena_number)return;
+  const id=sendingProvider(),c=stored(id);if(!c.enabled||!c.base_url||!c.api_key||!c.arena_number)return;
   const now=new Date().toISOString();
-  db.prepare("INSERT OR IGNORE INTO booking_notifications(id,booking_id,recipient,status,created_at,updated_at) VALUES(?,?,?,'pending',?,?)").run(randomBytes(16).toString('hex'),bookingId,c.arena_number,now,now);
+  db.prepare("INSERT OR IGNORE INTO booking_notifications(id,booking_id,recipient,status,created_at,updated_at,provider) VALUES(?,?,?,'pending',?,?,?)").run(randomBytes(16).toString('hex'),bookingId,c.arena_number,now,now,id);
  }
  function mark(id,status,error=''){
   db.prepare('UPDATE booking_notifications SET status=?,updated_at=?,error=? WHERE id=?').run(status,new Date().toISOString(),error,id);
  }
  function events(){
   const stale=new Date(Date.now()-30000).toISOString();
-  db.prepare("UPDATE booking_notifications SET status='unknown',updated_at=?,error='O envio foi interrompido. Confira a Evolution Go antes de tentar novamente.' WHERE status='sending' AND updated_at<?").run(new Date().toISOString(),stale);
+  db.prepare("UPDATE booking_notifications SET status='unknown',updated_at=?,error='O envio foi interrompido. Confira o provedor antes de tentar novamente.' WHERE status='sending' AND updated_at<?").run(new Date().toISOString(),stale);
   return db.prepare('SELECT id,booking_id,recipient,role,status,created_at,updated_at,error FROM booking_notifications ORDER BY created_at DESC,id DESC LIMIT 30').all();
  }
  function message(bookingId){
@@ -84,20 +116,23 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   try{
    const event=db.prepare("SELECT * FROM booking_notifications WHERE booking_id=? AND status='pending'").get(bookingId);
    if(!event)return;
-   const c=stored(),text=message(bookingId);
+   const provider=providerFor(event.provider),c=stored(event.provider),text=message(bookingId);
    if(!text||!c.enabled){mark(event.id,'failed','Envio não realizado: a reserva ou as notificações foram desativadas.');return;}
    const claim=db.prepare("UPDATE booking_notifications SET status='sending',updated_at=? WHERE id=? AND status='pending'").run(new Date().toISOString(),event.id);
    if(!claim.changes)return;
    let response;
    try{
-    response=await fetchImpl(c.base_url+'/send/text',{method:'POST',headers:{'Content-Type':'application/json',apikey:c.api_key},body:JSON.stringify({number:event.recipient,text,id:event.id,formatJid:true}),redirect:'manual',signal:AbortSignal.timeout(8000)});
-   }catch{mark(event.id,'unknown','Não foi possível confirmar o envio. Confira a Evolution Go antes de tentar novamente.');return;}
+    const body=event.provider==='wuzapi'
+     ? {Phone:event.recipient,Body:text,Id:event.id}
+     : {number:event.recipient,text,id:event.id,formatJid:true};
+    response=await fetchImpl(c.base_url+provider.send,{method:'POST',headers:{'Content-Type':'application/json',[provider.header]:c.api_key},body:JSON.stringify(body),redirect:'manual',signal:AbortSignal.timeout(8000)});
+   }catch{mark(event.id,'unknown','Não foi possível confirmar o envio. Confira o provedor antes de tentar novamente.');return;}
    if(!response.ok){
     const uncertain=response.status>=500||response.status===408||(response.status>=300&&response.status<400);
-    mark(event.id,uncertain?'unknown':'failed',uncertain?`A Evolution Go retornou HTTP ${response.status} sem confirmar o resultado. Confira o provedor antes de tentar novamente.`:`A Evolution Go retornou HTTP ${response.status}. Verifique a conexão e a configuração.`);return;
+    mark(event.id,uncertain?'unknown':'failed',uncertain?`O provedor retornou HTTP ${response.status} sem confirmar o resultado. Confira o provedor antes de tentar novamente.`:`O provedor retornou HTTP ${response.status}. Verifique a conexão e a configuração.`);return;
    }
    let result;try{result=await response.json();}catch{mark(event.id,'unknown','A API respondeu sem confirmação válida. Confira a Evolution Go.');return;}
-   if(result?.message!=='success'){mark(event.id,'unknown','A API não confirmou a aceitação da mensagem. Confira a Evolution Go.');return;}
+   if(!(event.provider==='wuzapi'?result?.success===true:result?.message==='success')){mark(event.id,'unknown','A API não confirmou a aceitação da mensagem. Confira a Evolution Go.');return;}
    mark(event.id,'accepted');
   }catch{
    // Do not fail a committed booking or expose provider errors/credentials.
@@ -108,46 +143,93 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   await Promise.all(pending.map(event=>dispatch(event.booking_id)));
   return events();
  }
- async function instanceData(path,timeout=8000,body){
-  const c=stored();if(!c.base_url||!c.api_key)fail('Salve o endereço do servidor e o token da instância antes de conectar o WhatsApp.',409);
+ async function instanceData(path,timeout=8000,body,c=stored(),id='evolution'){
+  const provider=providerFor(id);
+  if(!c.base_url||!c.api_key)fail('Salve o endereço do servidor e o token da instância antes de conectar o WhatsApp.',409);
   let response;
   try{
    const request=body===undefined
-    ? {method:'GET',headers:{apikey:c.api_key}}
-    : {method:'POST',headers:{apikey:c.api_key,'Content-Type':'application/json'},body:JSON.stringify(body)};
+    ? {method:'GET',headers:{[provider.header]:c.api_key}}
+    : {method:'POST',headers:{[provider.header]:c.api_key,'Content-Type':'application/json'},body:JSON.stringify(body)};
    response=await fetchImpl(c.base_url+path,{...request,redirect:'manual',signal:AbortSignal.timeout(timeout)});
   }catch(error){
    const code=error?.cause?.code||error?.code||error?.cause?.errors?.[0]?.code;
-   if(['TimeoutError','AbortError'].includes(error?.name)||['ETIMEDOUT','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT'].includes(code))fail('A Evolution Go não respondeu dentro do tempo limite. Verifique a disponibilidade do servidor e tente novamente.',504);
-   if(['ENOTFOUND','EAI_AGAIN'].includes(code))fail('Não foi possível resolver o domínio da Evolution Go (DNS). Confira a URL e o DNS do servidor.',502);
-   if(['CERT_HAS_EXPIRED','UNABLE_TO_VERIFY_LEAF_SIGNATURE','DEPTH_ZERO_SELF_SIGNED_CERT','ERR_TLS_CERT_ALTNAME_INVALID','UNABLE_TO_GET_ISSUER_CERT_LOCALLY'].includes(code))fail('A conexão HTTPS da Evolution Go falhou na validação do certificado TLS. Corrija o certificado do servidor.',502);
-   if(code==='ECONNREFUSED')fail('O servidor Evolution Go recusou a conexão. Verifique se o serviço está em execução e aceita conexões HTTPS.',502);
-   fail('Não foi possível alcançar a Evolution Go. Confira a URL HTTPS e a saída de rede do servidor que hospeda esta arena.',502);
+   if(['TimeoutError','AbortError'].includes(error?.name)||['ETIMEDOUT','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT'].includes(code))fail(`A ${provider.name} não respondeu dentro do tempo limite. Verifique a disponibilidade do servidor e tente novamente.`,504);
+   if(['ENOTFOUND','EAI_AGAIN'].includes(code))fail(`Não foi possível resolver o domínio da ${provider.name} (DNS). Confira a URL e o DNS do servidor.`,502);
+   if(['CERT_HAS_EXPIRED','UNABLE_TO_VERIFY_LEAF_SIGNATURE','DEPTH_ZERO_SELF_SIGNED_CERT','ERR_TLS_CERT_ALTNAME_INVALID','UNABLE_TO_GET_ISSUER_CERT_LOCALLY'].includes(code))fail(`A conexão HTTPS da ${provider.name} falhou na validação do certificado TLS. Corrija o certificado do servidor.`,502);
+   if(code==='ECONNREFUSED')fail(`O servidor ${provider.name} recusou a conexão. Verifique se o serviço está em execução e aceita conexões HTTPS.`,502);
+   fail(`Não foi possível alcançar a ${provider.name}. Confira a URL HTTPS e a saída de rede do servidor que hospeda esta arena.`,502);
   }
   if(!response.ok){
+   if(id==='wuzapi'&&path==='/session/connect'&&response.status===409)return {};
+   if(id==='wuzapi'&&path==='/session/qr'&&response.status===500){
+    const result=await response.json().catch(()=>null);
+    if(/^(?:no session|not connected)$/i.test(result?.error))return null;
+    if(/^already logged in$/i.test(result?.error))return {alreadyLoggedIn:true};
+   }
    if(path==='/instance/qr'&&[400,500].includes(response.status)){
     const result=await response.json().catch(()=>null);
     if(typeof result?.error==='string'&&/^(?:no (?:qr code|client) available|no client found|(?:instance|client) (?:is )?not connected|client not found)\b/i.test(result.error))return null;
     if(result?.error==='session already logged in')return {alreadyLoggedIn:true};
    }
-   if(response.status===401)fail('A Evolution Go recusou o token da instância (HTTP 401). Cadastre o token da instância correta, não a chave administrativa global.',502);
-   if(response.status===403)fail('A Evolution Go negou o acesso (HTTP 403). Verifique as permissões do token e as regras de acesso do servidor da API.',502);
-   if(response.status===404)fail(`A rota ${path} não foi encontrada na Evolution Go (HTTP 404). Confira a URL base e a versão da API.`,502);
-   if(response.status===429)fail('A Evolution Go atingiu o limite de consultas (HTTP 429). Aguarde antes de consultar novamente.',502);
-   fail(`A Evolution Go retornou HTTP ${response.status} na rota ${path}. Verifique o serviço da API e a instância.`,502);
+   if(response.status===401)fail(`A ${provider.name} recusou o token da instância (HTTP 401). Cadastre o token da instância correta, não a chave administrativa global.`,502);
+   if(response.status===403)fail(`A ${provider.name} negou o acesso (HTTP 403). Verifique as permissões do token e as regras de acesso do servidor da API.`,502);
+   if(response.status===404)fail(`A rota ${path} não foi encontrada na ${provider.name} (HTTP 404). Confira a URL base e a versão da API.`,502);
+   if(response.status===429)fail(`A ${provider.name} atingiu o limite de consultas (HTTP 429). Aguarde antes de consultar novamente.`,502);
+   fail(`A ${provider.name} retornou HTTP ${response.status} na rota ${path}. Verifique o serviço da API e a instância.`,502);
   }
   let result;
   try{result=await response.json();}catch{fail(`A rota ${path} respondeu sem JSON válido. Confira se a URL aponta para a API em vez de uma página ou proxy de autenticação.`,502);}
-  if(result?.message!=='success'||!result.data||typeof result.data!=='object')fail('A Evolution Go respondeu em um formato incompatível com a integração. Confira a versão da API.',502);
+  if(!(id==='wuzapi'?result?.success===true:result?.message==='success')||!result.data||typeof result.data!=='object')fail(`A ${provider.name} respondeu em um formato incompatível com a integração. Confira a versão da API.`,502);
   return result.data;
  }
- async function check(){
-  const data=await instanceData('/instance/status');
-  if(typeof data.Connected!=='boolean'||typeof data.LoggedIn!=='boolean')fail('A Evolution Go não confirmou a sessão. Verifique o token da instância e a conexão.',502);
-  return {connected:data.Connected,logged_in:data.LoggedIn};
+ let instanceUpdateInProgress=false;
+ async function updateInstance(action){
+  if(instanceUpdateInProgress)fail('Já há uma atualização da instância em andamento. Aguarde e tente novamente.',409);
+  instanceUpdateInProgress=true;
+  try{return await action();}finally{instanceUpdateInProgress=false;}
  }
- async function connect(){
-  const session=await check();
+ async function syncWebhook(body){
+  if(typeof body?.url!=='string'||body.url.length>2000)fail('Informe a URL HTTPS pública do webhook.');
+  let url;
+  try{url=new URL(body.url.trim());}catch{fail('Informe a URL HTTPS pública do webhook.');}
+  if(url.protocol!=='https:'||url.username||url.password||url.hash||!url.hostname.includes('.')||url.hostname.endsWith('.localhost')||url.hostname.endsWith('.local')||/^\d+(\.\d+){3}$/.test(url.hostname))fail('Use uma URL HTTPS pública para o webhook, sem credenciais na URL ou fragmento.');
+  const config=stored();
+  return updateInstance(async()=>{
+   const data=await instanceData('/instance/connect',8000,{webhookUrl:url.href,subscribe:WEBHOOK_EVENTS},config);
+   if(data.webhookUrl!==url.href||data.eventString!==WEBHOOK_EVENTS.join(','))fail('A Evolution Go não confirmou a URL e os eventos do webhook.',502);
+   const current=stored();
+   if(current.base_url!==config.base_url||current.api_key!==config.api_key)fail('A instância foi alterada durante a sincronização. Confira a configuração e tente novamente.',409);
+   db.prepare('INSERT INTO notification_webhook VALUES(1,?) ON CONFLICT(id) DO UPDATE SET url=excluded.url').run(url.href);
+   return {webhook_configured:true};
+  });
+ }
+ async function check(id='evolution',config=stored(id)){
+  const provider=providerFor(id);
+  const data=await instanceData(provider.status,8000,undefined,config,id);
+  const connected=id==='wuzapi'?data.connected:data.Connected;
+  const logged_in=id==='wuzapi'?data.loggedIn:data.LoggedIn;
+  if(typeof connected!=='boolean'||typeof logged_in!=='boolean')fail(`A ${provider.name} não confirmou a sessão. Verifique o token e a conexão.`,502);
+  return {connected,logged_in};
+ }
+ async function connectWuzapi(){
+  const id='wuzapi',config=stored(id);
+  const session=await check(id,config);
+  if(session.logged_in)return session;
+  if(!session.connected)await updateInstance(()=>instanceData('/session/connect',8000,{Immediate:true},config,id));
+  for(let attempt=0;attempt<3;attempt++){
+   const data=await instanceData('/session/qr',8000,undefined,config,id);
+   if(data?.alreadyLoggedIn)return check(id,config);
+   if(data?.passkeyPending===true)return {...session,state:'additional_verification'};
+   const code=data?.QRCode??data?.qrcode;
+   if(code)return qrResult(session,code,'WUZAPI');
+   if(attempt<2)await new Promise(resolve=>setTimeout(resolve,750));
+  }
+  return {...session,state:'qr_pending'};
+ }
+ async function connect(id='evolution'){
+  if(id==='wuzapi')return connectWuzapi();
+  const session=await check(id);
   // Prefer the QR endpoint, which starts the client on current Evolution Go
   // versions and preserves the instance's existing delivery settings.
   if(session.logged_in)return session;
@@ -156,20 +238,26 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   if(!data&&!session.connected){
    const latest=await check();
    if(latest.logged_in)return latest;
-   if(!latest.connected)await instanceData('/instance/connect',8000,{});
+   if(!latest.connected)await updateInstance(()=>{
+    const url=webhookURL();
+    return instanceData('/instance/connect',8000,url?{webhookUrl:url,subscribe:WEBHOOK_EVENTS}:{});
+   });
    data=await instanceData('/instance/qr',12000);
    if(data?.alreadyLoggedIn)return check();
   }
   if(!data)return {...session,state:'qr_pending'};
   if(!data.qrcode&&typeof data.passkeyStage==='string'&&data.passkeyStage)return {...session,state:'additional_verification'};
-  if(typeof data.qrcode!=='string'||data.qrcode.length>710000)fail('A Evolution Go não retornou um QR Code válido. Tente atualizar o código.',502);
-  const match=/^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(data.qrcode);
-  if(!match)fail('A Evolution Go não retornou uma imagem PNG válida para o QR Code.',502);
+  return qrResult(session,data.qrcode,'Evolution Go');
+ }
+ function qrResult(session,code,provider){
+  if(typeof code!=='string'||code.length>710000)fail(`A ${provider} não retornou um QR Code válido. Tente atualizar o código.`,502);
+  const match=/^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(code);
+  if(!match)fail(`A ${provider} não retornou uma imagem PNG válida para o QR Code.`,502);
   const bytes=Buffer.from(match[1],'base64');
   if(bytes.length>512*1024||bytes.toString('base64')!==match[1]||!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))fail('A Evolution Go não retornou um QR Code válido. Tente atualizar o código.',502);
   // QR codes rotate at the provider. This is a conservative display deadline,
   // not a guarantee of validity; the user may request a fresh code at any time.
-  return {...session,qr_code:data.qrcode,expires_at:new Date(Date.now()+20000).toISOString()};
+  return {...session,qr_code:code,expires_at:new Date(Date.now()+20000).toISOString()};
  }
- return {summary,save,enqueue,dispatch,events,recoverPending,check,connect};
+ return {summary,save,enqueue,dispatch,events,recoverPending,check,connect,syncWebhook};
 }

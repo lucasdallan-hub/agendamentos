@@ -1,6 +1,12 @@
 const $=s=>document.querySelector(s);
 let systemBranding={name:'Arena Vôlei',logo:'',is_mother:false},childSystems=[];
 let qrSession=null;
+const whatsappProviders={
+ evolution:{name:'Evolution Go',url:'https://api.dallan.pro',docs:'https://api.dallan.pro/swagger/index.html'},
+ wuzapi:{name:'WUZAPI',url:'https://api.dallanspace.com.br',docs:'https://github.com/asternic/wuzapi'}
+};
+let whatsappProvider='evolution';
+const notificationRoute=(route,provider=whatsappProvider)=>`notifications/${route}?provider=${provider}`;
 let notificationConfig={enabled:false,base_url:'https://api.dallan.pro',connection_ready:false,token_configured:false,target:'arena',arena_number:'',country_code:'55',ready:false},notificationEvents=[];
 let courts=[], bookings=[], paymentConfig={ready:false,mode:'test'}, pixSettings={ready:false,ocr_ready:false}, view='overview', setup=false, submitModal;
 const money=n=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(n/100);
@@ -28,7 +34,7 @@ async function init(){
 $('#startup-retry').onclick=()=>init();
 $('#auth-form').onsubmit=async e=>{e.preventDefault();$('#auth-error').textContent='';$('#auth-submit').disabled=true;try{await api(setup?'setup':'login',{username:new FormData(e.target).get('username'),password:new FormData(e.target).get('password')});e.target.reset();await init();}catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=false;}};
 $('#logout').onclick=async()=>{if(qrSession){stopQrSession();$('#modal').close();}try{await api('logout',{});await init();}catch(e){toast(e.message);}};
-async function refresh(){[courts,bookings,paymentConfig,pixSettings,notificationConfig,notificationEvents]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings'),api('notifications/config'),api('notifications/events')]);await loadSystems();render();}
+async function refresh(){[courts,bookings,paymentConfig,pixSettings,notificationConfig,notificationEvents]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings'),api(notificationRoute('config')),api('notifications/events')]);await loadSystems();render();}
 const stat=(title,value,note,icon)=>`<div class="stat"><div class="stat-top">${title}<span class="stat-icon">${icon}</span></div><strong>${value}</strong><small>${note}</small></div>`;
 function receiptLabel(b){
  if(b.receipt_status==='rejected')return 'Comprovante recusado';
@@ -57,6 +63,7 @@ function bookingActions(b){
 }
 function render(){
  renderNotifications();
+ if(view==='history')renderHistory();
  const active=bookings.filter(b=>b.status==='confirmed'), daily=active.filter(b=>b.date===today()), paid=active.filter(b=>b.paid), pending=active.filter(b=>!b.paid&&!['refunded','charged_back','review'].includes(b.online_status));
  document.querySelectorAll('[data-payment-banner]').forEach(el=>{el.classList.toggle('payment-ready',paymentConfig.ready);el.innerHTML=`<div><strong>Mercado Pago · ${paymentConfig.ready?(paymentConfig.mode==='test'?'Modo de teste':'Cobrança online ativa'):'Aguardando ativação'}</strong><p>${paymentConfig.ready?(paymentConfig.mode==='test'?'Links de teste: use contas de teste do Mercado Pago. Não representam recebimentos reais.':'Envie o link ao cliente. A confirmação é consultada diretamente no Mercado Pago.'):'Configure a conta Mercado Pago, a assinatura das notificações e o endereço público para gerar cobranças.'}</p></div><span class="badge ${paymentConfig.ready?'paid':''}">${paymentConfig.ready?'Checkout Pro':'Configuração pendente'}</span>`;});
  $('#financial-connection-description').textContent=paymentConfig.ready?`Conta ${paymentConfig.account_id||'configurada'} · ${paymentConfig.mode==='production'?'Produção':'Teste'} · conexão exclusiva desta arena.`:'Configure as credenciais da conta que receberá os pagamentos desta arena.';
@@ -71,8 +78,46 @@ function render(){
  $('#court-list').innerHTML=courts.length?courts.map(c=>`<article class="court-card ${c.active?'':'inactive'}"><div class="court-visual"><div class="court-lines"><div></div></div></div><div class="court-info"><h3>${esc(c.name)}</h3><p>${esc(c.type)}</p><div class="court-price">${money(c.price)} <small>/ hora</small></div><span class="badge ${c.active?'paid':'cancelled'}">${c.active?'● Ativa':'Inativa'}</span><button class="outline" data-toggle="${c.id}">${c.active?'Desativar quadra':'Ativar quadra'}</button></div></article>`).join(''):'<div class="empty"><h3>A sua arena começa aqui</h3><p>Adicione a primeira quadra para criar agendamentos.</p></div>';
  $('#finance-rows').innerHTML=bookings.filter(b=>b.paid||b.online_status||b.pix_link||b.receipt_status).sort((a,b)=>(b.paid_at||b.date).localeCompare(a.paid_at||a.date)).map(b=>`<tr><td>${esc(b.customer)}</td><td>${esc(b.court_name)}</td><td>${b.paid_at?new Date(b.paid_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'—'}</td><td>${esc(b.method||(b.pix_link?'Pix direto':'Mercado Pago'))}</td><td>${money(b.total)}</td><td><span class="badge ${b.paid?'paid':''}">${b.paid?'Pago':bookingPaymentLabel(b)}</span></td></tr>`).join('');$('#finance-empty').hidden=bookings.some(b=>b.paid||b.online_status||b.pix_link||b.receipt_status);
 }
-const titles={overview:['Tudo pronto para o próximo jogo.','Acompanhe sua arena e mantenha cada reserva em dia.','Visão geral'],bookings:['Cada jogo tem seu horário.','Organize as reservas e acompanhe os pagamentos.','Agendamentos'],courts:['A casa dos próximos jogos.','Gerencie os espaços e valores da sua arena.','Minhas quadras'],systems:['Seu sistema, sua identidade.','Personalize sua arena e gerencie as cópias do sistema mãe.','Meu sistema'],finance:['Suas contas em dia.','Acompanhe os valores recebidos e os pagamentos pendentes.','Financeiro']};
-function setView(next){view=next;$('#new-booking').hidden=view==='systems';document.querySelectorAll('nav button').forEach(b=>{const active=b.dataset.view===view;b.classList.toggle('selected',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});$('#page-title').textContent=titles[view][0];$('#page-subtitle').textContent=titles[view][1];$('#breadcrumb').textContent=titles[view][2];$('#overview-content').hidden=view!=='overview';$('#bookings-content').hidden=!['overview','bookings'].includes(view);$('#courts-content').hidden=view!=='courts';$('#finance-content').hidden=view!=='finance';$('#systems-content').hidden=view!=='systems';$('#filter-date').value=view==='overview'?today():'';$('#list-title').firstChild.textContent=view==='overview'?'Agenda de hoje ':'Agendamentos ';$('#list-description').textContent=view==='overview'?'Confira os horários e prepare a quadra.':'Use os filtros para encontrar uma reserva.';render();}
+const historyPageSize=50;
+let historyPage=1;
+const historyDate=new Intl.DateTimeFormat('pt-BR',{timeZone:'UTC'});
+const historySearchText=value=>String(value??'').normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase();
+
+function renderHistory(){
+ const from=$('#history-from').value,to=$('#history-to').value;
+ const status=$('#history-status').value;
+ const search=historySearchText($('#history-search').value.trim());
+ const phone= /^[+\d(). -]+$/.test(search)?search.replace(/\D/g,''):'';
+ const results=bookings.filter(booking=>{
+  if((from&&booking.date<from)||(to&&booking.date>to)||(status!=='all'&&booking.status!==status))return false;
+  if(!search)return true;
+  return [booking.customer,booking.court_name,booking.phone].some(value=>historySearchText(value).includes(search))
+   || (phone&&String(booking.phone).replace(/\D/g,'').includes(phone))
+   || String(booking.id)===search.replace(/^#/,'');
+ }).sort((a,b)=>b.date.localeCompare(a.date)||b.start.localeCompare(a.start)||b.id-a.id);
+ const pages=Math.max(1,Math.ceil(results.length/historyPageSize));
+ historyPage=Math.min(historyPage,pages);
+ const offset=(historyPage-1)*historyPageSize;
+ $('#history-count').textContent=from&&to&&from>to?'A data inicial deve ser anterior ou igual à data final.':`${results.length} ${results.length===1?'agendamento':'agendamentos'}`;
+ $('#history-rows').innerHTML=results.slice(offset,offset+historyPageSize).map(b=>{
+  const cancelled=b.status==='cancelled';
+  const date=historyDate.format(new Date(b.date+'T00:00:00Z'));
+  return `<tr><td>#${esc(b.id)}</td><td>${esc(b.customer)}<small>${esc(b.phone)}</small></td><td>${esc(b.court_name)}</td><td>${date}<small>${esc(b.start)} – ${esc(b.end)}</small></td><td><span class="badge ${cancelled?'cancelled':'paid'}">${cancelled?'Cancelado':'Confirmado'}</span></td><td>${money(b.total)}</td><td>${cancelled?'—':bookingPaymentLabel(b)}</td></tr>`;
+ }).join('');
+ $('#history-empty').hidden=results.length>0;
+ $('#history-pagination').hidden=pages===1;
+ $('#history-page').textContent=`Página ${historyPage} de ${pages}`;
+ $('#history-previous').disabled=historyPage===1;
+ $('#history-next').disabled=historyPage===pages;
+}
+for(const id of ['history-search','history-from','history-to','history-status']){
+ $(`#${id}`).addEventListener('input',()=>{historyPage=1;renderHistory();});
+}
+$('#history-previous').onclick=()=>{historyPage--;renderHistory();};
+$('#history-next').onclick=()=>{historyPage++;renderHistory();};
+
+const titles={overview:['Tudo pronto para o próximo jogo.','Acompanhe sua arena e mantenha cada reserva em dia.','Visão geral'],bookings:['Cada jogo tem seu horário.','Organize as reservas e acompanhe os pagamentos.','Agendamentos'],history:['Histórico de agendamentos','Consulte as reservas registradas na arena.','Histórico'],courts:['A casa dos próximos jogos.','Gerencie os espaços e valores da sua arena.','Minhas quadras'],systems:['Seu sistema, sua identidade.','Personalize sua arena e gerencie as cópias do sistema mãe.','Meu sistema'],finance:['Suas contas em dia.','Acompanhe os valores recebidos e os pagamentos pendentes.','Financeiro']};
+function setView(next){view=next;$('#new-booking').hidden=['systems','history'].includes(view);document.querySelectorAll('nav button').forEach(b=>{const active=b.dataset.view===view;b.classList.toggle('selected',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});$('#page-title').textContent=titles[view][0];$('#page-subtitle').textContent=titles[view][1];$('#breadcrumb').textContent=titles[view][2];$('#overview-content').hidden=view!=='overview';$('#bookings-content').hidden=!['overview','bookings'].includes(view);$('#history-content').hidden=view!=='history';$('#courts-content').hidden=view!=='courts';$('#finance-content').hidden=view!=='finance';$('#systems-content').hidden=view!=='systems';$('#filter-date').value=view==='overview'?today():'';$('#list-title').firstChild.textContent=view==='overview'?'Agenda de hoje ':'Agendamentos ';$('#list-description').textContent=view==='overview'?'Confira os horários e prepare a quadra.':'Use os filtros para encontrar uma reserva.';render();}
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>setView(b.dataset.view));
 $('#today-label').textContent=new Date().toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo',weekday:'long',day:'numeric',month:'long'}).toUpperCase();$('#filter-date').value=today();$('#filter-date').onchange=render;$('#filter-status').onchange=render;
 function openModal(title,fields,action,label='Salvar'){stopQrSession();$('#modal-fields').onclick=null;$('#modal-fields').onchange=null;$('#modal-title').textContent=title;$('#modal-fields').innerHTML=fields;$('#modal-error').textContent='';$('#save-modal').textContent=label;submitModal=action;$('#modal').showModal();}
@@ -151,26 +196,57 @@ async function loadSystems(){
  $('#children-list').innerHTML=childSystems.length?childSystems.map(system=>`<article class="court-card"><div class="court-info"><h3>${esc(system.name)}</h3><p>${esc(system.hostname)}</p><span class="badge">${system.status==='ready'?'Cópia criada':'Cópia pendente'}</span><p>Dados copiados em ${new Date(system.created_at).toLocaleString('pt-BR')}</p>${system.status==='ready'?`<a class="outline" href="https://${esc(system.hostname)}" target="_blank" rel="noopener noreferrer">Abrir sistema ↗</a>`:''}<p>O acesso depende do DNS e HTTPS configurados na Cloudflare.</p></div></article>`).join(''):'<p>Nenhum sistema filho criado.</p>';
 }
 function renderNotifications(){
- $('#notifications-description').textContent=notificationConfig.enabled?(notificationConfig.ready?`Envio habilitado para o administrador no número ${notificationConfig.arena_number||'cadastrado'}. Verifique a conexão para confirmar a sessão do WhatsApp.`:'Envio habilitado, mas a configuração ainda está incompleta.'):'Envio desativado. Configure a Evolution Go desta arena para avisar sobre novos agendamentos.';
+ $('#notifications-description').textContent=notificationConfig.enabled?(notificationConfig.ready?`Envio habilitado para o administrador no número ${notificationConfig.arena_number||'cadastrado'}. Verifique a conexão para confirmar a sessão do WhatsApp.`:'Envio habilitado, mas a configuração ainda está incompleta.'):'Envio desativado para este provedor.';
  const canConnect=notificationConfig.connection_ready??(notificationConfig.token_configured&&!!notificationConfig.base_url);
  $('#check-notifications').disabled=!canConnect;$('#connect-notifications').disabled=!canConnect;
+ $('#configure-evolution-webhook').hidden=whatsappProvider!=='evolution';
+ $('#configure-evolution-webhook').disabled=!canConnect;
+ $('#configure-evolution-webhook').textContent=notificationConfig.webhook_configured?'Atualizar webhook':'Sincronizar webhook';
  const labels={pending:'Aguardando envio',sending:'Envio em andamento',accepted:'Aceita pela API',failed:'Falha no envio',unknown:'Resultado incerto'};
- $('#notifications-rows').innerHTML=notificationEvents.map(event=>`<tr><td>#${esc(event.booking_id)}</td><td>Administrador<small>${esc(event.recipient)}</small></td><td><span class="badge ${event.status==='accepted'?'paid':event.status==='failed'?'cancelled':''}">${labels[event.status]||'Status desconhecido'}</span></td><td>${new Date(event.updated_at||event.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</td><td>${esc(event.error|| (event.status==='unknown'?'Confira a Evolution Go antes de enviar novamente.':event.status==='accepted'?'A entrega no WhatsApp ainda não foi confirmada.':''))}</td></tr>`).join('');
+ $('#notifications-rows').innerHTML=notificationEvents.map(event=>`<tr><td>#${esc(event.booking_id)}</td><td>Administrador<small>${esc(event.recipient)}</small></td><td><span class="badge ${event.status==='accepted'?'paid':event.status==='failed'?'cancelled':''}">${labels[event.status]||'Status desconhecido'}</span></td><td>${new Date(event.updated_at||event.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</td><td>${esc(event.error|| (event.status==='unknown'?'Confira o provedor antes de enviar novamente.':event.status==='accepted'?'A entrega no WhatsApp ainda não foi confirmada.':''))}</td></tr>`).join('');
  $('#notifications-empty').hidden=notificationEvents.length>0;
 }
+$('#whatsapp-provider').onchange=async event=>{
+ const select=event.currentTarget;
+ select.disabled=true;
+ $('#configure-notifications').disabled=true;
+ $('#check-notifications').disabled=true;
+ $('#connect-notifications').disabled=true;
+ $('#configure-evolution-webhook').disabled=true;
+ try{
+  const selected=select.value;
+  notificationConfig=await api(notificationRoute('config',selected));
+  whatsappProvider=selected;
+  $('#notifications-connection').textContent='';
+ }catch(error){
+  select.value=whatsappProvider;
+  $('#notifications-connection').textContent=error.message;
+ }finally{
+  select.disabled=false;
+  $('#configure-notifications').disabled=false;
+  renderNotifications();
+ }
+};
 $('#configure-notifications').onclick=()=>{
- openModal('WhatsApp do administrador',`<p>Conexão exclusiva desta arena. Use o servidor https://api.dallan.pro e o token da sua instância. Você poderá conectar o WhatsApp pelo QR Code após salvar. <a href="https://api.dallan.pro/swagger/index.html" target="_blank" rel="noopener noreferrer">Documentação da API ↗</a></p><label class="check-label"><input id="notifications-enabled" name="enabled" type="checkbox" ${notificationConfig.enabled?'checked':''}> Avisar o administrador sobre novos agendamentos</label><label>URL HTTPS da Evolution Go<input id="notifications-url" name="base_url" type="url" value="${esc(notificationConfig.base_url||'https://api.dallan.pro')}" maxlength="2000" placeholder="https://api.dallan.pro"></label><label>Token da instância<input id="notifications-api-key" name="api_key" type="password" autocomplete="new-password" maxlength="2000" placeholder="${notificationConfig.token_configured?'Já configurado; deixe vazio para manter':'Token da instância, não a chave administrativa global'}"></label><label>WhatsApp do administrador<input id="notifications-arena-number" name="arena_number" type="tel" maxlength="30" value="${esc(notificationConfig.arena_number||'')}" placeholder="55 11 99999-9999"></label><label>Código do país para números locais<input id="notifications-country-code" name="country_code" inputmode="numeric" maxlength="3" value="${esc(notificationConfig.country_code||'55')}"></label><p>Salvar a configuração não envia uma mensagem. Apenas novos agendamentos geram avisos; uma falha no WhatsApp não cancela a reserva. A chave não será exibida novamente nem copiada para sistemas filhos.</p>`,async data=>{
-  notificationConfig=await api('notifications/config',{...data,enabled:data.enabled==='on',target:'arena'},'PUT');
+ const selected=whatsappProvider,provider=whatsappProviders[selected];
+ openModal('WhatsApp do administrador',`<p>Conexão exclusiva desta arena. Use o servidor ${provider.url} e o token da sua instância. Você poderá conectar o WhatsApp pelo QR Code após salvar. <a href="${provider.docs}" target="_blank" rel="noopener noreferrer">Documentação da API ↗</a></p><label class="check-label"><input id="notifications-enabled" name="enabled" type="checkbox" ${notificationConfig.enabled?'checked':''}> Usar ${provider.name} para avisar o administrador sobre novos agendamentos</label><label>URL HTTPS de ${provider.name}<input id="notifications-url" name="base_url" type="url" value="${esc(notificationConfig.base_url||provider.url)}" maxlength="2000" placeholder="${provider.url}" ${selected==='wuzapi'?'readonly':''}></label><label>Token da instância<input id="notifications-api-key" name="api_key" type="password" autocomplete="new-password" maxlength="2000" placeholder="${notificationConfig.token_configured?'Já configurado; deixe vazio para manter':'Token da instância, não a chave administrativa global'}"></label><label>WhatsApp do administrador<input id="notifications-arena-number" name="arena_number" type="tel" maxlength="30" value="${esc(notificationConfig.arena_number||'')}" placeholder="55 11 99999-9999"></label><label>Código do país para números locais<input id="notifications-country-code" name="country_code" inputmode="numeric" maxlength="3" value="${esc(notificationConfig.country_code||'55')}"></label><p>Salvar a configuração não envia uma mensagem. Apenas novos agendamentos geram avisos; uma falha no WhatsApp não cancela a reserva. Ativar este provedor desativa o envio pelo outro. O token fica salvo somente nesta arena.</p>`,async data=>{
+  notificationConfig=await api(notificationRoute('config',selected),{...data,enabled:data.enabled==='on',target:'arena'},'PUT');
   $('#notifications-connection').textContent='Configuração salva. Use Verificar conexão para consultar a sessão do WhatsApp.';
  });
  const requirements=()=>{const enabled=$('#notifications-enabled').checked;$('#notifications-url').required=enabled;$('#notifications-api-key').required=enabled&&!notificationConfig.token_configured;$('#notifications-arena-number').required=enabled;$('#notifications-country-code').required=enabled;};
  $('#modal-fields').onchange=requirements;requirements();
 };
+$('#configure-evolution-webhook').onclick=()=>{
+ openModal('Sincronizar webhook',`<label>URL HTTPS do webhook<input name="url" type="url" required maxlength="2000" placeholder="https://seu-servico.com/webhook"></label><p>A Evolution Go enviará eventos de conexão para esse endereço. Use um endpoint sob seu controle.</p><p>A sincronização substitui o webhook e as assinaturas de eventos da instância. A Evolution Go também pode redefinir as opções de RabbitMQ, NATS e WebSocket.</p>`,async data=>{
+  await api('notifications/webhook',data);
+  $('#notifications-connection').textContent='A Evolution Go confirmou a configuração do webhook de conexão.';
+ },'Sincronizar com Evolution Go');
+};
 $('#check-notifications').onclick=async()=>{
- const button=$('#check-notifications');button.disabled=true;$('#notifications-connection').textContent='Consultando a sessão do WhatsApp…';
- try{const result=await api('notifications/check',{});$('#notifications-connection').textContent=result.connected&&result.logged_in?'WhatsApp conectado à Evolution Go. A entrega de cada aviso depende do processamento da mensagem.':(result.logged_in?'A instância já está autorizada, mas está desconectada. Verifique a sessão no servidor Evolution Go e consulte novamente.':'A instância ainda não está pareada. Clique em Conectar WhatsApp e escaneie o QR Code pelo celular.');}
- catch(error){$('#notifications-connection').textContent=error.message;}
- finally{button.disabled=!(notificationConfig.connection_ready??(notificationConfig.token_configured&&!!notificationConfig.base_url));}
+ const button=$('#check-notifications'),selected=whatsappProvider;button.disabled=true;$('#notifications-connection').textContent='Consultando a sessão do WhatsApp…';
+ try{const result=await api(notificationRoute('check',selected),{});if(selected!==whatsappProvider)return;$('#notifications-connection').textContent=result.connected&&result.logged_in?`WhatsApp conectado a ${whatsappProviders[selected].name}.`:(result.logged_in?'A instância já está autorizada, mas está desconectada. Verifique a sessão no servidor do provedor e consulte novamente.':'A instância ainda não está pareada. Clique em Conectar WhatsApp e escaneie o QR Code pelo celular.');}
+ catch(error){if(selected===whatsappProvider)$('#notifications-connection').textContent=error.message;}
+ finally{if(selected===whatsappProvider)button.disabled=!(notificationConfig.connection_ready??(notificationConfig.token_configured&&!!notificationConfig.base_url));}
 };
 function stopQrSession(){
  const session=qrSession;if(!session)return;
@@ -188,9 +264,9 @@ async function qrApi(session,path){
  const controller=new AbortController();session.requests.add(controller);
  const timeout=setTimeout(()=>controller.abort(),52000);
  try{
-  const response=await fetch('/api/notifications/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal});
+  const response=await fetch('/api/'+notificationRoute(path,session.provider),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal});
   const result=await response.json();
-  if(!response.ok)throw Object.assign(new Error(result.error||'Não foi possível consultar a Evolution Go.'),{status:response.status});
+  if(!response.ok)throw Object.assign(new Error(result.error||'Não foi possível consultar o provedor.'),{status:response.status});
   return result;
  }catch(error){
   if(error.name==='AbortError')throw Error('A consulta demorou demais. Tente novamente.');
@@ -210,7 +286,7 @@ function qrConnected(session){
  qrHideImage(session);session.done=true;clearTimeout(session.pollTimer);
  $('#evolution-qr-status').textContent='WhatsApp conectado. Esta arena já pode usar a sessão para enviar os avisos configurados.';
  $('#evolution-qr-error').textContent='';$('#evolution-qr-refresh').hidden=true;
- $('#notifications-connection').textContent='WhatsApp conectado à Evolution Go.';
+ $('#notifications-connection').textContent=`WhatsApp conectado a ${whatsappProviders[session.provider].name}.`;
 }
 function qrSchedulePoll(session){
  clearTimeout(session.pollTimer);
@@ -223,7 +299,7 @@ async function qrPoll(session){
  try{
   const status=await qrApi(session,'check');if(!qrActive(session))return;
   if(status.connected&&status.logged_in){qrConnected(session);return;}
-  if(status.logged_in){qrHideImage(session);$('#evolution-qr-status').textContent='A instância está autorizada, mas desconectada. Verifique a sessão no servidor Evolution Go; o painel continuará consultando o status.';$('#evolution-qr-refresh').hidden=true;}
+  if(status.logged_in){qrHideImage(session);$('#evolution-qr-status').textContent='A instância está autorizada, mas desconectada. Verifique a sessão no servidor do provedor; o painel continuará consultando o status.';$('#evolution-qr-refresh').hidden=true;}
   else if($('#evolution-qr-refresh').hidden){$('#evolution-qr-refresh').hidden=false;$('#evolution-qr-status').textContent='A sessão precisa ser conectada. Atualize para solicitar um QR Code.';}
  }catch(error){
   if(!qrActive(session))return;
@@ -241,10 +317,10 @@ async function qrLoad(session){
  try{
   const result=await qrApi(session,'connect');if(!qrActive(session))return;
   if(result.connected&&result.logged_in){qrConnected(session);return;}
-  if(result.logged_in){$('#evolution-qr-status').textContent='A instância está autorizada, mas desconectada. Verifique a sessão no servidor Evolution Go; o painel continuará consultando o status.';$('#evolution-qr-refresh').hidden=true;return;}
-  if(result.state==='qr_pending'){$('#evolution-qr-status').textContent='A Evolution Go ainda está preparando o QR Code. Aguarde um instante e clique em Atualizar QR Code.';return;}
+  if(result.logged_in){$('#evolution-qr-status').textContent='A instância está autorizada, mas desconectada. Verifique a sessão no servidor do provedor; o painel continuará consultando o status.';$('#evolution-qr-refresh').hidden=true;return;}
+  if(result.state==='qr_pending'){$('#evolution-qr-status').textContent='O provedor ainda está preparando o QR Code. Aguarde um instante e clique em Atualizar QR Code.';return;}
   if(result.state==='additional_verification'){$('#evolution-qr-status').textContent='Esta conta exige uma verificação adicional. Conclua a autorização no WhatsApp ou no gerenciador da sua instância e consulte novamente.';return;}
-  if(typeof result.qr_code!=='string'||!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(result.qr_code))throw Error('A Evolution Go não retornou um QR Code válido. Atualize para tentar novamente.');
+  if(typeof result.qr_code!=='string'||!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(result.qr_code))throw Error('O provedor não retornou um QR Code válido. Atualize para tentar novamente.');
   const expires=Date.parse(result.expires_at);
   session.expiresAt=Math.min(Date.now()+20000,Number.isFinite(expires)?expires:Date.now()+20000);
   if(session.expiresAt<=Date.now())throw Error('O QR Code já expirou. Atualize para gerar outro.');
@@ -259,7 +335,7 @@ async function qrLoad(session){
 }
 $('#connect-notifications').onclick=()=>{
  openModal('Conectar WhatsApp por QR Code','<div class="evolution-qr-panel"><p>No WhatsApp do celular, abra <strong>Configurações ou ⋮ → Aparelhos conectados → Conectar aparelho</strong> e escaneie o código abaixo.</p><p id="evolution-qr-status" role="status"></p><img id="evolution-qr" class="evolution-qr-image" alt="QR Code temporário para conectar o WhatsApp desta arena" hidden><p id="evolution-qr-error" role="alert"></p><button type="button" class="outline" id="evolution-qr-refresh">Atualizar QR Code</button><p class="evolution-qr-note">O código é exibido apenas nesta janela. Atualizar não desconecta uma sessão já autorizada.</p></div>',async()=>{$('#modal').close();return false;},'Fechar');
- const session={active:true,done:false,busy:false,pollTimer:null,expiryTimer:null,expiresAt:0,requests:new Set()};qrSession=session;
+ const session={provider:whatsappProvider,active:true,done:false,busy:false,pollTimer:null,expiryTimer:null,expiresAt:0,requests:new Set()};qrSession=session;
  $('#evolution-qr').onerror=()=>{if(!qrActive(session)||!$('#evolution-qr').getAttribute('src'))return;qrHideImage(session);$('#evolution-qr-status').textContent='Não foi possível exibir o QR Code.';$('#evolution-qr-error').textContent='A imagem recebida não pôde ser aberta. Atualize para solicitar outro código.';$('#evolution-qr-refresh').hidden=false;};
  $('#evolution-qr-refresh').onclick=()=>qrLoad(session);qrLoad(session);
 };

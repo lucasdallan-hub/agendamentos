@@ -98,13 +98,15 @@ const server=http.createServer(async(req,res)=>{
    return json(res,200,{ok:true});
   }
   if(!authenticated) fail('Entre como administrador.',401);
+  const whatsappProvider=url.searchParams.get('provider')??'evolution';
   if(url.pathname==='/api/notifications/config'){
-   if(req.method==='GET')return json(res,200,notifications.summary());
-   if(req.method==='PUT')return json(res,200,notifications.save(body));
+   if(req.method==='GET')return json(res,200,notifications.summary(whatsappProvider));
+   if(req.method==='PUT')return json(res,200,notifications.save(body,whatsappProvider));
   }
   if(url.pathname==='/api/notifications/events'&&req.method==='GET')return json(res,200,await notifications.recoverPending());
-  if(url.pathname==='/api/notifications/connect'&&req.method==='POST')return json(res,200,await notifications.connect());
-  if(url.pathname==='/api/notifications/check'&&req.method==='POST')return json(res,200,await notifications.check());
+  if(url.pathname==='/api/notifications/webhook'&&req.method==='POST')return json(res,200,await notifications.syncWebhook(body));
+  if(url.pathname==='/api/notifications/connect'&&req.method==='POST')return json(res,200,await notifications.connect(whatsappProvider));
+  if(url.pathname==='/api/notifications/check'&&req.method==='POST')return json(res,200,await notifications.check(whatsappProvider));
   if(url.pathname==='/api/catalog/settings'){
    if(req.method==='GET')return json(res,200,catalog.settings());
    if(req.method==='PUT')return json(res,200,catalog.saveSettings(body));

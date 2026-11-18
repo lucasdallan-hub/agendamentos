@@ -176,3 +176,8 @@ body.sidebar-scroll-locked{overflow:hidden}
 
 /* Pairing image stays local to the authenticated dialog. */
 .evolution-qr-panel{display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center}.evolution-qr-panel p{margin:0;line-height:1.7}.evolution-qr-image{display:block;width:min(280px,100%);height:auto;background:#fff;border:14px solid #fff;border-radius:8px;image-rendering:pixelated}.evolution-qr-panel .evolution-qr-note{font-size:11px;color:var(--muted)}#evolution-qr-error{color:#ad4939;overflow-wrap:anywhere}[data-theme="dark"] #evolution-qr-error{color:#ffb9a8}#notifications-section .pix-settings-card>div:last-child{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}@media(max-width:760px){#notifications-section .pix-settings-card{align-items:stretch;flex-direction:column}#notifications-section .pix-settings-card>div:last-child{justify-content:flex-start}.evolution-qr-image{width:min(250px,100%)}}
+
+.history-filters{flex-wrap:wrap;align-items:end}
+.history-filters label{display:grid;gap:4px}
+.history-filters input,.history-filters select{width:100%;box-sizing:border-box}
+.history-pagination{justify-content:flex-end;gap:12px}

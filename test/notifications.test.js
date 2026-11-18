@@ -190,3 +190,36 @@ test('Evolution Go: atualiza endereço Swagger legado ao reiniciar e preserva cr
  const checked=await f.api('notifications/check',{});assert.equal(checked.status,200);assert.equal(checked.data.logged_in,true);
  assert.equal(f.requests.length,1);assert.equal(f.requests[0].url,'https://evolution.example.com/instance/status');assert.equal(f.requests[0].headers.get('apikey'),'fake-instance-token');
 });
+
+test('WUZAPI: mantém uma sessão separada, pareia por QR e assume os novos envios ao ser ativada',async t=>{
+ const png='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/F6cAAAAASUVORK5CYII=';
+ const f=await arena(t,{send(url){
+  const path=new URL(url).pathname;
+  const data={
+   '/session/status':{connected:false,loggedIn:false,token:'private-token'},
+   '/session/connect':{details:'Connected!'},
+   '/session/qr':{QRCode:png},
+   '/chat/send/text':{Details:'Sent',Id:'message-id'}
+  }[path];
+  assert.ok(data);
+  return Response.json({code:200,success:true,data});
+ }});
+ await f.api('notifications/config',configuration(),{method:'PUT'});
+ const wuz='?provider=wuzapi';
+ const config='notifications/config'+wuz;
+ const settings=configuration({base_url:'https://api.dallanspace.com.br',api_key:'fake-wuzapi-token'});
+ assert.equal((await f.api(config,{...settings,base_url:'https://other.example.com'},{method:'PUT'})).status,400);
+ assert.equal((await f.api(config,settings,{method:'PUT'})).data.enabled,true);
+ assert.equal((await f.api('notifications/config')).data.enabled,false);
+ assert.equal((await f.api('notifications/config')).data.token_configured,true);
+ assert.equal((await f.api('notifications/connect'+wuz,{})).data.qr_code,png);
+ assert.deepEqual(f.requests[1].body,{Immediate:true});
+ const booking=await f.api('bookings',f.booking());
+ assert.equal(booking.status,201);
+ assert.deepEqual(f.requests.map(r=>new URL(r.url).pathname),['/session/status','/session/connect','/session/qr','/chat/send/text']);
+ assert.ok(f.requests.every(r=>r.headers.get('token')==='fake-wuzapi-token'&&!r.headers.has('apikey')));
+ assert.equal(f.requests[3].body.Phone,'5521988887777');
+ assert.match(f.requests[3].body.Body,/Cliente Teste/);
+ assert.equal((await f.api('notifications/events')).data[0].status,'accepted');
+ assert.equal(JSON.stringify(captureSystem(f.db)).includes('fake-wuzapi-token'),false);
+});
