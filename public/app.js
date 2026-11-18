@@ -186,7 +186,7 @@ function qrHideImage(session){
 }
 async function qrApi(session,path){
  const controller=new AbortController();session.requests.add(controller);
- const timeout=setTimeout(()=>controller.abort(),25000);
+ const timeout=setTimeout(()=>controller.abort(),52000);
  try{
   const response=await fetch('/api/notifications/'+path,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal});
   const result=await response.json();
@@ -242,6 +242,7 @@ async function qrLoad(session){
   const result=await qrApi(session,'connect');if(!qrActive(session))return;
   if(result.connected&&result.logged_in){qrConnected(session);return;}
   if(result.logged_in){$('#evolution-qr-status').textContent='A instância está autorizada, mas desconectada. Verifique a sessão no servidor Evolution Go; o painel continuará consultando o status.';$('#evolution-qr-refresh').hidden=true;return;}
+  if(result.state==='qr_pending'){$('#evolution-qr-status').textContent='A Evolution Go ainda está preparando o QR Code. Aguarde um instante e clique em Atualizar QR Code.';return;}
   if(result.state==='additional_verification'){$('#evolution-qr-status').textContent='Esta conta exige uma verificação adicional. Conclua a autorização no WhatsApp ou no gerenciador da sua instância e consulte novamente.';return;}
   if(typeof result.qr_code!=='string'||!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(result.qr_code))throw Error('A Evolution Go não retornou um QR Code válido. Atualize para tentar novamente.');
   const expires=Date.parse(result.expires_at);

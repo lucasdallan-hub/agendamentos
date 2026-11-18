@@ -150,3 +150,43 @@ test('Evolution Go diagnóstico: HTTP 200 com corpo não JSON informa erro de fo
   assert.equal(result.status,502);assert.match(result.data.error,/JSON/i);assert.equal(JSON.stringify(result.data).includes(RAW_SECRET),false);assert.equal(JSON.stringify(result.data).includes('qr-instance-token'),false);
  }
 });
+
+test('Evolution Go QR: inicia uma instância parada pelo painel quando o provedor exige conexão prévia',async t=>{
+ let started=false;
+ const f=await fixture(t,{respond:async request=>{
+  if(request.url.endsWith('/instance/status'))return status();
+  if(request.url.endsWith('/instance/connect')){
+   assert.equal(request.method,'POST');
+   assert.equal(request.headers.get('Content-Type'),'application/json');
+   assert.deepEqual(JSON.parse(request.body),{});
+   assert.equal(request.options.redirect,'manual');
+   started=true;
+   return Response.json({message:'success',data:{}});
+  }
+  return started
+   ? Response.json({message:'success',data:{qrcode:PNG,code:RAW_SECRET}})
+   : Response.json({error:'no QR code available. Please wait a moment and try again'},{status:400});
+ }});
+ await f.configure();
+ const result=await f.api('notifications/connect',{});
+ assert.equal(result.status,200);
+ assert.equal(result.data.qr_code,PNG);
+ assert.deepEqual(f.requests.map(r=>new URL(r.url).pathname),[
+  '/instance/status','/instance/qr','/instance/status','/instance/connect','/instance/qr'
+ ]);
+ assert.ok(f.requests.every(r=>r.headers.get('apikey')==='qr-instance-token'));
+});
+
+test('Evolution Go QR: preserva a sessão quando o pareamento termina durante a preparação',async t=>{
+ let statusChecks=0;
+ const f=await fixture(t,{respond:async request=>{
+  if(request.url.endsWith('/instance/status'))return ++statusChecks===1?status():status(true,true);
+  assert.ok(request.url.endsWith('/instance/qr'));
+  return Response.json({error:'no QR code available. Please wait a moment and try again'},{status:400});
+ }});
+ await f.configure();
+ const result=await f.api('notifications/connect',{});
+ assert.equal(result.status,200);
+ assert.deepEqual(result.data,{connected:true,logged_in:true});
+ assert.equal(f.requests.length,3);
+});

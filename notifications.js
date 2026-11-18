@@ -108,11 +108,14 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   await Promise.all(pending.map(event=>dispatch(event.booking_id)));
   return events();
  }
- async function instanceData(path,timeout=8000){
+ async function instanceData(path,timeout=8000,body){
   const c=stored();if(!c.base_url||!c.api_key)fail('Salve o endereço do servidor e o token da instância antes de conectar o WhatsApp.',409);
   let response;
   try{
-   response=await fetchImpl(c.base_url+path,{method:'GET',headers:{apikey:c.api_key},redirect:'manual',signal:AbortSignal.timeout(timeout)});
+   const request=body===undefined
+    ? {method:'GET',headers:{apikey:c.api_key}}
+    : {method:'POST',headers:{apikey:c.api_key,'Content-Type':'application/json'},body:JSON.stringify(body)};
+   response=await fetchImpl(c.base_url+path,{...request,redirect:'manual',signal:AbortSignal.timeout(timeout)});
   }catch(error){
    const code=error?.cause?.code||error?.code||error?.cause?.errors?.[0]?.code;
    if(['TimeoutError','AbortError'].includes(error?.name)||['ETIMEDOUT','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT'].includes(code))fail('A Evolution Go não respondeu dentro do tempo limite. Verifique a disponibilidade do servidor e tente novamente.',504);
@@ -122,6 +125,11 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
    fail('Não foi possível alcançar a Evolution Go. Confira a URL HTTPS e a saída de rede do servidor que hospeda esta arena.',502);
   }
   if(!response.ok){
+   if(path==='/instance/qr'&&[400,500].includes(response.status)){
+    const result=await response.json().catch(()=>null);
+    if(typeof result?.error==='string'&&/^(?:no (?:qr code|client) available|no client found|(?:instance|client) (?:is )?not connected|client not found)\b/i.test(result.error))return null;
+    if(result?.error==='session already logged in')return {alreadyLoggedIn:true};
+   }
    if(response.status===401)fail('A Evolution Go recusou o token da instância (HTTP 401). Cadastre o token da instância correta, não a chave administrativa global.',502);
    if(response.status===403)fail('A Evolution Go negou o acesso (HTTP 403). Verifique as permissões do token e as regras de acesso do servidor da API.',502);
    if(response.status===404)fail(`A rota ${path} não foi encontrada na Evolution Go (HTTP 404). Confira a URL base e a versão da API.`,502);
@@ -140,9 +148,19 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
  }
  async function connect(){
   const session=await check();
-  // Never restart a paired session or overwrite its webhooks/subscriptions.
+  // Prefer the QR endpoint, which starts the client on current Evolution Go
+  // versions and preserves the instance's existing delivery settings.
   if(session.logged_in)return session;
-  const data=await instanceData('/instance/qr',12000);
+  let data=await instanceData('/instance/qr',12000);
+  if(data?.alreadyLoggedIn)return check();
+  if(!data&&!session.connected){
+   const latest=await check();
+   if(latest.logged_in)return latest;
+   if(!latest.connected)await instanceData('/instance/connect',8000,{});
+   data=await instanceData('/instance/qr',12000);
+   if(data?.alreadyLoggedIn)return check();
+  }
+  if(!data)return {...session,state:'qr_pending'};
   if(!data.qrcode&&typeof data.passkeyStage==='string'&&data.passkeyStage)return {...session,state:'additional_verification'};
   if(typeof data.qrcode!=='string'||data.qrcode.length>710000)fail('A Evolution Go não retornou um QR Code válido. Tente atualizar o código.',502);
   const match=/^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(data.qrcode);
