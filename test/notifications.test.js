@@ -46,7 +46,7 @@ test('Evolution Go: novo agendamento administrativo envia uma única confirmaç�
  assert.equal((await f.api('bookings',f.booking())).status,201);assert.equal(f.requests.length,0,'disabled by default');
  assert.equal((await f.api('notifications/config',configuration(),{method:'PUT'})).status,200);
  const booking=await f.api('bookings',f.booking({date:dateAfter(3)}));assert.equal(booking.status,201);assert.equal(f.requests.length,1);
- const request=f.requests[0];assert.equal(request.url,'https://evolution.example.com/send/text');assert.equal(request.headers.get('apikey'),'fake-instance-token');assert.equal(request.headers.get('Content-Type'),'application/json');assert.equal(request.body.number,'5521988887777');assert.notEqual(request.body.number,'5511999998888');assert.equal(request.body.formatJid,true);assert.ok(typeof request.body.id==='string'&&request.body.id.length>0);assert.equal(request.options.method,'POST');assert.equal(request.options.redirect,'error');assert.ok(request.options.signal instanceof AbortSignal);
+ const request=f.requests[0];assert.equal(request.url,'https://evolution.example.com/send/text');assert.equal(request.headers.get('apikey'),'fake-instance-token');assert.equal(request.headers.get('Content-Type'),'application/json');assert.equal(request.body.number,'5521988887777');assert.notEqual(request.body.number,'5511999998888');assert.equal(request.body.formatJid,true);assert.ok(typeof request.body.id==='string'&&request.body.id.length>0);assert.equal(request.options.method,'POST');assert.equal(request.options.redirect,'manual');assert.ok(request.options.signal instanceof AbortSignal);
  assert.match(request.body.text,/Cliente Teste/);assert.match(request.body.text,/Quadra WhatsApp/);assert.match(request.body.text,/18:00/);assert.match(request.body.text,/120,00/);assert.equal(request.body.text.includes('NOTA PRIVADA'),false);
  const events=await f.api('notifications/events');assert.equal(events.status,200);assert.equal(events.data.length,1);assert.equal(events.data[0].status,'accepted');assert.equal(events.data[0].booking_id,booking.data.id);assert.equal(JSON.stringify(events.data).includes('fake-instance-token'),false);
  assert.equal((await f.api('bookings',f.booking({date:dateAfter(3)}))).status,409);assert.equal(f.requests.length,1,'booking conflict must not send notification');
@@ -123,7 +123,7 @@ test('Evolution Go: verificar conexão consulta status da instância sem enviar 
  }
  assert.equal(f.requests.length,4);
  for(const request of f.requests){
-  assert.equal(request.url,'https://evolution.example.com/instance/status');assert.equal(request.options.method,'GET');assert.equal(request.headers.get('apikey'),'fake-instance-token');assert.equal(request.body,undefined);assert.equal(request.options.redirect,'error');assert.ok(request.options.signal instanceof AbortSignal);
+  assert.equal(request.url,'https://evolution.example.com/instance/status');assert.equal(request.options.method,'GET');assert.equal(request.headers.get('apikey'),'fake-instance-token');assert.equal(request.body,undefined);assert.equal(request.options.redirect,'manual');assert.ok(request.options.signal instanceof AbortSignal);
  }
  assert.equal((await f.api('notifications/events')).data.length,0);
 });

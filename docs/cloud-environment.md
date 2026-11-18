@@ -36,6 +36,8 @@ O verificador consulta a sessão, a página do catálogo e a API pública do cat
 ARENA_ORIGIN=http://127.0.0.1:8790 npm run check:runtime
 ```
 
+No ambiente gerenciado, use `npm run dev:cloud` sem argumentos extras para encaminhar as chamadas externas do Worker pelo proxy HTTPS herdado do ambiente. Para alterar o endereço de escuta, use `ARENA_HOST` e `ARENA_PORT`.
+
 O banco local não é o banco de produção. Ao restaurar um ambiente, reinicie o servidor: processos e conexões não devem ser considerados parte do snapshot.
 
 ## Verificações do projeto

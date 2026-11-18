@@ -59,7 +59,7 @@ test('Evolution Go QR: obtém PNG temporário por GET sem expor código bruto ne
  const expires=Date.parse(result.data.expires_at);assert.ok(expires>=before+19000&&expires<=after+21000,'QR has local lifetime of about twenty seconds');
  assert.equal(result.data.code,undefined);assert.equal(JSON.stringify(result.data).includes(RAW_SECRET),false);assert.equal(JSON.stringify(result.data).includes('qr-instance-token'),false);
  assert.deepEqual(f.requests.map(r=>r.url),['https://api.dallan.pro/instance/status','https://api.dallan.pro/instance/qr']);
- for(const request of f.requests){assert.equal(request.method,'GET');assert.equal(request.headers.get('apikey'),'qr-instance-token');assert.equal(request.body,undefined);assert.equal(request.options.redirect,'error');assert.ok(request.options.signal instanceof AbortSignal);}
+ for(const request of f.requests){assert.equal(request.method,'GET');assert.equal(request.headers.get('apikey'),'qr-instance-token');assert.equal(request.body,undefined);assert.equal(request.options.redirect,'manual');assert.ok(request.options.signal instanceof AbortSignal);}
  const summary=await f.api('notifications/config');assert.equal(JSON.stringify(summary.data).includes(PNG),false);assert.equal(JSON.stringify(summary.data).includes(RAW_SECRET),false);
  assert.equal(JSON.stringify((await f.api('notifications/events')).data).includes(PNG),false);
  const snapshot=JSON.stringify(captureSystem(f.db));assert.equal(snapshot.includes(PNG),false);assert.equal(snapshot.includes(RAW_SECRET),false);assert.equal(snapshot.includes('qr-instance-token'),false);

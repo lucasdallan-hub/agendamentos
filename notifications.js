@@ -90,10 +90,10 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
    if(!claim.changes)return;
    let response;
    try{
-    response=await fetchImpl(c.base_url+'/send/text',{method:'POST',headers:{'Content-Type':'application/json',apikey:c.api_key},body:JSON.stringify({number:event.recipient,text,id:event.id,formatJid:true}),redirect:'error',signal:AbortSignal.timeout(8000)});
+    response=await fetchImpl(c.base_url+'/send/text',{method:'POST',headers:{'Content-Type':'application/json',apikey:c.api_key},body:JSON.stringify({number:event.recipient,text,id:event.id,formatJid:true}),redirect:'manual',signal:AbortSignal.timeout(8000)});
    }catch{mark(event.id,'unknown','Não foi possível confirmar o envio. Confira a Evolution Go antes de tentar novamente.');return;}
    if(!response.ok){
-    const uncertain=response.status>=500||response.status===408;
+    const uncertain=response.status>=500||response.status===408||(response.status>=300&&response.status<400);
     mark(event.id,uncertain?'unknown':'failed',uncertain?`A Evolution Go retornou HTTP ${response.status} sem confirmar o resultado. Confira o provedor antes de tentar novamente.`:`A Evolution Go retornou HTTP ${response.status}. Verifique a conexão e a configuração.`);return;
    }
    let result;try{result=await response.json();}catch{mark(event.id,'unknown','A API respondeu sem confirmação válida. Confira a Evolution Go.');return;}
@@ -112,7 +112,7 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   const c=stored();if(!c.base_url||!c.api_key)fail('Salve o endereço do servidor e o token da instância antes de conectar o WhatsApp.',409);
   let response;
   try{
-   response=await fetchImpl(c.base_url+path,{method:'GET',headers:{apikey:c.api_key},redirect:'error',signal:AbortSignal.timeout(timeout)});
+   response=await fetchImpl(c.base_url+path,{method:'GET',headers:{apikey:c.api_key},redirect:'manual',signal:AbortSignal.timeout(timeout)});
   }catch(error){
    const code=error?.cause?.code||error?.code||error?.cause?.errors?.[0]?.code;
    if(['TimeoutError','AbortError'].includes(error?.name)||['ETIMEDOUT','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT'].includes(code))fail('A Evolution Go não respondeu dentro do tempo limite. Verifique a disponibilidade do servidor e tente novamente.',504);
