@@ -41,6 +41,8 @@ O cliente pode enviar um arquivo JPG, PNG ou PDF de até 5 MB. Na reserva, abra 
 3. No catálogo, escolha **Pix via MisticPay** na confirmação da reserva. O CPF é enviado à MisticPay para emitir a cobrança e fica fora do banco da arena. O cliente recebe o QR Code e o código copia e cola.
 4. Cada cobrança registra um endereço de webhook próprio. A aplicação recebe a notificação, consulta a API autenticada e confirma o pagamento quando a transação estiver completa e o valor integral corresponder à reserva. Também é possível consultar o status na tela de pagamento ou pelo painel.
 
+Se a primeira verificação retornar `404 INTERNAL_ERROR`, abra **Validar com uma transação existente** e informe o ID de um Pix da própria conta no painel da MisticPay. A consulta verifica o acesso sem gerar cobrança ou alterar o Pix.
+
 A rede precisa permitir saída HTTPS para `api.misticpay.com`. Uma falha incerta na geração mantém a reserva vinculada à cobrança até consulta, para evitar cobrança duplicada. A MisticPay usa ambiente de produção, e os testes do projeto simulam a API. [Documentação da MisticPay](https://docs.misticpay.com/)
 
 ## Atualização e persistência

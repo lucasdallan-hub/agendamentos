@@ -171,6 +171,7 @@ test('MisticPay: vínculo aceita consulta numérica e resposta específica de tr
  for(const [status,body] of [
   [404,{code:'ROUTE_NOT_FOUND',message:'Transação não encontrada!'}],
   [404,{message:'Not Found',details:'provider-private-details'}],
+  [404,{code:'INTERNAL_ERROR',message:'provider-private-details'}],
   [400,{code:'API_CREDENTIAL_REQUIRED',message:'provider-private-details'}],
   [200,null]
  ]){
@@ -179,16 +180,37 @@ test('MisticPay: vínculo aceita consulta numérica e resposta específica de tr
   assert.equal(result.status,502);
   assert.doesNotMatch(result.data.error,/provider-private-details/);
   if(status!==200)assert.match(result.data.error,new RegExp(`HTTP ${status}.*Referência [a-f0-9-]{36}`));
+  if(body?.code==='INTERNAL_ERROR')assert.match(result.data.error,/Validar com uma transação existente/);
   assert.equal((await f.api('/api/misticpay/config')).data.ready,false);
  }
  f.provider.checks.length=0;
  f.provider.missing=id=>typeof id==='string'
   ?Response.json({code:'VALIDATION_ERROR'},{status:400})
-  :Response.json({message:'Transação não encontrada!',statusCode:404},{status:404});
+  :Response.json({code:'INTERNAL_ERROR',message:'Transação não encontrada!',statusCode:404},{status:404});
  const saved=await f.configure();
  assert.equal(saved.status,200,JSON.stringify(saved.data));
  assert.equal(saved.data.ready,true);
  assert.match(f.provider.checks[0],/^\d{10}$/);
  assert.equal(f.provider.checks[1],Number(f.provider.checks[0]));
  assert.equal(f.provider.creates.length,0);
+});
+
+test('MisticPay: ID Pix existente permite verificar a chave sem gerar cobrança',async t=>{
+ const f=await fixture(t);
+ const id='31677842';
+ const fields={...credentials,verification_transaction_id:id};
+ const invalid=await f.configure({...fields,verification_transaction_id:'https://example.invalid'});
+ assert.equal(invalid.status,400);
+ assert.equal(f.provider.checks.length,0);
+ const missing=await f.configure(fields);
+ assert.equal(missing.status,409);
+ assert.equal((await f.api('/api/misticpay/config')).data.ready,false);
+ f.provider.payments.set(id,{transactionId:id,value:57.50,transactionState:'COMPLETO',transactionType:'DEPOSITO',transactionMethod:'PIX'});
+ const saved=await f.configure(fields);
+ assert.equal(saved.status,200,JSON.stringify(saved.data));
+ assert.equal(saved.data.ready,true);
+ assert.doesNotMatch(JSON.stringify(saved.data),new RegExp(id));
+ assert.deepEqual(f.provider.checks,[id,id]);
+ assert.equal(f.provider.creates.length,0);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM misticpay_orders').get().n,0);
 });

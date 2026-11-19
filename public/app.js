@@ -598,6 +598,11 @@ $('#configure-misticpay').onclick=()=>openModal('Conectar MisticPay',`
  <label>Client ID<input name="client_id" type="password" autocomplete="new-password" maxlength="255" placeholder="${misticpayConfig.public_key_configured?'Deixe vazio para manter a chave pk_ salva':'pk_…'}" ${misticpayConfig.public_key_configured?'':'required'}></label>
  <label>Client Secret<input name="client_secret" type="password" autocomplete="new-password" maxlength="255" placeholder="${misticpayConfig.secret_key_configured?'Deixe vazio para manter a chave sk_ salva':'sk_…'}" ${misticpayConfig.secret_key_configured?'':'required'}></label>
  <p>No <a href="https://app.misticpay.com/login" target="_blank" rel="noopener noreferrer">painel da MisticPay</a>, abra <strong>API → Chaves de Acesso</strong> e habilite <code>TRANSACTION_CREATE</code> e <code>TRANSACTION_READ</code>. <a href="https://docs.misticpay.com/#authentication" target="_blank" rel="noopener noreferrer">Guia de autenticação</a></p>
+ ${misticpayConfig.ready?'':`<details>
+  <summary>Validar com uma transação existente</summary>
+  <label>Identificador da transação Pix (opcional)<input name="verification_transaction_id" maxlength="128" autocomplete="off" spellcheck="false" aria-describedby="misticpay-verification-help"></label>
+  <p id="misticpay-verification-help">Se a verificação automática retornar HTTP 404 ou INTERNAL_ERROR, copie o identificador de uma transação Pix no painel da MisticPay. A verificação só consulta essa transação.</p>
+ </details>`}
 `,data=>api('misticpay/config',data,'PUT'),'Salvar e verificar');
 $('#edit-branding').onclick=()=>{
  openModal('Nome e logo do sistema',`<label>Nome<input name="name" value="${esc(systemBranding.name)}" maxlength="80" required></label><label>Logo PNG ou JPEG (até 250 KB)<input id="system-logo-file" type="file" accept="image/png,image/jpeg"></label><label class="check-label"><input name="remove_logo" type="checkbox"> Remover logo atual</label>`,async data=>{
