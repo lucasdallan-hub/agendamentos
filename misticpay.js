@@ -1,25 +1,38 @@
 import {Buffer} from 'node:buffer';
-import {randomBytes,randomUUID} from 'node:crypto';
+import {randomBytes,randomInt,randomUUID} from 'node:crypto';
 import {transaction} from './storage.js';
 
 const apiOrigin='https://api.misticpay.com/api';
 const states=new Set(['PENDENTE','COMPLETO','FALHA','CANCELADO','DEVOLVIDO','DEVOLVIDO_PARCIAL']);
 const definitiveErrors=new Map([
  ['INVALID_API_CREDENTIAL',401],['IP_NOT_ALLOWED',401],['API_SCOPE_DENIED',403],
- ['INVALID_JSON',400],['VALIDATION_ERROR',400],['AMOUNT_BELOW_MINIMUM',400]
+ ['API_CREDENTIAL_REQUIRED',400],['INVALID_JSON',400],['VALIDATION_ERROR',400],['AMOUNT_BELOW_MINIMUM',400]
 ]);
+const missingTransactionMessages=new Set(['transacao nao encontrada','transacao nao localizada','transaction not found']);
+const transactionAbsent=Symbol('transaction absent');
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const invalidResponse=()=>fail('A MisticPay retornou dados inválidos. Consulte a transação no painel do provedor.',502);
 const token=()=>randomBytes(32).toString('hex');
 
+function missingTransaction({status,data}){
+ if(status!==404&&status!==400)return false;
+ if(data?.code!==undefined&&data.code!==null)return data.code==='TRANSACTION_NOT_FOUND';
+ if(data?.statusCode!==undefined&&data.statusCode!==status)return false;
+ if(typeof data?.message!=='string'||data.message.length>80)return false;
+ const message=data.message.normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase().replace(/[.!]+$/,'');
+ return missingTransactionMessages.has(message);
+}
+
 async function request(fetchImpl,credentials,action,body){
- let result;
+ const requestId=randomUUID();
+ let result,providerStatus;
  try{
   const response=await fetchImpl(`${apiOrigin}/transactions/${action}`,{
    method:'POST',redirect:'manual',signal:AbortSignal.timeout(12_000),
-   headers:{Authorization:'Basic '+Buffer.from(credentials.public_key+':'+credentials.secret_key).toString('base64'),'Content-Type':'application/json'},
+   headers:{Authorization:'Basic '+Buffer.from(credentials.public_key+':'+credentials.secret_key).toString('base64'),'Content-Type':'application/json','X-Request-Id':requestId},
    body:JSON.stringify(body)
   });
+  providerStatus=response.status;
   if(!response.body||Number(response.headers.get('content-length'))>300_000)throw new Error();
   const chunks=[];let size=0;
   for await(const chunk of response.body){
@@ -29,21 +42,25 @@ async function request(fetchImpl,credentials,action,body){
   }
   result={status:response.status,ok:response.ok,data:JSON.parse(Buffer.concat(chunks,size).toString('utf8'))};
  }catch{
-  fail('Não foi possível consultar a MisticPay. Confira a conexão e o painel do provedor.',502);
+  const message=providerStatus?'A MisticPay respondeu em um formato inesperado.':'Não foi possível consultar a MisticPay. Confira a conexão e tente novamente.';
+  throw Object.assign(new Error(message),{status:502,providerStatus,requestId});
  }
  if(result.ok)return result.data;
- if(result.status===404&&result.data?.code==='TRANSACTION_NOT_FOUND')return null;
+ if(action==='check'&&missingTransaction(result))return transactionAbsent;
  const code=result.data?.code;
  const definitive=definitiveErrors.get(code)===result.status;
- let message='A MisticPay recusou a solicitação. Verifique a transação no painel do provedor.';
+ let message='A MisticPay recusou a solicitação.';
  if(result.status===401||result.status===403)message='A MisticPay recusou o acesso. Confira o Client ID e o Client Secret em API → Chaves de Acesso.';
  if(definitive&&code==='INVALID_API_CREDENTIAL')message='Client ID ou Client Secret inválido ou revogado. Copie o par ativo em API → Chaves de Acesso da MisticPay.';
  if(definitive&&code==='IP_NOT_ALLOWED')message='A MisticPay bloqueou o IP de saída do servidor. Confira a lista de IPs autorizados na conta MisticPay.';
+ if(definitive&&code==='API_CREDENTIAL_REQUIRED')message='A MisticPay não reconheceu as credenciais enviadas. Use o Client ID pk_ e o Client Secret sk_ da mesma chave de acesso.';
  if(definitive&&code==='API_SCOPE_DENIED'){
   const scope=action==='check'?'TRANSACTION_READ':'TRANSACTION_CREATE';
   message=`A chave de acesso precisa da permissão ${scope}. Crie uma chave com TRANSACTION_READ e TRANSACTION_CREATE na MisticPay.`;
  }
- throw Object.assign(new Error(message),{status:502,definitive});
+ if(result.status===429)message='A MisticPay limitou as consultas. Aguarde um momento e tente novamente.';
+ const providerCode=typeof code==='string'&&/^[A-Z][A-Z0-9_]{1,63}$/.test(code)?code:undefined;
+ throw Object.assign(new Error(message),{status:502,definitive,providerStatus,providerCode,requestId});
 }
 
 function readTransaction(row){
@@ -105,7 +122,16 @@ export function createMisticPay(db,{fetchImpl=fetch}={}){
  };
  async function lookup(connection,id){
   const result=await request(fetchImpl,connection,'check',{transactionId:id});
-  return result===null?null:readPayment(result?.transaction);
+  return result===transactionAbsent?null:readPayment(result?.transaction);
+ }
+ async function verifyNewConnection(connection){
+  // The API accepts a numeric identifier as text or as a number.
+  const reference=randomInt(1_800_000_000,2_000_000_000);
+  try{return await lookup(connection,String(reference));}
+  catch(error){
+   if(error.providerStatus!==400||error.providerCode!=='VALIDATION_ERROR')throw error;
+   return lookup(connection,reference);
+  }
  }
  async function saveSettings(body){
   const stored=getConnection();
@@ -125,8 +151,15 @@ export function createMisticPay(db,{fetchImpl=fetch}={}){
   const findLatest=()=>db.prepare('SELECT * FROM misticpay_orders WHERE archived=0 ORDER BY created_at DESC,id DESC LIMIT 1').get();
   const latest=findLatest();
   if(changingKeys){
-   const payment=await lookup(next,latest?.id??randomUUID());
-   if(latest&&(!payment||!latest.provider_id||payment.id!==latest.provider_id||payment.cents!==latest.amount_cents))fail('As novas chaves precisam dar acesso às cobranças já criadas nesta arena.',409);
+   let payment;
+   try{payment=latest?await lookup(next,latest.id):await verifyNewConnection(next);}
+   catch(error){
+    if(!error.requestId)throw error;
+    const status=error.providerStatus?` HTTP ${error.providerStatus}`:'';
+    const code=error.providerCode?` ${error.providerCode}`:'';
+    fail(`${error.message}${status}${code} · Referência ${error.requestId}`,502);
+   }
+   if(latest&&(!payment||!latest.provider_id||![latest.provider_id,latest.id].includes(payment.id)||payment.cents!==latest.amount_cents))fail('As novas chaves precisam dar acesso às cobranças já criadas nesta arena.',409);
   }
   return transaction(db,()=>{
    const current=getConnection();

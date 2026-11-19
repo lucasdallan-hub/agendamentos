@@ -14,12 +14,13 @@ const copyPaste='00020101021226820014br.gov.bcb.pix';
 
 async function fixture(t){
  const directory=await mkdtemp(join(tmpdir(),'arena-misticpay-'));
- const provider={creates:[],payments:new Map(),uncertain:false};
+ const provider={creates:[],checks:[],payments:new Map(),uncertain:false};
  const {server,db}=createApp({dataDir:directory,paymentConfig:{ready:false,mode:'test'},misticpayFetch:async(url,options)=>{
   assert.match(url,/^https:\/\/api\.misticpay\.com\/api\/transactions\/(create|check)$/);
   assert.equal(options.method,'POST');
   assert.equal(options.redirect,'manual');
   assert.match(options.headers.Authorization,/^Basic /);
+  assert.match(options.headers['X-Request-Id'],/^[a-f0-9-]{36}$/);
   const body=JSON.parse(options.body);
   if(provider.accessError){
    const {code,status}=provider.accessError;
@@ -36,8 +37,10 @@ async function fixture(t){
    if(provider.waitForCreate)await provider.waitForCreate();
    return Response.json({data:{...payment,payer:{document:body.payerDocument},qrCodeBase64:qr,copyPaste,qrcodeUrl:'https://example.invalid/qr'}});
   }
+  provider.checks.push(body.transactionId);
   const payment=provider.payments.get(body.transactionId);
-  return payment?Response.json({transaction:payment}):Response.json({code:'TRANSACTION_NOT_FOUND'},{status:404});
+  if(payment)return Response.json({transaction:payment});
+  return provider.missing?provider.missing(body.transactionId):Response.json({code:'TRANSACTION_NOT_FOUND'},{status:404});
  }});
  server.listen(0,'127.0.0.1');
  await once(server,'listening');
@@ -161,4 +164,31 @@ test('MisticPay: criação simultânea e resultado incerto bloqueiam uma segunda
  const payment=f.provider.payments.get(f.provider.creates[1].transactionId);
  payment.transactionState='COMPLETO';
  assert.equal((await f.api(second.path+'/misticpay/check',{},{auth:false})).data.status,'approved');
+});
+
+test('MisticPay: vínculo aceita consulta numérica e resposta específica de transação inexistente',async t=>{
+ const f=await fixture(t);
+ for(const [status,body] of [
+  [404,{code:'ROUTE_NOT_FOUND',message:'Transação não encontrada!'}],
+  [404,{message:'Not Found',details:'provider-private-details'}],
+  [400,{code:'API_CREDENTIAL_REQUIRED',message:'provider-private-details'}],
+  [200,null]
+ ]){
+  f.provider.missing=()=>Response.json(body,{status});
+  const result=await f.configure();
+  assert.equal(result.status,502);
+  assert.doesNotMatch(result.data.error,/provider-private-details/);
+  if(status!==200)assert.match(result.data.error,new RegExp(`HTTP ${status}.*Referência [a-f0-9-]{36}`));
+  assert.equal((await f.api('/api/misticpay/config')).data.ready,false);
+ }
+ f.provider.checks.length=0;
+ f.provider.missing=id=>typeof id==='string'
+  ?Response.json({code:'VALIDATION_ERROR'},{status:400})
+  :Response.json({message:'Transação não encontrada!',statusCode:404},{status:404});
+ const saved=await f.configure();
+ assert.equal(saved.status,200,JSON.stringify(saved.data));
+ assert.equal(saved.data.ready,true);
+ assert.match(f.provider.checks[0],/^\d{10}$/);
+ assert.equal(f.provider.checks[1],Number(f.provider.checks[0]));
+ assert.equal(f.provider.creates.length,0);
 });
