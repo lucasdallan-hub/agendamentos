@@ -42,7 +42,7 @@ Em **Meu sistema → Notificações WhatsApp → Sincronizar webhook**, informe 
 
 ### WUZAPI
 
-Em **Meu sistema → Notificações WhatsApp**, selecione **WUZAPI** e configure o token da sessão de `https://api.dallanspace.com.br`. Use **Conectar WhatsApp** para abrir o QR Code dentro do painel. Cada arena pode guardar uma conexão de cada provedor. Ativar um provedor para avisos faz com que somente ele envie os novos agendamentos.
+Em **Meu sistema → Notificações WhatsApp**, selecione **WUZAPI** e informe o token administrativo de `https://api.dallanspace.com.br`. Se houver mais de uma sessão na WUZAPI, informe também o ID da sessão desejada. O token administrativo é usado na consulta `GET /admin/users` e somente o token da sessão selecionada é salvo. Use **Conectar WhatsApp** para abrir o QR Code dentro do painel. Cada arena pode guardar uma conexão de cada provedor. Ativar um provedor para avisos faz com que somente ele envie os novos agendamentos.
 
 A integração usa o cabeçalho `Token`, as rotas `GET /session/status`, `POST /session/connect`, `GET /session/qr` e o envio por `POST /chat/send/text`. Consulte a [documentação e o código da WUZAPI](https://github.com/asternic/wuzapi).
 

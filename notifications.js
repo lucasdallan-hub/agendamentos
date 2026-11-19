@@ -61,7 +61,27 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
  const sendingProvider=()=>stored('wuzapi').enabled?'wuzapi':'evolution';
  const webhookURL=()=>db.prepare('SELECT url FROM notification_webhook WHERE id=1').get()?.url||'';
  const summary=(id='evolution')=>{const c=stored(id);return {enabled:!!c.enabled,base_url:c.base_url,token_configured:!!c.api_key,webhook_configured:id==='evolution'&&!!webhookURL(),target:'arena',connection_ready:!!(c.base_url&&c.api_key),arena_number:c.arena_number,country_code:c.country_code,ready:!!(c.enabled&&c.base_url&&c.api_key&&c.arena_number)};};
- function save(body,id='evolution'){
+ async function resolveWuzapiToken(adminToken,sessionId){
+  if(typeof adminToken!=='string'||!adminToken||adminToken.length>2000||/[\s\x00-\x1f\x7f]/.test(adminToken))fail('Informe um token administrativo válido da WUZAPI.');
+  let response;
+  try{
+   response=await fetchImpl(PROVIDERS.wuzapi.url+'/admin/users',{method:'GET',headers:{Authorization:adminToken},redirect:'manual',signal:AbortSignal.timeout(8000)});
+  }catch{
+   fail('Não foi possível consultar as sessões administrativas da WUZAPI.',502);
+  }
+  if(response.status===401||response.status===403)fail('A WUZAPI recusou o token administrativo.',502);
+  if(!response.ok)fail(`A consulta administrativa da WUZAPI retornou HTTP ${response.status}.`,502);
+  const result=await response.json().catch(()=>null);
+  if(result?.success!==true||!Array.isArray(result.data))fail('A WUZAPI respondeu em um formato inesperado ao listar as sessões.',502);
+  const id=sessionId.trim();
+  const matches=id?result.data.filter(user=>user?.id===id):result.data;
+  if(!matches.length)fail('Nenhuma sessão correspondente foi encontrada na WUZAPI.');
+  if(matches.length!==1)fail('Informe o ID da sessão desejada. A WUZAPI retornou mais de uma sessão.');
+  const token=matches[0]?.token;
+  if(typeof token!=='string'||!token||token===adminToken||token.length>2000||/[\s\x00-\x1f\x7f]/.test(token))fail('A WUZAPI não retornou um token válido para a sessão selecionada.',502);
+  return token;
+ }
+ async function save(body,id='evolution'){
   const provider=providerFor(id);
   if(typeof body.enabled!=='boolean'||body.target!==undefined&&body.target!=='arena')fail('As notificações devem ser destinadas ao administrador cadastrado.');
   const previous=stored(id);
@@ -74,11 +94,19 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
    if(url.replace(/\/$/,'')!==provider.url)fail('Use o servidor WUZAPI https://api.dallanspace.com.br.');
    url=provider.url;
   }else if(url)url=baseURL(url);
-  const token=body.api_key===''||body.api_key===undefined?previous.api_key:body.api_key;
+  const adminToken=id==='wuzapi'?body.admin_token??'':'';
+  const sessionId=id==='wuzapi'?body.session_id??'':'';
+  if(typeof sessionId!=='string'||sessionId.length>200)fail('Informe um ID de sessão válido da WUZAPI.');
+  if(sessionId.trim()&&!adminToken)fail('Informe o token administrativo para selecionar outra sessão.');
+  let token=body.api_key===''||body.api_key===undefined?previous.api_key:body.api_key;
   if(typeof token!=='string'||token.length>2000||/[\s\x00-\x1f\x7f]/.test(token))fail('Informe um token de instância válido, sem espaços ou quebras de linha.');
   let number=body.arena_number??previous.arena_number;
   if(typeof number!=='string')fail('Informe o WhatsApp do administrador.');
   number=number.trim();if(number&&(number!==previous.arena_number||country!==previous.country_code))number=normalizeNumber(number,country);
+  if(adminToken!==''){
+   token=await resolveWuzapiToken(adminToken,sessionId);
+   if(JSON.stringify(stored(id))!==JSON.stringify(previous))fail('A configuração WUZAPI foi alterada durante a consulta. Tente novamente.',409);
+  }
   if(body.enabled&&(!url||!token||!number))fail('Para ativar, informe o servidor, o token da instância e o WhatsApp do administrador.');
   transaction(db,()=>{
    db.prepare(`INSERT INTO ${provider.table} VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,base_url=excluded.base_url,api_key=excluded.api_key,arena_number=excluded.arena_number,country_code=excluded.country_code`).run(body.enabled?1:0,url,token,number,country);

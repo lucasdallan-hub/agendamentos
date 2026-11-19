@@ -260,3 +260,34 @@ test('WUZAPI: token recusado impede tentativa de iniciar sessão',async t=>{
  assert.match(result.data.error,/HTTP 401/);
  assert.deepEqual(f.requests.map(r=>new URL(r.url).pathname),['/session/status']);
 });
+
+test('WUZAPI: usa token administrativo só ao localizar a sessão e guarda a credencial individual',async t=>{
+ const f=await fixture(t,{respond:async request=>{
+  const {pathname}=new URL(request.url);
+  if(pathname==='/admin/users'){
+   assert.equal(request.method,'GET');
+   assert.equal(request.headers.get('authorization'),'test-wuz-admin');
+   assert.equal(request.options.redirect,'manual');
+   assert.equal(request.headers.has('token'),false);
+   return Response.json({success:true,data:[{id:'arena-a',token:'session-token-a'},{id:'arena-b',token:'session-token-b'}]});
+  }
+  assert.equal(pathname,'/session/status');
+  assert.equal(request.headers.get('token'),'session-token-b');
+  assert.equal(request.headers.has('authorization'),false);
+  return Response.json({success:true,data:{connected:true,loggedIn:true}});
+ }});
+ const config='notifications/config?provider=wuzapi';
+ const body={enabled:false,admin_token:'test-wuz-admin'};
+ assert.equal((await f.api(config,body,{method:'PUT',auth:false})).status,401);
+ assert.equal(f.requests.length,0);
+ const ambiguous=await f.api(config,body,{method:'PUT'});
+ assert.equal(ambiguous.status,400);
+ assert.match(ambiguous.data.error,/ID da sessão/);
+ assert.equal((await f.api(config)).data.token_configured,false);
+ const saved=await f.api(config,{...body,session_id:'arena-b'},{method:'PUT'});
+ assert.equal(saved.status,200);
+ assert.equal(saved.data.connection_ready,true);
+ assert.doesNotMatch(JSON.stringify(saved.data),/session-token|test-wuz-admin/);
+ assert.equal(f.db.prepare('SELECT api_key FROM notification_wuzapi').get().api_key,'session-token-b');
+ assert.deepEqual((await f.api('notifications/check?provider=wuzapi',{})).data,{connected:true,logged_in:true});
+});

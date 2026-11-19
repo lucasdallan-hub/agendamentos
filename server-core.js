@@ -101,7 +101,7 @@ const server=http.createServer(async(req,res)=>{
   const whatsappProvider=url.searchParams.get('provider')??'evolution';
   if(url.pathname==='/api/notifications/config'){
    if(req.method==='GET')return json(res,200,notifications.summary(whatsappProvider));
-   if(req.method==='PUT')return json(res,200,notifications.save(body,whatsappProvider));
+   if(req.method==='PUT')return json(res,200,await notifications.save(body,whatsappProvider));
   }
   if(url.pathname==='/api/notifications/events'&&req.method==='GET')return json(res,200,await notifications.recoverPending());
   if(url.pathname==='/api/notifications/webhook'&&req.method==='POST')return json(res,200,await notifications.syncWebhook(body));
