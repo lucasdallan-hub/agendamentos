@@ -36,14 +36,23 @@ O cliente pode enviar um arquivo JPG, PNG ou PDF de até 5 MB. Na reserva, abra 
 
 ## Pix via MisticPay
 
-1. Na MisticPay, abra **API → Chaves de Acesso → Criar Chave de Acesso** e marque `TRANSACTION_CREATE` e `TRANSACTION_READ`. Copie o Client ID (`pk_`) e o Client Secret (`sk_`) da mesma chave.
-2. No painel da própria arena, abra **Financeiro → Configurar MisticPay**. Cadastre o Client ID, o Client Secret e a origem HTTPS pública da arena, como `https://sua-arena.com.br`. Salvar valida o acesso de consulta. As chaves ficam no banco privado daquela arena. A MisticPay informa que as credenciais legadas `ci_` e `cs_` foram desativadas em 30/09/2026. [Autenticação da MisticPay](https://docs.misticpay.com/#authentication)
-3. No catálogo, escolha **Pix via MisticPay** na confirmação da reserva. O CPF é enviado à MisticPay para emitir a cobrança e fica fora do banco da arena. O cliente recebe o QR Code e o código copia e cola.
-4. Cada cobrança registra um endereço de webhook próprio. A aplicação recebe a notificação, consulta a API autenticada e confirma o pagamento quando a transação estiver completa e o valor integral corresponder à reserva. Também é possível consultar o status na tela de pagamento ou pelo painel.
+A Arena usa a API de transações em `https://api.misticpay.com/api` com Basic e o par `pk_` e `sk_`. A API Finance usa outro domínio, outras chaves e um contrato próprio. A Arena usa apenas as rotas `POST /transactions/create` e `POST /transactions/check` da API de transações. [API de transações](https://docs.misticpay.com/) · [API Finance](https://docs.finance.misticpay.com/authentication)
 
-Se a primeira verificação retornar `404 INTERNAL_ERROR`, abra **Validar com uma transação existente** e informe o ID de um Pix da própria conta no painel da MisticPay. A consulta verifica o acesso sem gerar cobrança ou alterar o Pix.
+1. Na MisticPay, abra **API → Chaves de Acesso → Criar Chave de Acesso**. Marque `TRANSACTION_CREATE` e `TRANSACTION_READ` e copie o Client ID e o Client Secret do mesmo par. [Autenticação da MisticPay](https://docs.misticpay.com/#authentication)
+2. Em **Financeiro → Configurar MisticPay**, informe as chaves e a origem HTTPS pública da arena, como `https://sua-arena.com.br`. **Salvar configuração** guarda o par criptografado no Durable Object da arena e deixa a verificação pendente.
+3. Em **Verificar conexão**, informe o ID de um Pix existente da própria conta MisticPay. A consulta valida a comunicação e o acesso de leitura sem criar cobrança. Se houver uma configuração verificada, ela continua ativa enquanto a nova está pendente ou falhou. O painel mostra o horário, a resposta HTTP, o código e a referência do provedor.
+4. Quando a configuração estiver verificada, o catálogo pode emitir QR Code e Pix copia e cola. O CPF é enviado à MisticPay na emissão e fica fora do banco da arena. Se a criação terminar com resultado incerto, a cobrança segue vinculada à mesma referência para consulta.
 
-A rede precisa permitir saída HTTPS para `api.misticpay.com`. Uma falha incerta na geração mantém a reserva vinculada à cobrança até consulta, para evitar cobrança duplicada. A MisticPay usa ambiente de produção, e os testes do projeto simulam a API. [Documentação da MisticPay](https://docs.misticpay.com/)
+Cada cobrança registra uma URL HTTPS de webhook própria. A notificação aciona uma consulta autenticada. A baixa exige `COMPLETO` com a referência do pedido e o valor integral da reserva. Notificações repetidas já confirmadas podem ser descartadas. O horário segue reservado durante a conciliação.
+
+### Publicação e rollback da MisticPay
+
+1. Guarde no gerenciador de segredos uma chave aleatória de 32 bytes, representada por 64 dígitos hexadecimais. Cadastre-a como **Worker Secret** `MISTICPAY_CREDENTIALS_KEY` no Worker `agendamentos`. Pela CLI, use `npx wrangler secret put MISTICPAY_CREDENTIALS_KEY` e informe o valor no prompt. Para execução Node, use a variável de servidor de mesmo nome. Preserve o valor entre deploys e mantenha cópias protegidas do banco e da chave.
+2. Confirme a saída HTTPS para `api.misticpay.com`. Registre o ID da versão atual em **Workers & Pages → agendamentos → Deployments**. Execute `npm test`, `npm run test:cloudflare` e `npm run build`. Publique pelo fluxo GitHub configurado ou com `npm run deploy:cloudflare -- --keep-vars` em uma máquina autenticada.
+3. Confira o site e o login, salve a configuração e consulte um Pix existente da própria conta. As credenciais legadas, quando encontradas, são cifradas na primeira leitura administrativa ou uso. Elas aparecem como pendentes até uma consulta bem-sucedida. A inspeção de logs usa a operação, o status, o código seguro, a referência e o horário.
+4. Para reverter, priorize uma versão compatível com as credenciais cifradas. Use o botão de rollback em **Deployments** ou `npx wrangler rollback ID_DA_VERSAO`. As reservas e cobranças ficam no banco atual. Uma versão anterior à cifragem perde acesso às chaves migradas. Nessa situação, trate o Pix MisticPay como indisponível até restaurar a versão compatível e mantenha o segredo existente. [Rollback do Worker](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)
+
+As provas automatizadas usam respostas simuladas. A validação de consulta verifica `TRANSACTION_READ`. A emissão real também exige `TRANSACTION_CREATE` e uma operação autorizada em produção. [Consulta](https://docs.misticpay.com/#check-transaction) · [Erros e referência de suporte](https://docs.misticpay.com/#errors)
 
 ## Atualização e persistência
 

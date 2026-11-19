@@ -44,10 +44,13 @@ function receiptLabel(b){
 const misticpayLabels={
  pending:'Pix MisticPay pendente',approved:'Pix MisticPay confirmado',failed:'Falha na cobrança MisticPay',
  creating:'Preparando Pix MisticPay',unknown:'Aguardando confirmação da MisticPay',
- review:'⚠ Conferir Pix MisticPay',archived:'Pix MisticPay no histórico'
+ review:'⚠ Conferir Pix MisticPay',cancelled:'Pix MisticPay cancelado',
+ refunded:'Pix MisticPay devolvido',archived:'Pix MisticPay no histórico'
 };
 const misticpayInProgress=['pending','creating','unknown','review'];
+const misticpayHistorical=['cancelled','refunded','archived'];
 function bookingPaymentLabel(b){
+ if(misticpayHistorical.includes(b.misticpay_status))return misticpayLabels[b.misticpay_status];
  if(b.status==='cancelled')return 'Cancelado';
  if(b.online_status==='review')return '⚠ Conferir pagamento';
  if(b.online_status==='refunded')return 'Estornado';
@@ -91,10 +94,10 @@ function courtCard(court){
 function render(){
  renderNotifications();
  if(view==='history')renderHistory();
- const active=bookings.filter(b=>b.status==='confirmed'), daily=active.filter(b=>b.date===today()), paid=active.filter(b=>b.paid), pending=active.filter(b=>!b.paid&&!['refunded','charged_back','review'].includes(b.online_status)&&b.misticpay_status!=='review');
+ const active=bookings.filter(b=>b.status==='confirmed'), daily=active.filter(b=>b.date===today()), paid=active.filter(b=>b.paid), pending=active.filter(b=>!b.paid&&!['refunded','charged_back','review'].includes(b.online_status)&&!misticpayHistorical.includes(b.misticpay_status)&&b.misticpay_status!=='review');
  document.querySelectorAll('[data-payment-banner]').forEach(el=>{el.classList.toggle('payment-ready',paymentConfig.ready);el.innerHTML=`<div><strong>Mercado Pago · ${paymentConfig.ready?(paymentConfig.mode==='test'?'Modo de teste':'Cobrança online ativa'):'Aguardando ativação'}</strong><p>${paymentConfig.ready?(paymentConfig.mode==='test'?'Links de teste: use contas de teste do Mercado Pago. Não representam recebimentos reais.':'Envie o link ao cliente. A confirmação é consultada diretamente no Mercado Pago.'):'Configure a conta Mercado Pago, a assinatura das notificações e o endereço público para gerar cobranças.'}</p></div><span class="badge ${paymentConfig.ready?'paid':''}">${paymentConfig.ready?'Checkout Pro':'Configuração pendente'}</span>`;});
  $('#financial-connection-description').textContent=paymentConfig.ready?`Conta ${paymentConfig.account_id||'configurada'} · ${paymentConfig.mode==='production'?'Produção':'Teste'} · conexão exclusiva desta arena.`:'Configure as credenciais da conta que receberá os pagamentos desta arena.';
- $('#misticpay-connection-description').textContent=misticpayConfig.ready?'A arena pode gerar cobranças Pix com QR Code pela MisticPay.':'Cadastre as chaves da conta que receberá os pagamentos Pix.';
+ renderMisticpayConfig();
  $('#pix-settings-description').textContent=pixSettings.ready?`Chave cadastrada para ${pixSettings.receiver}. A arena confere o valor e o crédito na conta.`:'Cadastre a chave da arena para que o cliente pague por Pix e envie o comprovante.';
  const sum=a=>a.reduce((s,b)=>s+b.total,0);
  $('#stats').innerHTML=stat('Agendamentos hoje',daily.length,'Reservas confirmadas','▤')+stat('Recebido hoje',money(sum(paid.filter(b=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo'}).format(new Date(b.paid_at))===today()))),'Pagamentos registrados hoje','↑')+stat('A receber',money(sum(pending)),'Reservas ativas não pagas','◷')+stat('Quadras ativas',courts.filter(c=>c.active).length,'Prontas para receber jogos','▱');
@@ -105,7 +108,7 @@ function render(){
  $('#booking-empty').hidden=filtered.length>0;
  $('#court-list').innerHTML=courts.length?courts.map(courtCard).join(''):'<div class="empty"><h3>A sua arena começa aqui</h3><p>Adicione a primeira quadra para criar agendamentos.</p></div>';
  const payments=bookings.filter(b=>b.paid||b.online_status||b.misticpay_status||b.pix_link||b.receipt_status);
- $('#finance-rows').innerHTML=payments.sort((a,b)=>(b.paid_at||b.date).localeCompare(a.paid_at||a.date)).map(b=>`<tr><td>${esc(b.customer)}</td><td>${esc(b.court_name)}</td><td>${b.paid_at?new Date(b.paid_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'—'}</td><td>${esc(b.misticpay_status?'Pix via MisticPay':b.method||(b.pix_link?'Pix direto':'Mercado Pago'))}</td><td>${money(b.total)}</td><td><span class="badge ${b.paid?'paid':''}">${b.paid?'Pago':bookingPaymentLabel(b)}</span></td></tr>`).join('');
+ $('#finance-rows').innerHTML=payments.sort((a,b)=>(b.paid_at||b.date).localeCompare(a.paid_at||a.date)).map(b=>`<tr><td>${esc(b.customer)}</td><td>${esc(b.court_name)}</td><td>${b.paid_at?new Date(b.paid_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'—'}</td><td>${esc(b.misticpay_status?'Pix via MisticPay':b.method||(b.pix_link?'Pix direto':'Mercado Pago'))}</td><td>${money(b.total)}</td><td><span class="badge ${b.paid?'paid':''}">${b.paid&&!b.misticpay_status?'Pago':bookingPaymentLabel(b)}</span></td></tr>`).join('');
  $('#finance-empty').hidden=payments.length>0;
 }
 const historyPageSize=50;
@@ -132,7 +135,7 @@ function renderHistory(){
  $('#history-rows').innerHTML=results.slice(offset,offset+historyPageSize).map(b=>{
   const cancelled=b.status==='cancelled';
   const date=historyDate.format(new Date(b.date+'T00:00:00Z'));
-  return `<tr><td>#${esc(b.id)}</td><td>${esc(b.customer)}<small>${esc(b.phone)}</small></td><td>${esc(b.court_name)}</td><td>${date}<small>${esc(b.start)} – ${esc(b.end)}</small></td><td><span class="badge ${cancelled?'cancelled':'paid'}">${cancelled?'Cancelado':'Confirmado'}</span></td><td>${money(b.total)}</td><td>${cancelled?'—':bookingPaymentLabel(b)}</td></tr>`;
+  return `<tr><td>#${esc(b.id)}</td><td>${esc(b.customer)}<small>${esc(b.phone)}</small></td><td>${esc(b.court_name)}</td><td>${date}<small>${esc(b.start)} – ${esc(b.end)}</small></td><td><span class="badge ${cancelled?'cancelled':'paid'}">${cancelled?'Cancelado':'Confirmado'}</span></td><td>${money(b.total)}</td><td>${cancelled&&!b.misticpay_status?'—':bookingPaymentLabel(b)}</td></tr>`;
  }).join('');
  $('#history-empty').hidden=results.length>0;
  $('#history-pagination').hidden=pages===1;
@@ -593,17 +596,100 @@ $('#configure-catalog').onclick=async()=>{
  try{const config=await api('catalog/settings');openModal('Catálogo e agendamento online',`<p>Divulgue <a href="/catalogo" target="_blank" rel="noopener noreferrer">${esc(location.origin)}/catalogo</a> para seus clientes reservarem diretamente.</p><label class="check-label"><input name="enabled" type="checkbox" ${config.enabled?'checked':''}> Aceitar reservas pelo catálogo</label><label>Abertura<input name="open" type="time" step="1800" value="${esc(config.open)}" required></label><label>Fechamento<input name="close" type="time" step="1800" value="${esc(config.close)}" required></label><p>Reservas de 30 minutos a 4 horas, até 180 dias à frente. O pagamento é confirmado separadamente.</p>`,data=>api('catalog/settings',{...data,enabled:data.enabled==='on'},'PUT'));}catch(error){toast(error.message);}
 };
 $('#configure-financial').onclick=()=>openModal('Conectar Mercado Pago desta arena',`<p>Use as credenciais da aplicação Mercado Pago desta arena. Elas não serão compartilhadas com a mãe ou com outros filhos.</p><label>Ambiente<select name="mode"><option value="test" ${paymentConfig.mode==='test'?'selected':''}>Teste</option><option value="production" ${paymentConfig.mode==='production'?'selected':''}>Produção</option></select></label><label>Endereço público HTTPS<input name="base_url" type="url" value="${esc(paymentConfig.base_url||location.origin)}" required></label><label>Access Token<input name="token" type="password" autocomplete="new-password" maxlength="2000" placeholder="${paymentConfig.token_configured?'Já configurado; deixe vazio para manter':'Token da aplicação desta arena'}" ${paymentConfig.token_configured?'':'required'}></label><label>Segredo de assinatura do webhook<input name="webhook_secret" type="password" autocomplete="new-password" maxlength="2000" placeholder="${paymentConfig.webhook_configured?'Já configurado; deixe vazio para manter':'Segredo do webhook desta aplicação'}" ${paymentConfig.webhook_configured?'':'required'}></label><p>Configure no Mercado Pago notificações de Pagamentos para <strong>${esc(paymentConfig.base_url||location.origin)}/api/payments/webhook</strong>. O sistema verificará a conta antes de salvar. Os campos secretos nunca são devolvidos ao navegador.</p>`,data=>api('payments/config',data,'PUT'),'Salvar e verificar conta');
-$('#configure-misticpay').onclick=()=>openModal('Conectar MisticPay',`
+const misticpayConfigureButton=$('#configure-misticpay');
+const misticpayVerifyButton=document.createElement('button');
+misticpayVerifyButton.type='button';
+misticpayVerifyButton.className='outline';
+misticpayVerifyButton.textContent='Verificar conexão';
+misticpayVerifyButton.disabled=true;
+const misticpayActions=document.createElement('div');
+misticpayActions.className='misticpay-config-actions';
+misticpayConfigureButton.replaceWith(misticpayActions);
+misticpayActions.append(misticpayConfigureButton,misticpayVerifyButton);
+const misticpayDescription=$('#misticpay-connection-description');
+misticpayDescription.setAttribute('role','status');
+const misticpayDiagnostic=document.createElement('div');
+misticpayDiagnostic.className='misticpay-config-diagnostic';
+misticpayDescription.after(misticpayDiagnostic);
+
+function formatMisticpayDate(value){
+ if(!value)return '';
+ const date=new Date(value);
+ if(Number.isNaN(date.getTime()))return '';
+ return date.toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short',timeZone:'America/Sao_Paulo'});
+}
+function misticpayErrorMarkup(error){
+ if(!error)return '';
+ const details=[
+  Number.isInteger(error.http_status)?`HTTP ${error.http_status}`:'',
+  error.code?`Código ${error.code}`:'',
+  error.request_id?`Solicitação ${error.request_id}`:'',
+  error.operation?`Operação ${error.operation}`:''
+ ].filter(Boolean);
+ return `<p>${esc(error.message||'A verificação falhou.')}</p>${details.length?`<small>${details.map(esc).join(' · ')}</small>`:''}`;
+}
+function renderMisticpayConfig(){
+ const {ready,storage_ready,public_key_configured,secret_key_configured,verification_state,verification_error,last_checked_at,last_verified_at}=misticpayConfig;
+ const messages={
+  unconfigured:'Cadastre as chaves da conta que receberá os pagamentos Pix.',
+  pending:'Configuração salva. Verificação pendente.',
+  verified:'Conexão verificada.',
+  failed:'A verificação falhou.'
+ };
+ const state=verification_state??(ready?'verified':'unconfigured');
+ const checkedAt=formatMisticpayDate(last_checked_at||verification_error?.checked_at);
+ const verifiedAt=formatMisticpayDate(last_verified_at);
+ const content=[storage_ready===false?'O armazenamento das chaves está temporariamente indisponível.':messages[state]];
+ if(ready&&state!=='verified')content.push('Os pagamentos usam a última configuração verificada.');
+ if(checkedAt)content.push(`Última consulta em ${checkedAt}.`);
+ if(verifiedAt&&verifiedAt!==checkedAt)content.push(`Última verificação bem-sucedida em ${verifiedAt}.`);
+ misticpayDescription.textContent=content.filter(Boolean).join(' ');
+ misticpayDiagnostic.innerHTML=misticpayErrorMarkup(verification_error);
+ misticpayConfigureButton.disabled=storage_ready===false;
+ misticpayVerifyButton.disabled=storage_ready===false||!public_key_configured||!secret_key_configured;
+ misticpayVerifyButton.textContent=state==='failed'?'Verificar novamente':'Verificar conexão';
+}
+
+misticpayConfigureButton.onclick=()=>openModal('Configurar MisticPay',`
  <label>Endereço público HTTPS da arena<input name="base_url" type="url" value="${esc(misticpayConfig.base_url||location.origin)}" required></label>
  <label>Client ID<input name="client_id" type="password" autocomplete="new-password" maxlength="255" placeholder="${misticpayConfig.public_key_configured?'Deixe vazio para manter a chave pk_ salva':'pk_…'}" ${misticpayConfig.public_key_configured?'':'required'}></label>
  <label>Client Secret<input name="client_secret" type="password" autocomplete="new-password" maxlength="255" placeholder="${misticpayConfig.secret_key_configured?'Deixe vazio para manter a chave sk_ salva':'sk_…'}" ${misticpayConfig.secret_key_configured?'':'required'}></label>
  <p>No <a href="https://app.misticpay.com/login" target="_blank" rel="noopener noreferrer">painel da MisticPay</a>, abra <strong>API → Chaves de Acesso</strong> e habilite <code>TRANSACTION_CREATE</code> e <code>TRANSACTION_READ</code>. <a href="https://docs.misticpay.com/#authentication" target="_blank" rel="noopener noreferrer">Guia de autenticação</a></p>
- ${misticpayConfig.ready?'':`<details>
-  <summary>Validar com uma transação existente</summary>
-  <label>Identificador da transação Pix (opcional)<input name="verification_transaction_id" maxlength="128" autocomplete="off" spellcheck="false" aria-describedby="misticpay-verification-help"></label>
-  <p id="misticpay-verification-help">Se a verificação automática retornar HTTP 404 ou INTERNAL_ERROR, copie o identificador de uma transação Pix no painel da MisticPay. A verificação só consulta essa transação.</p>
- </details>`}
-`,data=>api('misticpay/config',data,'PUT'),'Salvar e verificar');
+ <p>Salve as chaves e o endereço. O ID de uma transação Pix é necessário apenas ao escolher <strong>Verificar conexão</strong>.</p>
+`,async ({client_id,client_secret,base_url})=>{
+ const field=$('#modal-fields [name="client_id"]');
+ misticpayConfig=await api('misticpay/config',{client_id,client_secret,base_url},'PUT');
+ render();
+ if(field?.isConnected&&$('#modal').open)$('#modal').close();
+ toast('Configuração MisticPay salva.');
+ return false;
+},'Salvar configuração');
+
+misticpayVerifyButton.onclick=()=>openModal('Verificar conexão MisticPay',`
+ <p>A verificação consulta um Pix existente com as chaves já salvas. Salve qualquer alteração na configuração antes de verificar.</p>
+ <label>Identificador da transação Pix<input id="misticpay-verification-id" name="transaction_id" maxlength="128" autocomplete="off" spellcheck="false" aria-describedby="misticpay-verification-help" required></label>
+ <p id="misticpay-verification-help">Copie o ID de uma transação Pix no painel da MisticPay.</p>
+ <div id="misticpay-verification-feedback" class="misticpay-config-diagnostic" role="status"></div>
+`,async ({transaction_id})=>{
+ const id=transaction_id.trim();
+ if(!id)throw Error('Informe o identificador de uma transação Pix.');
+ const field=$('#misticpay-verification-id');
+ $('#misticpay-verification-feedback').replaceChildren();
+ field.value='';
+ misticpayConfig=await api('misticpay/config/verify',{transaction_id:id});
+ render();
+ if(misticpayConfig.verification_state==='verified'){
+  if(field.isConnected&&$('#modal').open)$('#modal').close();
+  toast('Conexão MisticPay verificada.');
+ }else if(field.isConnected&&$('#modal').open){
+  $('#misticpay-verification-feedback').innerHTML=misticpayErrorMarkup(misticpayConfig.verification_error)||'<p>A conexão ainda aguarda verificação.</p>';
+  $('#save-modal').textContent='Verificar novamente';
+ }
+ return false;
+},'Verificar conexão');
+$('#modal').addEventListener('close',()=>{
+ $('#modal-fields').querySelectorAll('[name="client_id"],[name="client_secret"],#misticpay-verification-id').forEach(field=>{field.value='';});
+});
 $('#edit-branding').onclick=()=>{
  openModal('Nome e logo do sistema',`<label>Nome<input name="name" value="${esc(systemBranding.name)}" maxlength="80" required></label><label>Logo PNG ou JPEG (até 250 KB)<input id="system-logo-file" type="file" accept="image/png,image/jpeg"></label><label class="check-label"><input name="remove_logo" type="checkbox"> Remover logo atual</label>`,async data=>{
   let logo=data.remove_logo?'':systemBranding.logo;const file=$('#system-logo-file').files[0];

@@ -74,18 +74,20 @@ const misticpayStatus={
  approved:'Pagamento confirmado.',
  failed:'A cobrança não foi concluída. Fale com a arena para combinar o pagamento.',
  review:'A arena está conferindo o pagamento.',
+ cancelled:'A cobrança Pix foi cancelada.',
+ refunded:'O pagamento Pix foi devolvido.',
  creating:'A cobrança está sendo preparada.',
  unknown:'A confirmação da cobrança está pendente.',
  archived:'Cobrança registrada no histórico da arena.'
 };
-function misticpayDetails(payment){
- const pending=payment.status==='pending';
+function misticpayDetails(payment,canAct){
+ const pending=canAct&&payment.status==='pending';
  const qr=payment.qr_code;
  const qrImage=pending&&typeof qr==='string'&&qr.length<=200_000&&/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(qr)
   ?`<img class="misticpay-qr" src="${esc(qr)}" alt="QR Code do Pix via MisticPay">`:'';
  const code=pending&&typeof payment.copy_paste==='string'&&payment.copy_paste.length<=4096
   ?payment.copy_paste:'';
- const canCheck=['pending','review','creating','unknown'].includes(payment.status);
+ const canCheck=canAct&&['pending','review','creating','unknown'].includes(payment.status);
  return `<section class="misticpay-details" aria-labelledby="misticpay-title">
   <h3 id="misticpay-title">Pix via MisticPay</h3>
   <p>${misticpayStatus[payment.status]||'Consulte a arena sobre este pagamento.'}</p>
@@ -98,8 +100,8 @@ function misticpayDetails(payment){
  </section>`;
 }
 function paymentChoices(booking){
+ if(booking.misticpay)return misticpayDetails(booking.misticpay,!booking.paid&&booking.status==='confirmed');
  if(booking.paid||booking.status!=='confirmed')return '';
- if(booking.misticpay)return misticpayDetails(booking.misticpay);
  if(booking.checkout_link_ready&&!booking.checkout_method){
   return '<div class="catalog-payment-actions"><button type="button" class="primary" data-payment="checkout">Continuar pagamento</button></div>';
  }
@@ -121,7 +123,8 @@ function paymentChoices(booking){
 }
 function renderConfirmation(b){
  bookingConfirmation=b;
- $('#catalog-confirmation').innerHTML=`<span class="eyebrow">${b.status==='cancelled'?'RESERVA CANCELADA':'HORÁRIO RESERVADO'}</span><h2>${b.status==='cancelled'?'Entre em contato com a arena.':`Tudo certo, ${esc(b.customer)}!`}</h2><p>${esc(b.court_name)} · ${dateLabel(b.date)} · ${b.start} – ${b.end}</p><p class="catalog-total">${money(b.total)}</p><p>${b.paid?'Pagamento confirmado.':b.status==='cancelled'?'Esta reserva foi cancelada pela arena.':'Reserva confirmada. O pagamento ainda está pendente.'}</p>${paymentChoices(b)}<p>Guarde este link privado para consultar sua reserva. Não o compartilhe com terceiros.</p><button id="copy-reservation" class="outline">Copiar link da reserva</button> <a class="outline" href="/catalogo">Fazer outra reserva</a>`;
+ const summary=b.status==='cancelled'?'Esta reserva foi cancelada pela arena.':b.misticpay?'':b.paid?'Pagamento confirmado.':'Reserva confirmada. O pagamento ainda está pendente.';
+ $('#catalog-confirmation').innerHTML=`<span class="eyebrow">${b.status==='cancelled'?'RESERVA CANCELADA':'HORÁRIO RESERVADO'}</span><h2>${b.status==='cancelled'?'Entre em contato com a arena.':`Tudo certo, ${esc(b.customer)}!`}</h2><p>${esc(b.court_name)} · ${dateLabel(b.date)} · ${b.start} – ${b.end}</p><p class="catalog-total">${money(b.total)}</p>${summary?`<p>${summary}</p>`:''}${paymentChoices(b)}<p>Guarde este link privado para consultar sua reserva. Não o compartilhe com terceiros.</p><button id="copy-reservation" class="outline">Copiar link da reserva</button> <a class="outline" href="/catalogo">Fazer outra reserva</a>`;
  $('#copy-reservation').onclick=async()=>{try{await navigator.clipboard.writeText(location.href);$('#copy-reservation').textContent='Link copiado';}catch{$('#catalog-error').textContent='Copie o endereço desta página para guardar seu link.';}};
 }
 async function showConfirmation(token){
@@ -131,7 +134,8 @@ async function showConfirmation(token){
  }catch(error){$('#catalog-confirmation').textContent='Não foi possível consultar a reserva.';$('#catalog-error').textContent=error.message;}
 }
 function updateMisticpay(payment){
- renderConfirmation({...bookingConfirmation,paid:bookingConfirmation.paid||payment.status==='approved',misticpay:payment});
+ const reversed=['refunded','review','cancelled'].includes(payment.status);
+ renderConfirmation({...bookingConfirmation,paid:!reversed&&(bookingConfirmation.paid||payment.status==='approved'),misticpay:payment});
 }
 const misticpayDialog=$('#catalog-misticpay-modal');
 const cpfField=$('#catalog-misticpay-cpf');

@@ -12,6 +12,7 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const directory=await mkdtemp(path.join(os.tmpdir(),'arena-cloudflare-test-'));
 console.log('Cloudflare smoke: production Worker, SQLite and manual receipt review');
 const password='admin';
+const misticpayTestKey=randomBytes(32).toString('hex');
 const configFile=path.join(directory,'wrangler.json');
 const persist=path.join(directory,'state');
 let worker,output='',cookie='',checks=0;
@@ -31,7 +32,7 @@ async function makeConfig({bootstrap=false}={}){
  config.assets.html_handling='none';
  config.dev={...config.dev,enable_containers:false};
  config.observability={enabled:false};
- config.vars={...config.vars,...(bootstrap?{ADMIN_INITIAL_PASSWORD:password}:{})};
+ config.vars={...config.vars,MISTICPAY_CREDENTIALS_KEY:misticpayTestKey,...(bootstrap?{ADMIN_INITIAL_PASSWORD:password}:{})};
  await writeFile(configFile,JSON.stringify(config,null,2),{mode:0o600});
 }
 async function stop(){
@@ -84,6 +85,18 @@ try{
  const login=await api('/api/login',{password});assert.equal(login.status,200,JSON.stringify(login.data));
  assert.match(login.headers.get('set-cookie'),/; Secure/);assert.match(login.headers.get('set-cookie'),/HttpOnly/);
  passed('bootstrap login, authorization and secure session cookie');
+ const misticpayConfigPath='/api/misticpay/config';
+ assert.equal((await api(misticpayConfigPath,undefined,{auth:false})).status,401);
+ assert.equal((await api(misticpayConfigPath)).data.storage_ready,true);
+ const misticpayDraft=await api(misticpayConfigPath,{
+  client_id:'pk_local_fixture',client_secret:'sk_local_fixture',base_url:'https://arena.example'
+ },{method:'PUT'});
+ assert.equal(misticpayDraft.status,200,JSON.stringify(misticpayDraft.data));
+ assert.equal(misticpayDraft.data.verification_state,'pending');
+ assert.equal(misticpayDraft.data.ready,false);
+ assert.doesNotMatch(JSON.stringify(misticpayDraft.data),/local_fixture/);
+ assert.equal((await api(misticpayConfigPath+'/verify',{})).status,400);
+ passed('MisticPay credentials save inside Durable SQLite with verification pending');
  const cross=await api('/api/courts',{name:'Nope',type:'Areia',price:120},{headers:{Origin:'https://attacker.example'}});assert.equal(cross.status,403);
  const sameOrigin=await api('/api/courts',{name:'Areia CF',type:'Vôlei de areia',price:120},{headers:{Origin:base}});assert.equal(sameOrigin.status,201,JSON.stringify(sameOrigin.data));
  const court=sameOrigin.data.id;
@@ -155,6 +168,7 @@ try{
  assert.equal((await api('/api/notifications/config',undefined,{headers:childHeaders})).data.token_configured,false);
  assert.equal((await api('/api/notifications/events',undefined,{headers:childHeaders})).data.length,0);
  assert.equal((await api('/api/payments/config',undefined,{headers:childHeaders})).data.ready,false);
+ assert.equal((await api(misticpayConfigPath,undefined,{headers:childHeaders})).data.verification_state,'unconfigured');
  const childOriginal=await api(`/api/receipts/1/file`,undefined,{headers:childHeaders});
  assert.equal(childOriginal.status,200);assert.deepEqual(childOriginal.data,fixture);
  assert.equal((await api('/api/courts',{name:'Só no filho',type:'Vôlei',price:50},{headers:childHeaders})).status,201);

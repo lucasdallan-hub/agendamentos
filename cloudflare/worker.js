@@ -34,6 +34,7 @@ export class Arena extends DurableObject {
   const paymentConfig=child?{ready:false,mode:'test'}:paymentConfiguration(this.env);
   const {server}=createApplication({
    db,paymentConfig,paymentClient:new MercadoPago(paymentConfig),
+   misticpayEncryptionKey:this.env.MISTICPAY_CREDENTIALS_KEY,
    sessionStore:new DurableMap(db,'session'),attemptStore:new DurableMap(db,'login-attempt'),cookieSecure:true,
    clientKey:req=>req.headers['cf-connecting-ip']||req.socket.remoteAddress
   });

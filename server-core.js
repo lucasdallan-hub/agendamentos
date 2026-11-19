@@ -11,14 +11,15 @@ import {financialSettings} from './financial-settings.js';
 import {createMisticPay} from './misticpay.js';
 import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
-export function createApplication({db,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch,misticpayFetch=fetch}={}) {
+export function createApplication({db,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch,misticpayFetch=fetch,misticpayEncryptionKey}={}) {
 db.exec(`CREATE TABLE IF NOT EXISTS admin(id INTEGER PRIMARY KEY CHECK(id=1), salt TEXT NOT NULL, hash TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS courts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, price INTEGER NOT NULL CHECK(price>0), active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, court_id INTEGER NOT NULL REFERENCES courts(id), customer TEXT NOT NULL, phone TEXT NOT NULL, date TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, total INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'confirmed', paid INTEGER NOT NULL DEFAULT 0, method TEXT, paid_at TEXT, notes TEXT NOT NULL DEFAULT '');`);
 initializeSystems(db);
 const payments=createPayments(db,paymentConfig,paymentClient);
 const financial=financialSettings(db,paymentConfig);
-const misticpay=createMisticPay(db,{fetchImpl:misticpayFetch});
+const arenaIdentity=setting(db,'identity');
+const misticpay=createMisticPay(db,{fetchImpl:misticpayFetch,encryptionKey:misticpayEncryptionKey,scope:arenaIdentity?`child:${arenaIdentity.slug}`:'main'});
 const pix=createPix(db);
 const courtPhotos=createCourtPhotos(db);
 const notifications=bookingNotifications(db,{fetchImpl:notificationFetch});
@@ -72,7 +73,7 @@ const server=http.createServer(async(req,res)=>{
    if(body.data?.id!==undefined&&String(body.data.id).toLowerCase()!==id.toLowerCase())fail('Identificador da notificação inválido.',400);
    return json(res,200,await payments.reconcile(id));
   }
-  if(req.method==='POST'&&misticWebhook)return json(res,200,await misticpay.webhook(misticWebhook[1]));
+  if(req.method==='POST'&&misticWebhook)return json(res,200,await misticpay.webhook(misticWebhook[1],body));
   const token=/arena_session=([a-f0-9]+)/.exec(req.headers.cookie||'')?.[1];
   const authenticated=token && sessions.get(token)>Date.now();
   const publicPix=/^\/api\/pix\/payments\/([^/]+)(\/receipt)?$/.exec(url.pathname);
@@ -167,9 +168,10 @@ const server=http.createServer(async(req,res)=>{
    }
   }
   if(url.pathname==='/api/misticpay/config'){
-   if(req.method==='GET')return json(res,200,misticpay.settings());
+   if(req.method==='GET')return json(res,200,await misticpay.configuration());
    if(req.method==='PUT')return json(res,200,await misticpay.saveSettings(body));
   }
+  if(req.method==='POST'&&url.pathname==='/api/misticpay/config/verify')return json(res,200,await misticpay.verify(body));
   const misticBooking=/^\/api\/bookings\/(\d+)\/(misticpay-link|sync-misticpay)$/.exec(url.pathname);
   if(req.method==='POST'&&misticBooking){
    const id=Number(misticBooking[1]);
