@@ -53,7 +53,7 @@ export function createPix(db,{receiptReader,ocrReady=false,manualReceiptReview=f
    return {path:`/pix#${token}`,expires_at};
   });
  }
- function publicPayment(token){const link=linkFor(token),b=booking(link.booking_id);if(b.status!=='confirmed')fail('Esta reserva não está mais disponível.',410);return {customer:b.customer,court_name:b.court_name,date:b.date,start:b.start,end:b.end,total:b.total,key:link.pix_key,receiver:link.receiver,paid:!!b.paid,expires_at:link.expires_at,receipt:latest(b.id)};}
+ function publicPayment(token){const link=linkFor(token),b=booking(link.booking_id);if(b.status!=='confirmed')fail('Esta reserva não está mais disponível.',410);return {customer:b.customer,court_name:b.court_name,date:b.date,start:b.start,end:b.end,total:b.total,key:link.pix_key,receiver:link.receiver,paid:!!b.paid,expires_at:link.expires_at,ocr_ready:ocrReady,receipt:latest(b.id)};}
  async function upload(token,body){
   const link=linkFor(token),b=booking(link.booking_id);available(b);
   const last=latest(b.id);if(last?.status==='pending')fail('Seu comprovante já está em análise. Aguarde a avaliação da arena.',409);
@@ -66,13 +66,20 @@ export function createPix(db,{receiptReader,ocrReady=false,manualReceiptReview=f
   attempts.set(b.id,{count:limit?.until>now?limit.count+1:1,until:limit?.until>now?limit.until:now+3600000});
   inFlight.add(b.id);processing++;
   try{
-   let result;
-   try{result=await receiptReader(data.buffer,data.mime);}catch(error){if(error.status===422)result={amount_cents:null};else throw error;}
+   let result,manual=!receiptReader||(manualReceiptReview&&!ocrReady);
+   if(!manual){
+    try{result=await receiptReader(data.buffer,data.mime);}
+    catch(error){
+     if(error?.status===422)result={amount_cents:null};
+     else if(error?.status===503)manual=true;
+     else throw error;
+    }
+   }
    const fresh=booking(b.id);available(fresh);linkFor(token);
    if(latest(b.id)?.status==='pending')fail('Já existe um comprovante em análise.',409);
    if(db.prepare('SELECT id FROM pix_receipts WHERE file_hash=?').get(hash))fail('Este comprovante já foi enviado.',409);
    const value=Number.isSafeInteger(result?.amount_cents)&&result.amount_cents>0?result.amount_cents:null;
-   const match=manualReceiptReview?'manual':value===null?'unreadable':value===fresh.total?'matched':'mismatch';
+   const match=manual?'manual':value===null?'unreadable':value===fresh.total?'matched':'mismatch';
    const inserted=db.prepare('INSERT INTO pix_receipts(booking_id,filename,mime_type,content,file_hash,amount_cents,match_status,created_at) VALUES(?,?,?,?,?,?,?,?)').run(b.id,data.filename,data.mime,data.buffer,hash,value,match,new Date().toISOString());
    return db.prepare(`SELECT ${summaryColumns} FROM pix_receipts WHERE id=?`).get(Number(inserted.lastInsertRowid));
   }finally{inFlight.delete(b.id);processing--;}
@@ -85,7 +92,7 @@ export function createPix(db,{receiptReader,ocrReady=false,manualReceiptReview=f
   if(!['approve','reject'].includes(body.decision))fail('Escolha aprovar ou rejeitar o comprovante.');
   const b=booking(receipt.booking_id);available(b);
   if(body.decision==='approve'){
-   if(manualReceiptReview){
+   if(receipt.match_status==='manual'){
     if(!Number.isSafeInteger(body.confirmed_amount_cents)||body.confirmed_amount_cents!==b.total)fail('Informe o valor recebido; ele deve corresponder ao total da reserva.',409);
    }else if(receipt.match_status!=='matched'||receipt.amount_cents!==b.total)fail('O valor lido não confere com a reserva. Solicite outro comprovante.',409);
    if(body.confirmed_received!==true)fail('Confirme que conferiu o recebimento na conta antes de aprovar.');

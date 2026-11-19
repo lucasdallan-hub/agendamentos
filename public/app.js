@@ -67,7 +67,7 @@ function render(){
  const active=bookings.filter(b=>b.status==='confirmed'), daily=active.filter(b=>b.date===today()), paid=active.filter(b=>b.paid), pending=active.filter(b=>!b.paid&&!['refunded','charged_back','review'].includes(b.online_status));
  document.querySelectorAll('[data-payment-banner]').forEach(el=>{el.classList.toggle('payment-ready',paymentConfig.ready);el.innerHTML=`<div><strong>Mercado Pago · ${paymentConfig.ready?(paymentConfig.mode==='test'?'Modo de teste':'Cobrança online ativa'):'Aguardando ativação'}</strong><p>${paymentConfig.ready?(paymentConfig.mode==='test'?'Links de teste: use contas de teste do Mercado Pago. Não representam recebimentos reais.':'Envie o link ao cliente. A confirmação é consultada diretamente no Mercado Pago.'):'Configure a conta Mercado Pago, a assinatura das notificações e o endereço público para gerar cobranças.'}</p></div><span class="badge ${paymentConfig.ready?'paid':''}">${paymentConfig.ready?'Checkout Pro':'Configuração pendente'}</span>`;});
  $('#financial-connection-description').textContent=paymentConfig.ready?`Conta ${paymentConfig.account_id||'configurada'} · ${paymentConfig.mode==='production'?'Produção':'Teste'} · conexão exclusiva desta arena.`:'Configure as credenciais da conta que receberá os pagamentos desta arena.';
- $('#pix-settings-description').textContent=pixSettings.ready?`Chave cadastrada para ${pixSettings.receiver}.${pixSettings.ocr_ready?' Leitura automática de valores disponível.':' Comprovantes com conferência manual do valor e do crédito na conta.'}`:'Cadastre a chave da arena para que o cliente pague por Pix e envie o comprovante.';
+ $('#pix-settings-description').textContent=pixSettings.ready?`Chave cadastrada para ${pixSettings.receiver}.${pixSettings.ocr_ready?' Leitura automática de valores ativada.':' Comprovantes com conferência manual do valor e do crédito na conta.'}`:'Cadastre a chave da arena para que o cliente pague por Pix e envie o comprovante.';
  const sum=a=>a.reduce((s,b)=>s+b.total,0);
  $('#stats').innerHTML=stat('Agendamentos hoje',daily.length,'Reservas confirmadas','▤')+stat('Recebido hoje',money(sum(paid.filter(b=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo'}).format(new Date(b.paid_at))===today()))),'Pagamentos registrados hoje','↑')+stat('A receber',money(sum(pending)),'Reservas ativas não pagas','◷')+stat('Quadras ativas',courts.filter(c=>c.active).length,'Prontas para receber jogos','▱');
  $('#finance-stats').innerHTML=stat('Total recebido',money(sum(paid)),'Todos os recebimentos','↑')+stat('A receber',money(sum(pending)),'Reservas ativas não pagas','◷')+stat('Pagamentos',paid.length,'Recebimentos confirmados','✓')+stat('Reservas pendentes',pending.length,'Aguardando pagamento','▤');
@@ -187,18 +187,42 @@ function configurePix(afterSave){
 $('#configure-pix').onclick=()=>configurePix();
 function pixLinkModal(b,data){
  const link=new URL(data.path,location.origin).href;
- openModal('Enviar pagamento Pix',`<p>Compartilhe este link com <strong>${esc(b.customer)}</strong> para pagar <strong>${money(b.total)}</strong> por Pix e enviar o comprovante.</p><label>Link para o cliente<input id="pix-payment-link" value="${esc(link)}" readonly></label><div class="checkout-actions"><button type="button" class="outline" id="copy-pix-link">Copiar link</button><a class="primary checkout-open" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Abrir página Pix ↗</a></div><p>Válido até ${new Date(data.expires_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}. O sistema lê o valor do comprovante; o recebimento será conferido pelo administrador.</p>`,async()=>{},'Concluir');
+ openModal('Enviar pagamento Pix',`<p>Compartilhe este link com <strong>${esc(b.customer)}</strong> para pagar <strong>${money(b.total)}</strong> por Pix e enviar o comprovante.</p><label>Link para o cliente<input id="pix-payment-link" value="${esc(link)}" readonly></label><div class="checkout-actions"><button type="button" class="outline" id="copy-pix-link">Copiar link</button><a class="primary checkout-open" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Abrir página Pix ↗</a></div><p>Válido até ${new Date(data.expires_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}. A arena confere o recebimento na conta antes de confirmar o pagamento.</p>`,async()=>{},'Concluir');
  $('#copy-pix-link').onclick=async()=>{try{await navigator.clipboard.writeText(link);toast('Link Pix copiado.');}catch{$('#pix-payment-link').select();toast('Selecione e copie o link Pix.');}};
 }
 function openPix(b){
  if(!pixSettings.ready){configurePix(()=>openPix(b));return;}
- openModal('Pix com comprovante',`<p>O cliente receberá a chave Pix de <strong>${esc(pixSettings.receiver)}</strong> e o valor de <strong>${money(b.total)}</strong>, com espaço para enviar o comprovante.</p><div class="estimate">O valor será lido automaticamente e comparado com a reserva. A reserva só ficará paga depois da confirmação de recebimento pelo administrador.</div>`,async()=>{const data=await api(`bookings/${b.id}/pix-link`,{});await refresh();pixLinkModal(b,data);return false;},b.pix_link?'Mostrar link Pix':'Gerar link Pix');
+ const reviewDescription=pixSettings.ocr_ready
+  ?'O sistema tenta ler o valor do comprovante e comparar com a reserva.'
+  :'A arena confere manualmente o valor do comprovante.';
+ openModal('Pix com comprovante',`<p>O cliente receberá a chave Pix de <strong>${esc(pixSettings.receiver)}</strong> e o valor de <strong>${money(b.total)}</strong>, com espaço para enviar o comprovante.</p><div class="estimate">${reviewDescription} A reserva só ficará paga depois da confirmação de recebimento pelo administrador.</div>`,async()=>{const data=await api(`bookings/${b.id}/pix-link`,{});await refresh();pixLinkModal(b,data);return false;},b.pix_link?'Mostrar link Pix':'Gerar link Pix');
 }
 async function showReceipts(b){
  const receipts=await api(`bookings/${b.id}/receipts`);
  const labels={manual:'Conferência manual necessária',matched:'Valor compatível',mismatch:'Valor divergente',unreadable:'Leitura inconclusiva'};
  const statusLabels={pending:'Aguardando conferência',approved:'Aprovado',rejected:'Recusado'};
- openModal('Conferir comprovante Pix',`<p>Reserva de <strong>${esc(b.customer)}</strong> · valor esperado <strong>${money(b.total)}</strong>.</p><p>Abra o original e confira o crédito na conta antes de aprovar. A leitura do arquivo não confirma a transferência bancária.</p>${receipts.length?receipts.map(r=>`<article class="receipt-card"><div class="receipt-heading"><strong>${esc(r.filename)}</strong><span class="badge ${r.status==='approved'?'paid':''}">${statusLabels[r.status]||'Em análise'}</span></div><p>${new Date(r.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</p><div class="receipt-values"><span>Esperado<strong>${money(b.total)}</strong></span><span>Identificado<strong>${r.amount_cents===null?'Não identificado':money(r.amount_cents)}</strong></span></div><p class="receipt-match ${r.match_status==='matched'?'is-matched':'is-warning'}">${labels[r.match_status]||'Leitura inconclusiva'}</p><a class="receipt-original" href="/api/receipts/${r.id}/file" target="_blank" rel="noopener noreferrer">Abrir comprovante original ↗</a>${r.review_note?`<p>Observação: ${esc(r.review_note)}</p>`:''}${r.status==='pending'?`<label>Observação da conferência<textarea data-review-note="${r.id}" maxlength="1000" placeholder="Motivo da recusa ou observação (opcional)"></textarea></label>${(r.match_status==='matched'||pixSettings.manual_review)?`${pixSettings.manual_review?`<label>Valor recebido (R$)<input type="number" min="0.01" step="0.01" data-received-amount="${r.id}" placeholder="0,00"></label>`:''}<label class="check-label"><input type="checkbox" data-confirm-receipt="${r.id}"> Conferi o recebimento na conta</label>`:'<p>Peça um novo comprovante legível e com o valor correto antes de aprovar.</p>'}<div class="receipt-actions">${(r.match_status==='matched'||pixSettings.manual_review)?`<button type="button" class="primary" data-approve-receipt="${r.id}" disabled>Confirmar recebimento</button>`:''}<button type="button" class="outline" data-reject-receipt="${r.id}">Recusar comprovante</button></div>`:''}</article>`).join(''):'<p>Nenhum comprovante enviado para esta reserva.</p>'}`,async()=>{},'Fechar');
+ const cards=receipts.map(r=>{
+  const manual=r.match_status==='manual',matched=r.match_status==='matched';
+  const canApprove=manual||matched;
+  const amount=r.amount_cents===null?(manual?'Conferência manual':'Não identificado'):money(r.amount_cents);
+  return `<article class="receipt-card">
+   <div class="receipt-heading"><strong>${esc(r.filename)}</strong><span class="badge ${r.status==='approved'?'paid':''}">${statusLabels[r.status]||'Em análise'}</span></div>
+   <p>${new Date(r.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</p>
+   <div class="receipt-values"><span>Esperado<strong>${money(b.total)}</strong></span><span>Identificado<strong>${amount}</strong></span></div>
+   <p class="receipt-match ${matched?'is-matched':'is-warning'}">${labels[r.match_status]||'Leitura inconclusiva'}</p>
+   <a class="receipt-original" href="/api/receipts/${r.id}/file" target="_blank" rel="noopener noreferrer">Abrir comprovante original ↗</a>
+   ${r.review_note?`<p>Observação: ${esc(r.review_note)}</p>`:''}
+   ${r.status==='pending'?`
+    <label>Observação da conferência<textarea data-review-note="${r.id}" maxlength="1000" placeholder="Motivo da recusa ou observação (opcional)"></textarea></label>
+    ${manual?`<label>Valor recebido (R$)<input type="number" min="0.01" step="0.01" data-received-amount="${r.id}" placeholder="0,00"></label>`:''}
+    ${canApprove?`<label class="check-label"><input type="checkbox" data-confirm-receipt="${r.id}"> Conferi o recebimento na conta</label>`:'<p>Peça um novo comprovante legível e com o valor correto antes de aprovar.</p>'}
+    <div class="receipt-actions">
+     ${canApprove?`<button type="button" class="primary" data-approve-receipt="${r.id}" disabled>Confirmar recebimento</button>`:''}
+     <button type="button" class="outline" data-reject-receipt="${r.id}">Recusar comprovante</button>
+    </div>`:''}
+  </article>`;
+ }).join('');
+ openModal('Conferir comprovante Pix',`<p>Reserva de <strong>${esc(b.customer)}</strong> · valor esperado <strong>${money(b.total)}</strong>.</p><p>Abra o original e confira o crédito na conta antes de aprovar. A arena confirma o pagamento depois dessa conferência.</p>${cards||'<p>Nenhum comprovante enviado para esta reserva.</p>'}`,async()=>{},'Fechar');
  $('#modal-fields').onchange=e=>{const checkbox=e.target.closest('[data-confirm-receipt]');if(checkbox)$(`[data-approve-receipt="${checkbox.dataset.confirmReceipt}"]`).disabled=!checkbox.checked;};
  $('#modal-fields').onclick=async e=>{
  const button=e.target.closest('[data-approve-receipt],[data-reject-receipt]');if(!button)return;
@@ -206,7 +230,10 @@ async function showReceipts(b){
  const confirmed=$(`[data-confirm-receipt="${id}"]`)?.checked===true;
  if(approve&&!confirmed){$('#modal-error').textContent='Confira o recebimento na conta e marque a confirmação.';return;}
  const buttons=[...$('#modal-fields').querySelectorAll('button')];buttons.forEach(el=>el.disabled=true);$('#modal-error').textContent='';
- try{await api(`receipts/${id}/review`,{decision:approve?'approve':'reject',note:$(`[data-review-note="${id}"]`)?.value||'',confirmed_received:approve&&confirmed,confirmed_amount_cents:Math.round(Number($(`[data-received-amount="${id}"]`)?.value)*100)});await refresh();await showReceipts(bookings.find(row=>row.id===b.id)||b);toast(approve?'Recebimento confirmado pelo administrador.':'Comprovante recusado. O cliente pode enviar outro.');}catch(e){$('#modal-error').textContent=e.message;buttons.forEach(el=>el.disabled=false);}
+ const amountInput=approve&&$(`[data-received-amount="${id}"]`);
+ const review={decision:approve?'approve':'reject',note:$(`[data-review-note="${id}"]`)?.value||'',confirmed_received:approve&&confirmed};
+ if(amountInput)review.confirmed_amount_cents=Math.round(Number(amountInput.value)*100);
+ try{await api(`receipts/${id}/review`,review);await refresh();await showReceipts(bookings.find(row=>row.id===b.id)||b);toast(approve?'Recebimento confirmado pelo administrador.':'Comprovante recusado. O cliente pode enviar outro.');}catch(e){$('#modal-error').textContent=e.message;buttons.forEach(el=>el.disabled=false);}
  };
 }
 $('#court-list').onclick=e=>{const btn=e.target.closest('[data-toggle]');if(!btn)return;const c=courts.find(c=>c.id===Number(btn.dataset.toggle));openModal(c.active?'Desativar quadra':'Ativar quadra',`<p>${c.active?'A quadra deixará de aceitar novas reservas. Os agendamentos existentes serão preservados.':'A quadra voltará a aceitar agendamentos.'}</p>`,()=>api(`courts/${c.id}`,{active:!c.active},'PATCH'),'Confirmar');};

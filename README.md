@@ -18,7 +18,7 @@ npm run deploy:cloudflare
 
 No painel conectado ao GitHub: branch `main`, raiz `/`, build `npm run build` e deploy `npm run deploy:cloudflare`. Em um banco novo, o acesso inicial é usuário `admin` e senha `admin`. O segredo opcional `ADMIN_INITIAL_PASSWORD` substitui a senha inicial.
 
-Na Cloudflare, os comprovantes Pix têm conferência manual: o administrador abre o arquivo, informa o valor recebido e confirma o crédito na conta antes de aprovar. O OCR descrito abaixo aplica-se somente ao modo Node local.
+Na Cloudflare, a arena pode ativar a leitura automática de comprovantes Pix com um serviço de OCR próprio. O administrador sempre confere o crédito na conta antes de aprovar. Veja [como ativar a leitura na Cloudflare](docs/cloudflare.md#ativar-leitura-automática-em-produção).
 
 ## Sistemas filhos e identidade própria
 
@@ -96,14 +96,14 @@ Os testes Pix cobrem permissões, divergência de valor, aprovação explícita,
 1. No **Financeiro → Pix direto**, cadastre a chave Pix da arena e o nome do favorecido.
 2. Na reserva, selecione **Pix + comprovante**, gere o link e envie ao cliente. O cliente não precisa acessar a conta administrativa.
 3. O cliente confere a chave e o nome no aplicativo do banco, transfere o valor exato e envia um comprovante PNG, JPG ou PDF de até 5 MB.
-4. O leitor extrai o valor em reais, converte para centavos e compara com o total da reserva. Valor coincidente aparece como **Valor compatível · em análise**. Valores ambíguos, ilegíveis ou divergentes ficam sinalizados para conferência.
-5. Em **Ver comprovante**, o administrador abre o original e confere o crédito na conta. Somente um comprovante com valor compatível pode ser aprovado, após marcar **Conferi o recebimento na conta**. Essa aprovação dá baixa no pagamento. Se houver divergência, o administrador recusa e o cliente pode enviar outro arquivo.
+4. Quando a leitura automática está disponível, o leitor identifica o valor e compara com o total da reserva. Um valor igual aparece como **Valor compatível · em análise**. Arquivos enviados sem leitor disponível ficam em **Conferência manual necessária**.
+5. Em **Ver comprovante**, o administrador abre o original e confere o crédito na conta. Se a leitura automática encontrou o valor correto, basta marcar **Conferi o recebimento na conta** e aprovar. Na conferência manual, o administrador também informa o valor recebido, que deve ser igual ao total da reserva. Se a leitura apontar valor diferente ou inconclusivo, recuse o comprovante para permitir um novo envio.
 
 A leitura de um comprovante não verifica autenticidade, destinatário ou entrada de dinheiro na conta e nunca confirma pagamento sozinha. Para confirmação bancária automática, use a integração Mercado Pago. O Pix direto funciona sem credenciais desse provedor.
 
 Cada link Pix vale por 7 dias e contém um token aleatório; trate-o como privado. A chave e o favorecido são preservados ao gerar o link, mesmo que a configuração mude depois. Após expirar, emitir novamente invalida o token antigo. Um comprovante pendente impede reenvio até análise; arquivos idênticos não podem ser reutilizados em outra reserva. Pix direto e checkout Mercado Pago são exclusivos por reserva para evitar cobranças concorrentes.
 
-O OCR roda localmente, sem enviar comprovantes a terceiros. Processa as primeiras 3 páginas de texto ou 2 páginas escaneadas do PDF, com limites de tempo, tamanho e concorrência. Use documentos nítidos e sem senha. Os arquivos originais e o resultado ficam no SQLite e exigem acesso administrativo para download; inclua o banco no backup. Não há limpeza automática do histórico nesta versão.
+O OCR usa Tesseract e Poppler no ambiente local ou no serviço próprio configurado para o Worker. Processa as primeiras 3 páginas de texto ou 2 páginas escaneadas do PDF, com limites de tempo, tamanho e concorrência. Use documentos nítidos e sem senha. Os originais e os resultados ficam no SQLite. Inclua o banco no backup e acesse os arquivos originais pelo painel administrativo. Não há limpeza automática do histórico nesta versão.
 
 ## Ativar Mercado Pago
 

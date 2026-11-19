@@ -15,7 +15,7 @@ console.log('Cloudflare smoke: production Worker, SQLite and manual receipt revi
 const password='admin';
 const configFile=path.join(directory,'wrangler.json');
 const persist=path.join(directory,'state');
-let worker,output='',cookie='',checks=0;
+let worker,localWorker,output='',cookie='',checks=0;
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const freePort=()=>new Promise((resolve,reject)=>{const server=net.createServer();server.on('error',reject);server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolve(port));});});
 const port=await freePort();
@@ -37,6 +37,7 @@ async function makeConfig({bootstrap=false,containers=false,stub=false,local=fal
  await writeFile(configFile,JSON.stringify(config,null,2),{mode:0o600});
 }
 async function stop(){
+ if(localWorker){await localWorker.dispose();localWorker=undefined;}
  if(!worker)return;
  const child=worker;worker=undefined;
  if(child.exitCode!==null)return;
@@ -44,6 +45,34 @@ async function stop(){
  try{process.kill(-child.pid,'SIGTERM');}catch{}
  await Promise.race([exited,delay(5000)]);
  if(child.exitCode===null){try{process.kill(-child.pid,'SIGKILL');}catch{}await exited;}
+}
+async function startWithOCR(service){
+ await makeConfig();
+ process.env.XDG_CONFIG_HOME=path.join(directory,'config');
+ process.env.WRANGLER_SEND_METRICS='false';
+ process.env.WRANGLER_WRITE_LOGS='false';
+ const {unstable_startWorker}=await import('wrangler');
+ localWorker=await unstable_startWorker({
+  config:configFile,
+  bindings:{
+   RECEIPT_OCR_URL:{type:'plain_text',value:'https://receipt-ocr.invalid'},
+   RECEIPT_OCR_TOKEN:{type:'secret_text',value:'test-local-ocr'}
+  },
+  dev:{
+   server:{hostname:'127.0.0.1',port},persist:path.join(directory,'ocr-state'),watch:false,inspector:false,logLevel:'warn',
+   async outboundService(request){
+    assert.equal(request.url,'https://receipt-ocr.invalid/read');
+    assert.equal(request.headers.get('authorization'),'Bearer test-local-ocr');
+    return service(request);
+   }
+  }
+ });
+ let timer;
+ try{
+  await Promise.race([localWorker.ready,new Promise((_,reject)=>{
+   timer=setTimeout(()=>reject(Error('Wrangler OCR test runtime did not become ready')),60000);
+  })]);
+ }finally{clearTimeout(timer);}
 }
 async function start(options){
  await makeConfig(options);output='';
@@ -98,7 +127,7 @@ try{
  const settings=await api('/api/pix/settings',{key:'pix@arena.example',receiver:'Arena de teste'},{method:'PUT'});assert.equal(settings.status,200,JSON.stringify(settings.data));
  const link=await api(`/api/bookings/${id}/pix-link`,{});assert.equal(link.status,200,JSON.stringify(link.data));
  const token=link.data.path.split('#')[1];
- const payer=await api(`/api/pix/payments/${token}`,undefined,{auth:false});assert.equal(payer.status,200);assert.equal(payer.data.total,18000);assert.equal(payer.data.phone,undefined);assert.equal(payer.data.notes,undefined);
+ const payer=await api(`/api/pix/payments/${token}`,undefined,{auth:false});assert.equal(payer.status,200);assert.equal(payer.data.total,18000);assert.equal(payer.data.phone,undefined);assert.equal(payer.data.notes,undefined);assert.equal(payer.data.ocr_ready,false);
  assert.equal((await api(`/api/bookings/${id}/checkout`,{})).status,409);
  passed('private Pix link, payer privacy and payment-provider exclusivity');
  if(withReceipts){
@@ -186,6 +215,64 @@ try{
  assert.equal((await api('/api/system/branding',undefined,{headers:childHeaders})).data.name,'Logo do filho');
  assert.equal((await api('/api/notifications/config')).data.token_configured,true);
  passed('administrator, session, bookings and receipts persist after runtime restart');
+
+ await stop();cookie='';
+ const ocrCases=[
+  {filename:'pix-receipt.png',mime:'image/png',upstream:200,match:'matched',amount:18000,end:'19:30'},
+  {filename:'pix-receipt.jpg',mime:'image/jpeg',upstream:200,match:'mismatch',amount:18000,end:'19:00'},
+  {filename:'pix-receipt.pdf',mime:'application/pdf',upstream:422,match:'unreadable',amount:null,end:'19:30'},
+  {filename:'pix-scanned.pdf',mime:'application/pdf',upstream:503,match:'manual',amount:null,end:'19:30'}
+ ];
+ for(const item of ocrCases)item.bytes=await readFile(path.join(root,'test/fixtures',item.filename));
+ const seen=[];
+ await startWithOCR(async request=>{
+  assert.equal(request.method,'POST');
+  assert.equal(new URL(request.url).pathname,'/read');
+  const bytes=Buffer.from(await request.arrayBuffer());
+  const item=ocrCases.find(candidate=>candidate.bytes.equals(bytes));
+  assert.ok(item,'The OCR adapter gets the original uploaded bytes');
+  assert.equal(request.headers.get('content-type'),item.mime);
+  seen.push(item.filename);
+  return item.upstream===200
+   ? Response.json({amount_cents:item.amount,candidates:[item.amount]})
+   : Response.json({error:'Teste do leitor de comprovantes.'},{status:item.upstream});
+ });
+ assert.equal((await api('/api/login',{username:'admin',password})).status,200);
+ const ocrCourt=await api('/api/courts',{name:'Quadra OCR',type:'Vôlei de areia',price:120});
+ assert.equal(ocrCourt.status,201);
+ const ocrSettings=await api('/api/pix/settings',{key:'pix@arena.example',receiver:'Arena OCR'},{method:'PUT'});
+ assert.equal(ocrSettings.status,200);assert.equal(ocrSettings.data.ocr_ready,true);
+ for(let i=0;i<ocrCases.length;i++){
+  const item=ocrCases[i];
+  const booked=await api('/api/bookings',{...reservation,court_id:ocrCourt.data.id,date:`2026-12-0${i+1}`,end:item.end});
+  assert.equal(booked.status,201);
+  const payment=await api(`/api/bookings/${booked.data.id}/pix-link`,{});
+  assert.equal(payment.status,200);
+  const pixPath=`/api/pix/payments/${payment.data.path.split('#')[1]}`;
+  assert.equal((await api(pixPath,undefined,{auth:false})).data.ocr_ready,true);
+  const uploaded=await api(pixPath+'/receipt',{filename:item.filename,content_base64:item.bytes.toString('base64')},{auth:false});
+  assert.equal(uploaded.status,201,JSON.stringify(uploaded.data));
+  assert.equal(uploaded.data.match_status,item.match);
+  assert.equal(uploaded.data.amount_cents,item.amount);
+  assert.equal(uploaded.data.status,'pending');
+  assert.equal((await api(pixPath,undefined,{auth:false})).data.paid,false);
+  const review=`/api/receipts/${uploaded.data.id}/review`;
+  const confirmed={decision:'approve',confirmed_received:true};
+  if(item.match==='matched'){
+   assert.equal((await api(review,{decision:'approve'})).status,400);
+   assert.equal((await api(review,confirmed)).status,200);
+   assert.equal((await api(pixPath,undefined,{auth:false})).data.paid,true);
+  }else if(item.match==='manual'){
+   assert.equal((await api(review,confirmed)).status,409);
+   assert.equal((await api(review,{...confirmed,confirmed_amount_cents:18000})).status,200);
+   assert.equal((await api(pixPath,undefined,{auth:false})).data.paid,true);
+  }else{
+   assert.equal((await api(review,{...confirmed,confirmed_amount_cents:item.end==='19:00'?12000:18000})).status,409);
+   assert.equal((await api(pixPath,undefined,{auth:false})).data.paid,false);
+  }
+ }
+ assert.deepEqual(seen,ocrCases.map(item=>item.filename));
+ passed('optional OCR transport matches amounts, retains 422/unavailable receipts and requires bank confirmation');
  console.log(`Cloudflare runtime smoke: ${checks} checks passed without Containers.`);
 }catch(error){console.error(error);console.error(logs());process.exitCode=1;}
 finally{await stop();await rm(directory,{recursive:true,force:true});}

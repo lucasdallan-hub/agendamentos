@@ -14,11 +14,12 @@ function toast(message){$('#pix-toast').textContent=message;$('#pix-toast').hidd
 function renderReceipt(receipt){
  const box=$('#pix-receipt-result');
  box.hidden=!receipt;if(!receipt)return;
- const matched=receipt.match_status==='matched';
- const title=receipt.status==='approved'?'Comprovante aprovado':receipt.status==='rejected'?'Comprovante recusado':receipt.match_status==='manual'?'Aguardando conferência da arena':matched?'Valor compatível · em análise':receipt.match_status==='mismatch'?'Valor diferente da reserva':'Não foi possível identificar um valor único';
- const description=receipt.status==='approved'?'O administrador confirmou o recebimento.':receipt.status==='rejected'?'Envie outro comprovante legível do Pix com o valor exato da reserva.':receipt.match_status==='manual'?'A arena conferirá o comprovante e o crédito na conta antes de confirmar o pagamento.':matched?'Comprovante enviado. Aguardando confirmação do administrador.':receipt.match_status==='mismatch'?'O valor lido não corresponde à reserva. Aguarde a conferência da arena; ela poderá solicitar um novo comprovante.':'O arquivo foi enviado para conferência. A arena poderá solicitar um comprovante mais legível.';
+ const matched=receipt.match_status==='matched',manual=receipt.match_status==='manual';
+ const title=receipt.status==='approved'?'Comprovante aprovado':receipt.status==='rejected'?'Comprovante recusado':manual?'Aguardando conferência da arena':matched?'Valor compatível · em análise':receipt.match_status==='mismatch'?'Valor diferente da reserva':'Não foi possível identificar um valor único';
+ const description=receipt.status==='approved'?'O administrador confirmou o recebimento.':receipt.status==='rejected'?'Envie outro comprovante legível do Pix com o valor exato da reserva.':manual?'A arena conferirá o valor no comprovante e o crédito na conta.':matched?'A arena vai conferir o crédito na conta.':receipt.match_status==='mismatch'?'O valor lido difere do total da reserva. Aguarde a orientação da arena para enviar outro comprovante.':'A arena poderá solicitar um comprovante mais legível.';
  box.className='pix-receipt-result '+(matched?'pix-match':'pix-review');
- box.innerHTML=`<strong>${title}</strong><div class="receipt-values"><span>Valor da reserva<strong>${money(current.total)}</strong></span><span>Valor identificado<strong>${receipt.amount_cents===null?'Não identificado':money(receipt.amount_cents)}</strong></span></div><p>${description}</p>${receipt.review_note?`<p>Observação da arena: ${escape(receipt.review_note)}</p>`:''}`;
+ const amount=receipt.amount_cents===null?(manual?'Conferência manual':'Não identificado'):money(receipt.amount_cents);
+ box.innerHTML=`<strong>${title}</strong><div class="receipt-values"><span>Valor da reserva<strong>${money(current.total)}</strong></span><span>Valor identificado<strong>${amount}</strong></span></div><p>${description}</p>${receipt.review_note?`<p>Observação da arena: ${escape(receipt.review_note)}</p>`:''}`;
 }
 function render(){
  $('#pix-loading').hidden=true;$('#pix-error-card').hidden=true;$('#pix-content').hidden=false;
@@ -26,6 +27,9 @@ function render(){
  $('#pix-booking-detail').textContent=`${current.court_name} · ${new Date(current.date+'T12:00:00').toLocaleDateString('pt-BR')} · ${current.start}–${current.end}`;
  $('#pix-key').value=current.key;$('#pix-receiver').textContent=current.receiver;
  const paid=Boolean(current.paid),pending=current.receipt?.status==='pending';
+ $('#pix-upload-description').textContent=current.ocr_ready===true
+  ?'O sistema tenta ler o valor do comprovante e comparar com o total da reserva.'
+  :'A arena confere o valor no comprovante e o crédito na conta.';
  $('#pix-transfer-section').hidden=paid;$('#pix-paid-section').hidden=!paid;
  $('#pix-upload-form').hidden=paid||pending;
  renderReceipt(current.receipt);
@@ -50,14 +54,17 @@ $('#pix-upload-form').onsubmit=async event=>{
  if(!file){$('#pix-upload-error').textContent='Selecione um comprovante para continuar.';return;}
  if(file.size>5*1024*1024){$('#pix-upload-error').textContent='O comprovante deve ter até 5 MB.';return;}
  if(!/\.(png|jpe?g|pdf)$/i.test(file.name)){ $('#pix-upload-error').textContent='Envie uma imagem PNG, JPG ou um arquivo PDF.';return; }
- uploading=true;$('#pix-submit').disabled=true;$('#pix-file').disabled=true;$('#pix-upload-progress').hidden=false;
+ uploading=true;$('#pix-submit').disabled=true;$('#pix-file').disabled=true;
+ const progress=$('#pix-upload-progress');
+ progress.textContent=current.ocr_ready===true?'Enviando o comprovante e analisando o valor…':'Enviando o comprovante para conferência…';
+ progress.hidden=false;
  try{
   const content=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(Error('Não foi possível abrir o arquivo selecionado.'));reader.readAsDataURL(file);});
   await request(endpoint+'/receipt',{filename:file.name,content_base64:content});
   $('#pix-upload-form').reset();$('#pix-selected-file').textContent='';
   current=await request(endpoint);render();toast('Comprovante enviado para conferência.');
  }catch(error){$('#pix-upload-error').textContent=error.message;}
- finally{uploading=false;$('#pix-submit').disabled=false;$('#pix-file').disabled=false;$('#pix-upload-progress').hidden=true;}
+ finally{uploading=false;$('#pix-submit').disabled=false;$('#pix-file').disabled=false;progress.hidden=true;}
 };
 load(true);
 setInterval(()=>{if(!document.hidden)load();},15000);

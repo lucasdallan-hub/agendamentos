@@ -4,6 +4,7 @@ import {randomBytes,scryptSync} from 'node:crypto';
 import {createApplication} from '../server-core.js';
 import {MercadoPago,paymentConfiguration} from '../payments.js';
 import {DurableDatabase,DurableMap} from './database.js';
+import {workerReceiptReader} from './receipt-reader.js';
 import {initializeSystems,setting,installSystem,updateChildDomain} from '../systems.js';
 
 const securityHeaders={
@@ -32,9 +33,10 @@ export class Arena extends DurableObject {
   }:null;
   // Children retain financial history but never inherit the mother's provider credentials.
   const paymentConfig=child?{ready:false,mode:'test'}:paymentConfiguration(this.env);
+  const receiptReader=workerReceiptReader(this.env);
   const {server}=createApplication({
    db,paymentConfig,paymentClient:new MercadoPago(paymentConfig),
-   receiptReader:async()=>({amount_cents:null,candidates:[]}),ocrReady:false,manualReceiptReview:true,
+   receiptReader,ocrReady:!!receiptReader,manualReceiptReview:true,
    sessionStore:new DurableMap(db,'session'),attemptStore:new DurableMap(db,'login-attempt'),cookieSecure:true,
    clientKey:req=>req.headers['cf-connecting-ip']||req.socket.remoteAddress
   });

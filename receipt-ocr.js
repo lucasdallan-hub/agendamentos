@@ -1,4 +1,4 @@
-import {execFile} from 'node:child_process';
+import {execFile,spawnSync} from 'node:child_process';
 import {promisify} from 'node:util';
 import {mkdtemp,writeFile,readdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -10,6 +10,12 @@ const MAX_PIXELS=20_000_000;
 let activeReads=0;
 const failure=(message,status=422)=>Object.assign(new Error(message),{status});
 const normalize=text=>String(text||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\u00a0/g,' ').toLowerCase();
+
+export function nativeOCRAvailable(){
+ const languages=spawnSync('tesseract',['--list-langs'],{encoding:'utf8',timeout:3000});
+ return languages.status===0&&languages.stdout.split(/\r?\n/).some(language=>language.trim()==='eng')
+  &&['pdftotext','pdftoppm'].every(tool=>spawnSync(tool,['-v'],{stdio:'ignore',timeout:3000}).status===0);
+}
 
 /** Extracts a value without comparing to the expected booking amount. Ambiguity is retained. */
 export function parseReceiptAmount(text) {

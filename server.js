@@ -1,10 +1,9 @@
 import {DatabaseSync} from 'node:sqlite';
 import {mkdirSync,readFileSync} from 'node:fs';
-import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import {createApplication} from './server-core.js';
-import {readReceipt} from './receipt-ocr.js';
+import {nativeOCRAvailable,readReceipt} from './receipt-ocr.js';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const files={'/sidebar.js':['sidebar.js','text/javascript; charset=utf-8'],'/theme.js':['theme.js','text/javascript; charset=utf-8'],'/catalogo':['catalog.html','text/html; charset=utf-8'],'/catalog.js':['catalog.js','text/javascript; charset=utf-8'],'/branding.js':['branding.js','text/javascript; charset=utf-8'],'/':['index.html','text/html; charset=utf-8'],'/pagamento':['payment.html','text/html; charset=utf-8'],'/pix':['pix.html','text/html; charset=utf-8'],'/pix.js':['pix.js','text/javascript; charset=utf-8'],'/app.js':['app.js','text/javascript; charset=utf-8'],'/style.css':['style.css','text/css; charset=utf-8'],
@@ -20,8 +19,8 @@ export function createApp({dataDir=process.env.DATA_DIR||path.join(root,'data'),
  mkdirSync(dataDir,{recursive:true});
  const db=new DatabaseSync(path.join(dataDir,'arena.sqlite'));
  db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;');
- const ocrReady=spawnSync('tesseract',['--version'],{stdio:'ignore',timeout:3000}).status===0;
- return createApplication({db,receiptReader,ocrReady,serveStatic,cookieSecure:process.env.COOKIE_SECURE==='1',...options});
+ const ocrReady=typeof receiptReader==='function'&&(receiptReader!==readReceipt||nativeOCRAvailable());
+ return createApplication({db,receiptReader:ocrReady?receiptReader:null,ocrReady,serveStatic,cookieSecure:process.env.COOKIE_SECURE==='1',...options});
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const {server}=createApp();

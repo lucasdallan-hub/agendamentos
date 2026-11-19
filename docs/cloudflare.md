@@ -1,6 +1,6 @@
 # Hospedar na Cloudflare sem Containers
 
-O Worker `agendamentos` serve o site e a API. O Durable Object `Arena` mantém SQLite, sessões e comprovantes. O deploy não usa Docker, Containers ou serviços externos de OCR.
+O Worker `agendamentos` serve o site e a API. O Durable Object `Arena` mantém SQLite, sessões e comprovantes. O deploy do Worker dispensa Docker e Containers. Um serviço próprio de OCR é opcional.
 
 ## Deploy pelo GitHub
 
@@ -20,7 +20,7 @@ npm run build
 npm run dev:cloudflare
 ```
 
-`npm test` inclui OCR nativo do modo Node e requer Tesseract/Poppler. `npm run test:cloudflare` testa o Worker real com SQLite, envio de comprovante de até 5 MiB, conferência manual, autorização e persistência após reinício, sem Docker ou OCR nativo.
+`npm test` inclui OCR nativo do modo Node e requer Tesseract/Poppler. `npm run test:cloudflare` testa o Worker real com SQLite, envio de comprovante de até 5 MiB, conferência manual, integração com um leitor simulado, autorização e persistência após reinício, sem Docker ou OCR nativo.
 
 Para publicar de uma máquina autenticada:
 
@@ -32,13 +32,23 @@ npm run deploy:cloudflare
 
 ## Comprovantes Pix
 
-Na Cloudflare, arquivos PNG, JPEG e PDF são armazenados para conferência manual. O administrador abre o original, informa o valor recebido e marca que conferiu o crédito na conta. O servidor exige valor igual ao total da reserva e confirmação explícita antes de dar baixa. Envio de arquivo nunca confirma pagamento automaticamente. Comprovantes antigos continuam acessíveis para análise.
+Arquivos PNG, JPEG e PDF ficam no banco da arena. Quando a leitura automática está configurada, o serviço tenta identificar o valor e compará-lo com o total da reserva. Se o leitor estiver indisponível, o comprovante segue para conferência manual.
 
-O modo Node local mantém o OCR nativo. Mercado Pago continua opcional e usa os segredos e variáveis descritos no README.
+Em **Ver comprovante**, confira sempre o crédito na conta. Para um arquivo com valor compatível, marque a confirmação de recebimento e aprove. Para um arquivo em **Conferência manual necessária**, informe também o valor recebido, que deve ser igual ao total da reserva. Para valor divergente ou leitura inconclusiva, recuse o arquivo para permitir um novo envio. Os comprovantes antigos mantêm o resultado de análise registrado.
+
+### Ativar leitura automática em produção
+
+1. Em um servidor sob seu controle, instale Node.js 24.5+, Tesseract com idioma `eng` e Poppler. Em Debian ou Ubuntu, os pacotes são `tesseract-ocr`, `tesseract-ocr-eng` e `poppler-utils`. Também é possível preparar o serviço com a imagem de `cloudflare/Dockerfile`.
+2. Cadastre um token longo e aleatório como `RECEIPT_OCR_TOKEN` no gerenciador de segredos do serviço. Execute `node cloudflare/ocr-server.js` e disponibilize o serviço por HTTPS, com um proxy reverso caso o Node escute em HTTP. Confira se `GET /health` no domínio público responde HTTP 200.
+3. No Worker Cloudflare, configure a variável de ambiente `RECEIPT_OCR_URL` com a origem HTTPS desse serviço, por exemplo `https://ocr.exemplo.com.br`. A origem deve conter apenas o esquema e o domínio. O Worker chama o caminho `/read`. Para manter a origem nos próximos deploys, registre a variável em `wrangler.jsonc` ou preserve as variáveis do painel com `--keep-vars` ao executar o deploy.
+4. Configure `RECEIPT_OCR_TOKEN` como **segredo** no Worker, com o mesmo valor definido no serviço. Publique a configuração.
+5. Em **Financeiro → Pix direto**, confira se o painel indica leitura automática. Envie um comprovante fictício com valor conhecido para verificar o resultado e manter separado o teste de recebimento bancário.
+
+O serviço executa Tesseract e Poppler no próprio servidor. O Worker envia o arquivo pelo endpoint autenticado e recebe apenas os valores identificados. Só a conferência do crédito na conta confirma o Pix no painel da arena.
 
 ## Atualização e persistência
 
-O histórico de migrações `v1` é preservado. A classe legada `ReceiptOCR` permanece exportada como Durable Object comum, sem binding de OCR nem Container, para compatibilidade com implantações que já aplicaram a migração. Não renomeie a classe `Arena`, sua binding ou a instância `main`, pois elas identificam o banco existente.
+O histórico de migrações `v1` é preservado. A classe legada `ReceiptOCR` permanece exportada como Durable Object comum para compatibilidade com implantações que já aplicaram a migração. Não renomeie a classe `Arena`, sua binding ou a instância `main`, pois elas identificam o banco existente.
 
 O banco local Node não é enviado ao Worker. Faça backups dos dados persistentes. Recursos de Containers de uma implantação antiga podem precisar ser removidos pelo painel da Cloudflare após verificar que não são mais usados; este código não os exclui remotamente.
 
@@ -61,7 +71,7 @@ Cada filho pode conectar sua própria conta em **Financeiro → Configurar Merca
 
 Configure notificações de Pagamentos na aplicação Mercado Pago de cada arena para `https://SUBDOMINIO/api/payments/webhook`, com o mesmo segredo informado no formulário. Salvar confirma o acesso à conta, mas não testa entrega do webhook ou uma cobrança real: valide ambos no ambiente de teste do provedor. Ao trocar o subdomínio, atualize também a origem pública e o webhook. Com cobranças próprias já existentes, a conexão só permite manter a mesma conta e ambiente, preservando conciliação e estornos.
 
-O histórico Mercado Pago copiado é marcado como herdado e não pode ser usado para abrir checkout ou conciliar pela conta do filho. Novas reservas podem gerar cobranças com as credenciais próprias do filho. A cópia não transfere dinheiro nem cria uma conta Mercado Pago. Pix com conferência manual continua funcionando com as configurações copiadas, que cada filho pode alterar no financeiro.
+O histórico Mercado Pago copiado é marcado como herdado e não pode ser usado para abrir checkout ou conciliar pela conta do filho. Novas reservas podem gerar cobranças com as credenciais próprias do filho. A cópia não transfere dinheiro nem cria uma conta Mercado Pago. O filho usa as configurações Pix copiadas e pode alterá-las no financeiro.
 
 A transferência automática aceita até 20 MiB de dados serializados, incluindo comprovantes. Acima disso, a criação é recusada antes do provisionamento, sem cópia parcial; faça uma migração assistida. A importação no destino é transacional. Se houver falha de provisionamento, o identificador permanece reservado com status pendente para impedir sobrescrita; investigue antes de reutilizá-lo.
 

@@ -15,7 +15,7 @@ async function fixture(t,{reader,ready=false,preferenceError}={}){
  let preferences=0;
  const paymentClient={async createPreference(){preferences++;if(preferenceError)throw preferenceError;return{id:'test-preference',sandbox_init_point:'https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=test-preference'};}};
  const paymentConfig={ready,token:'test-token',webhookSecret:'test-secret',baseUrl:'https://arena.example',mode:'test'};
- const {server,db}=createApp({dataDir,receiptReader,paymentClient,paymentConfig});
+ const {server,db}=createApp({dataDir,receiptReader,paymentClient,paymentConfig,ocrReady:true});
  server.listen(0,'127.0.0.1');await once(server,'listening');
  t.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();rmSync(dataDir,{recursive:true,force:true});});
  let cookie='';
@@ -50,6 +50,7 @@ test('Pix: configurações administrativas, link privado e dados públicos míni
  assert.equal((await f.link(f.bookingId)).path,l.path,'Reutiliza o link da reserva');
  const publicData=await f.request(`/api/pix/payments/${l.token}`,undefined,{auth:false});
  assert.equal(publicData.status,200);assert.equal(publicData.data.total,18000);assert.equal(publicData.data.key,'pix@arena.example');assert.equal(publicData.data.receiver,'Arena Teste');assert.equal(publicData.data.paid,false);
+ assert.equal(publicData.data.ocr_ready,true);
  assert.equal(publicData.data.phone,undefined);assert.equal(publicData.data.notes,undefined);
  assert.ok(!JSON.stringify(publicData.data).includes('11999887766'));
  assert.ok(!JSON.stringify(publicData.data).includes('NOTA PRIVADA'));
@@ -86,6 +87,29 @@ test('Pix: valor divergente ou ilegível nunca pode aprovar automaticamente nem 
   assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(f.bookingId).paid,0);
   assert.equal((await f.request(`/api/receipts/${r.data.id}/review`,{decision:'reject',note:'Envie comprovante com o valor correto.'})).status,200);
  }
+});
+
+test('Pix: OCR que retorna 422 registra comprovante ilegível, sem dar baixa',async t=>{
+ const f=await fixture(t,{reader:async(buffer,mime)=>{
+  assert.equal(mime,'image/png');
+  assert.deepEqual(buffer,PNG);
+  throw Object.assign(new Error('Não foi possível ler o valor.'),{status:422});
+ }});
+ await f.settings();
+ const {token}=await f.link(f.bookingId);
+ const path=`/api/pix/payments/${token}`;
+ const uploaded=await f.request(path+'/receipt',file(),{auth:false});
+ assert.equal(uploaded.status,201);
+ assert.equal(uploaded.data.amount_cents,null);
+ assert.equal(uploaded.data.match_status,'unreadable');
+ assert.equal(uploaded.data.status,'pending');
+ const status=await f.request(path,undefined,{auth:false});
+ assert.equal(status.data.paid,false);
+ assert.equal(status.data.receipt.match_status,'unreadable');
+ rejected(await f.request(`/api/receipts/${uploaded.data.id}/review`,{
+  decision:'approve',confirmed_received:true,confirmed_amount_cents:18000
+ }));
+ assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(f.bookingId).paid,0);
 });
 
 test('Pix: impede reenvio pendente, mantém histórico após rejeição e detecta reuso entre reservas',async t=>{
