@@ -313,7 +313,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--surface-soft) 55%, var(--s
 }
 .payment-banner.payment-ready, :root[data-theme="dark"] .payment-banner.payment-ready { border-left-color: #20b87b; }
 .payment-banner strong, .payment-banner p { font-size: 12px; }
-.estimate, .receipt-values { background: var(--surface-soft); color: var(--ink); }
+.estimate { background: var(--surface-soft); color: var(--ink); }
 #history-count { margin-bottom: 12px; }
 .history-filters { gap: 12px; }
 .history-filters label { margin: 0; }

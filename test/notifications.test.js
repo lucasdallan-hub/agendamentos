@@ -15,7 +15,7 @@ async function arena(t,{seed=true,send}={}){
   requests.push({url:String(url),headers:new Headers(options.headers),body:options.body?JSON.parse(options.body):undefined,options});
   return send?send(url,options):Response.json({message:'success',data:{Info:{ID:'fake-message-id'}}});
  };
- async function start(){({server}=createApplication({db,notificationFetch,paymentConfig:{ready:false,mode:'test'},receiptReader:async()=>({amount_cents:null})}));server.listen(0,'127.0.0.1');await once(server,'listening');cookie='';}
+ async function start(){({server}=createApplication({db,notificationFetch,paymentConfig:{ready:false,mode:'test'}}));server.listen(0,'127.0.0.1');await once(server,'listening');cookie='';}
  async function api(path,body,{method='POST',auth=true}={}){
   const response=await fetch(`http://127.0.0.1:${server.address().port}/api/`+path,{method:body===undefined?'GET':method,headers:{'Content-Type':'application/json',...(auth?{Cookie:cookie}:{})},body:body===undefined?undefined:JSON.stringify(body)});
   if(auth&&response.headers.get('set-cookie'))cookie=response.headers.get('set-cookie').split(';')[0];

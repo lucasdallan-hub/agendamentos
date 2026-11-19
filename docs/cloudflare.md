@@ -1,6 +1,6 @@
 # Hospedar na Cloudflare sem Containers
 
-O Worker `agendamentos` serve o site e a API. O Durable Object `Arena` mantém SQLite, sessões e comprovantes. O deploy do Worker dispensa Docker e Containers. Um serviço próprio de OCR é opcional.
+O Worker `agendamentos` serve o site e a API. O Durable Object `Arena` mantém SQLite, sessões e comprovantes. O deploy do Worker dispensa Docker e Containers.
 
 ## Deploy pelo GitHub
 
@@ -20,7 +20,7 @@ npm run build
 npm run dev:cloudflare
 ```
 
-`npm test` inclui OCR nativo do modo Node e requer Tesseract/Poppler. `npm run test:cloudflare` testa o Worker real com SQLite, envio de comprovante de até 5 MiB, conferência manual, integração com um leitor simulado, autorização e persistência após reinício, sem Docker ou OCR nativo.
+`npm test` cobre as APIs com SQLite local e respostas simuladas dos provedores. `npm run test:cloudflare` testa o Worker e o SQLite locais, incluindo conferência manual de comprovantes de até 5 MiB, autorização e persistência após reinício.
 
 Para publicar de uma máquina autenticada:
 
@@ -32,19 +32,16 @@ npm run deploy:cloudflare
 
 ## Comprovantes Pix
 
-Arquivos PNG, JPEG e PDF ficam no banco da arena. Quando a leitura automática está configurada, o serviço tenta identificar o valor e compará-lo com o total da reserva. Se o leitor estiver indisponível, o comprovante segue para conferência manual.
+O cliente pode enviar um arquivo JPG, PNG ou PDF de até 5 MB. Na reserva, abra **Ver comprovante**, confira o crédito na conta e informe o valor recebido. A aprovação exige valor igual ao total da reserva e confirmação de recebimento. O arquivo original e a decisão ficam no histórico da arena.
 
-Em **Ver comprovante**, confira sempre o crédito na conta. Para um arquivo com valor compatível, marque a confirmação de recebimento e aprove. Para um arquivo em **Conferência manual necessária**, informe também o valor recebido, que deve ser igual ao total da reserva. Para valor divergente ou leitura inconclusiva, recuse o arquivo para permitir um novo envio. Os comprovantes antigos mantêm o resultado de análise registrado.
+## Pix via MisticPay
 
-### Ativar leitura automática em produção
+1. Na MisticPay, abra **API → Chaves de Acesso → Criar Chave de Acesso** e marque `TRANSACTION_CREATE` e `TRANSACTION_READ`. Copie o par `pk_` e `sk_` no momento da criação.
+2. No painel da própria arena, abra **Financeiro → Configurar MisticPay**. Cadastre o par de chaves e a origem HTTPS pública da arena, como `https://sua-arena.com.br`. Salvar valida o acesso de consulta. As chaves ficam no banco privado daquela arena.
+3. No catálogo, escolha **Pix via MisticPay** na confirmação da reserva. O CPF é enviado à MisticPay para emitir a cobrança e fica fora do banco da arena. O cliente recebe o QR Code e o código copia e cola.
+4. Cada cobrança registra um endereço de webhook próprio. A aplicação recebe a notificação, consulta a API autenticada e confirma o pagamento quando a transação estiver completa e o valor integral corresponder à reserva. Também é possível consultar o status na tela de pagamento ou pelo painel.
 
-1. Em um servidor sob seu controle, instale Node.js 24.5+, Tesseract com idioma `eng` e Poppler. Em Debian ou Ubuntu, os pacotes são `tesseract-ocr`, `tesseract-ocr-eng` e `poppler-utils`. Também é possível preparar o serviço com a imagem de `cloudflare/Dockerfile`.
-2. Cadastre um token longo e aleatório como `RECEIPT_OCR_TOKEN` no gerenciador de segredos do serviço. Execute `node cloudflare/ocr-server.js` e disponibilize o serviço por HTTPS, com um proxy reverso caso o Node escute em HTTP. Confira se `GET /health` no domínio público responde HTTP 200.
-3. No Worker Cloudflare, configure a variável de ambiente `RECEIPT_OCR_URL` com a origem HTTPS desse serviço, por exemplo `https://ocr.exemplo.com.br`. A origem deve conter apenas o esquema e o domínio. O Worker chama o caminho `/read`. Para manter a origem nos próximos deploys, registre a variável em `wrangler.jsonc` ou preserve as variáveis do painel com `--keep-vars` ao executar o deploy.
-4. Configure `RECEIPT_OCR_TOKEN` como **segredo** no Worker, com o mesmo valor definido no serviço. Publique a configuração.
-5. Em **Financeiro → Pix direto**, confira se o painel indica leitura automática. Envie um comprovante fictício com valor conhecido para verificar o resultado e manter separado o teste de recebimento bancário.
-
-O serviço executa Tesseract e Poppler no próprio servidor. O Worker envia o arquivo pelo endpoint autenticado e recebe apenas os valores identificados. Só a conferência do crédito na conta confirma o Pix no painel da arena.
+A rede precisa permitir saída HTTPS para `api.misticpay.com`. Uma falha incerta na geração mantém a reserva vinculada à cobrança até consulta, para evitar cobrança duplicada. A MisticPay usa ambiente de produção, e os testes do projeto simulam a API. [Documentação da MisticPay](https://docs.misticpay.com/)
 
 ## Atualização e persistência
 
@@ -57,7 +54,7 @@ O banco local Node não é enviado ao Worker. Faça backups dos dados persistent
 Acesse **Meu sistema** no painel. O sistema original é a mãe: somente seu administrador pode criar filhos. A criação está disponível no Worker; no modo Node local, use `npm run dev:cloudflare` para desenvolver e testar esse fluxo.
 
 1. Clique em **Criar sistema filho** e informe nome, identificador único, subdomínio completo e senha própria de 10 a 200 caracteres. O usuário será `admin`.
-2. A cópia inclui todas as quadras, reservas, configurações Pix, links Pix, comprovantes originais e histórico financeiro existentes naquele momento. A logo é copiada e o nome passa a ser o informado. Filhos não recebem sessões, senha administrativa, outros filhos ou credenciais Mercado Pago da mãe.
+2. A cópia inclui todas as quadras, reservas, configurações Pix, links Pix, comprovantes originais e histórico financeiro existentes naquele momento. A logo é copiada e o nome passa a ser o informado. Filhos não recebem sessões, senha administrativa, outros filhos ou credenciais de pagamento da mãe.
 3. Na Cloudflare, conecte o hostname ao **mesmo Worker `agendamentos`** em **Settings → Domains & Routes → Add → Custom Domain**. Use um domínio que você controla na conta. Aguarde DNS e certificado HTTPS ficarem ativos antes de abrir o filho. Não crie outro Worker ou outro projeto Git para cada filho. Também é possível usar uma rota wildcard já configurada com DNS compatível.
 4. Entre no endereço do filho com `admin` e a senha definida. Em **Meu sistema → Alterar nome e logo**, envie PNG ou JPEG de até 250 KB. A identidade aparece no login, no painel e nas páginas de pagamento. Em **Alterar subdomínio**, é possível trocar o hostname depois de conectar o novo domínio ao Worker; será necessário entrar novamente. O endereço anterior deixa de acessar o filho.
 
@@ -71,7 +68,7 @@ Cada filho pode conectar sua própria conta em **Financeiro → Configurar Merca
 
 Configure notificações de Pagamentos na aplicação Mercado Pago de cada arena para `https://SUBDOMINIO/api/payments/webhook`, com o mesmo segredo informado no formulário. Salvar confirma o acesso à conta, mas não testa entrega do webhook ou uma cobrança real: valide ambos no ambiente de teste do provedor. Ao trocar o subdomínio, atualize também a origem pública e o webhook. Com cobranças próprias já existentes, a conexão só permite manter a mesma conta e ambiente, preservando conciliação e estornos.
 
-O histórico Mercado Pago copiado é marcado como herdado e não pode ser usado para abrir checkout ou conciliar pela conta do filho. Novas reservas podem gerar cobranças com as credenciais próprias do filho. A cópia não transfere dinheiro nem cria uma conta Mercado Pago. O filho usa as configurações Pix copiadas e pode alterá-las no financeiro.
+O histórico Mercado Pago e MisticPay copiado fica disponível no filho para consulta. Cobranças herdadas são conciliadas pela arena que as criou. Novas reservas podem gerar cobranças com as credenciais próprias do filho. A cópia não transfere dinheiro nem cria uma conta Mercado Pago. O filho usa as configurações Pix copiadas e pode alterá-las no financeiro.
 
 A transferência automática aceita até 20 MiB de dados serializados, incluindo comprovantes. Acima disso, a criação é recusada antes do provisionamento, sem cópia parcial; faça uma migração assistida. A importação no destino é transacional. Se houver falha de provisionamento, o identificador permanece reservado com status pendente para impedir sobrescrita; investigue antes de reutilizá-lo.
 
@@ -83,7 +80,7 @@ Em **Minhas quadras → Agendamento online**, ajuste o funcionamento ou desative
 
 A confirmação cria imediatamente uma reserva com pagamento pendente. O total é calculado no servidor pelo preço da quadra; conflitos e quadras desativadas são verificados novamente antes da gravação. Reenvios com o mesmo identificador não duplicam a reserva. Há limite de dez reservas públicas por origem por hora, separado do login administrativo.
 
-O cliente recebe um link privado em `/catalogo#TOKEN`, válido até o dia seguinte ao jogo. Esse link permite consultar apenas a própria reserva e iniciar pagamento por Pix ou Mercado Pago da arena, quando configurados. Escolher um meio de pagamento bloqueia a cobrança concorrente pelo outro. O link não dá acesso ao painel, a dados de outros clientes ou a cancelamentos administrativos. Os links privados do catálogo não são copiados para os filhos.
+O cliente recebe um link privado em `/catalogo#TOKEN`, válido até o dia seguinte ao jogo. Esse link permite consultar apenas a própria reserva e iniciar pagamento por Pix direto, Pix via MisticPay ou Mercado Pago, conforme as conexões da arena. Uma cobrança iniciada bloqueia cobranças concorrentes. O link não dá acesso ao painel, a dados de outros clientes ou a cancelamentos administrativos. Os links privados do catálogo não são copiados para os filhos.
 
 A reserva já ocupa o horário antes do pagamento; não há liberação automática por falta de pagamento. O administrador acompanha o financeiro e trata cancelamentos conforme as regras existentes. Salvar uma reserva não comprova recebimento. Configure as credenciais e o webhook de cada arena para usar cobrança online; sem conexão financeira, o catálogo ainda confirma a reserva e orienta combinar o pagamento com a arena.
 

@@ -17,7 +17,7 @@ async function fixture(t,{seed=true,respond}={}){
   if(request.url.endsWith('/instance/qr'))return Response.json({message:'success',data:{qrcode:PNG,code:RAW_SECRET}});
   throw Error('Unexpected fake endpoint');
  };
- const {server}=createApplication({db,notificationFetch,paymentConfig:{ready:false,mode:'test'},receiptReader:async()=>({amount_cents:null})});
+ const {server}=createApplication({db,notificationFetch,paymentConfig:{ready:false,mode:'test'}});
  server.listen(0,'127.0.0.1');await once(server,'listening');
  t.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();});
  async function api(route,body,{auth=true,method='POST'}={}){

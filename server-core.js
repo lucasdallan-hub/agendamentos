@@ -8,16 +8,18 @@ import {bookingNotifications} from './notifications.js';
 import {publicCatalog} from './public-catalog.js';
 import {createCourtPhotos,courtPhotoBodyLimit} from './court-photos.js';
 import {financialSettings} from './financial-settings.js';
+import {createMisticPay} from './misticpay.js';
 import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
-export function createApplication({db,receiptReader,ocrReady=false,manualReceiptReview=false,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch}={}) {
+export function createApplication({db,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch,misticpayFetch=fetch}={}) {
 db.exec(`CREATE TABLE IF NOT EXISTS admin(id INTEGER PRIMARY KEY CHECK(id=1), salt TEXT NOT NULL, hash TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS courts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, price INTEGER NOT NULL CHECK(price>0), active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, court_id INTEGER NOT NULL REFERENCES courts(id), customer TEXT NOT NULL, phone TEXT NOT NULL, date TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, total INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'confirmed', paid INTEGER NOT NULL DEFAULT 0, method TEXT, paid_at TEXT, notes TEXT NOT NULL DEFAULT '');`);
 initializeSystems(db);
 const payments=createPayments(db,paymentConfig,paymentClient);
 const financial=financialSettings(db,paymentConfig);
-const pix=createPix(db,{receiptReader,ocrReady,manualReceiptReview});
+const misticpay=createMisticPay(db,{fetchImpl:misticpayFetch});
+const pix=createPix(db);
 const courtPhotos=createCourtPhotos(db);
 const notifications=bookingNotifications(db,{fetchImpl:notificationFetch});
 const sessions = sessionStore;
@@ -39,7 +41,7 @@ function booking(body) {
  const id=Number(result.lastInsertRowid);notifications.enqueue(id,phone);
  return {id};
 }
-const catalog=publicCatalog(db,{book:booking,pix,payments,paymentConfig,attempts,courtPhotos});
+const catalog=publicCatalog(db,{book:booking,pix,payments,misticpay,paymentConfig,attempts,courtPhotos});
 function sendCourtPhoto(res,route,publicView){
  const bytes=courtPhotos.image(Number(route[1]),route[2],publicView);
  res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store','Content-Length':bytes.length,'Content-Security-Policy':"sandbox; default-src 'none'"});
@@ -57,7 +59,8 @@ const server=http.createServer(async(req,res)=>{
    if(serveStatic)return serveStatic(req,res,url);
    return json(res,404,{error:'Não encontrado.'});
   }
-  if(url.pathname!=='/api/payments/webhook' && req.headers.origin && req.headers.origin!==`${req.headers['x-forwarded-proto']==='https'?'https':'http'}://${req.headers.host}`) fail('Origem não permitida.',403);
+  const misticWebhook=/^\/api\/misticpay\/webhook\/([a-f0-9]{64})$/.exec(url.pathname);
+  if(url.pathname!=='/api/payments/webhook' && !misticWebhook && req.headers.origin && req.headers.origin!==`${req.headers['x-forwarded-proto']==='https'?'https':'http'}://${req.headers.host}`) fail('Origem não permitida.',403);
   const courtGallery=/^\/api\/courts\/(\d+)\/photos$/.exec(url.pathname);
   let body={};
   if(['POST','PATCH','PUT'].includes(req.method)) { let raw=''; const maxBody=courtGallery&&req.method==='PUT'?courtPhotoBodyLimit:url.pathname==='/api/system/branding'?400000:/^\/api\/pix\/payments\/[a-f0-9]{64}\/receipt$/.test(url.pathname)?7*1024*1024:16000;for await(const chunk of req) { raw+=chunk; if(Buffer.byteLength(raw)>maxBody) fail('Requisição muito grande.',413); } try { body=JSON.parse(raw||'{}'); } catch { fail('JSON inválido.'); } if(!body||typeof body!=='object'||Array.isArray(body)) fail('Corpo inválido.'); }
@@ -69,12 +72,13 @@ const server=http.createServer(async(req,res)=>{
    if(body.data?.id!==undefined&&String(body.data.id).toLowerCase()!==id.toLowerCase())fail('Identificador da notificação inválido.',400);
    return json(res,200,await payments.reconcile(id));
   }
+  if(req.method==='POST'&&misticWebhook)return json(res,200,await misticpay.webhook(misticWebhook[1]));
   const token=/arena_session=([a-f0-9]+)/.exec(req.headers.cookie||'')?.[1];
   const authenticated=token && sessions.get(token)>Date.now();
   const publicPix=/^\/api\/pix\/payments\/([^/]+)(\/receipt)?$/.exec(url.pathname);
   if(publicPix){
    if(req.method==='GET'&&!publicPix[2])return json(res,200,pix.publicPayment(publicPix[1]));
-   if(req.method==='POST'&&publicPix[2])return json(res,201,await pix.upload(publicPix[1],body));
+   if(req.method==='POST'&&publicPix[2])return json(res,201,pix.upload(publicPix[1],body));
    fail('Método não permitido.',405);
   }
   const publicPhoto=/^\/api\/public\/courts\/(\d+)\/photos\/([a-f0-9]{32})$/.exec(url.pathname);
@@ -92,6 +96,11 @@ const server=http.createServer(async(req,res)=>{
   if(publicBooking){
    if(req.method==='GET'&&!publicBooking[2])return json(res,200,catalog.confirmation(publicBooking[1]));
    if(req.method==='POST'&&publicBooking[2])return json(res,200,await catalog.payment(publicBooking[1],publicBooking[2],body.payment_method));
+  }
+  const publicMistic=/^\/api\/public\/bookings\/([a-f0-9]{64})\/misticpay(\/check)?$/.exec(url.pathname);
+  if(req.method==='POST'&&publicMistic){
+   const {id}=catalog.confirmation(publicMistic[1]);
+   return json(res,200,publicMistic[2]?await misticpay.sync(id):await misticpay.create(id,body));
   }
   if(req.method==='GET'&&url.pathname==='/api/system/branding')return json(res,200,branding(db));
   if(req.method==='GET' && url.pathname==='/api/session') return json(res,200,{authenticated:!!authenticated,setup:!db.prepare('SELECT id FROM admin').get()});
@@ -157,6 +166,15 @@ const server=http.createServer(async(req,res)=>{
     return json(res,200,financial.save(next,account.id));
    }
   }
+  if(url.pathname==='/api/misticpay/config'){
+   if(req.method==='GET')return json(res,200,misticpay.settings());
+   if(req.method==='PUT')return json(res,200,await misticpay.saveSettings(body));
+  }
+  const misticBooking=/^\/api\/bookings\/(\d+)\/(misticpay-link|sync-misticpay)$/.exec(url.pathname);
+  if(req.method==='POST'&&misticBooking){
+   const id=Number(misticBooking[1]);
+   return json(res,200,misticBooking[2]==='misticpay-link'?catalog.misticpayLink(id):await misticpay.sync(id));
+  }
   const checkoutMatch=/^\/api\/bookings\/(\d+)\/(checkout|sync-payment)$/.exec(url.pathname);
   if(req.method==='POST'&&checkoutMatch){const id=Number(checkoutMatch[1]);return json(res,200,checkoutMatch[2]==='checkout'?await payments.checkout(id,body.payment_method):await payments.sync(id));}
   if(req.method==='POST' && url.pathname==='/api/logout') { sessions.delete(token); res.setHeader('Set-Cookie','arena_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json(res,200,{ok:true}); }
@@ -173,7 +191,16 @@ const server=http.createServer(async(req,res)=>{
   }
   const courtMatch=/^\/api\/courts\/(\d+)$/.exec(url.pathname);
   if(req.method==='PATCH' && courtMatch) { if(typeof body.active!=='boolean') fail('Estado inválido.'); const r=db.prepare('UPDATE courts SET active=? WHERE id=?').run(body.active?1:0,Number(courtMatch[1])); if(!r.changes) fail('Quadra não encontrada.',404); return json(res,200,{ok:true}); }
-  if(req.method==='GET' && url.pathname==='/api/bookings') return json(res,200,db.prepare('SELECT b.*, c.name court_name,c.type court_type,o.state online_status,o.checkout_url,o.expires_at,o.checkout_method,EXISTS(SELECT 1 FROM archived_payment_orders a WHERE a.order_id=o.id) online_archived,EXISTS(SELECT 1 FROM pix_links p WHERE p.booking_id=b.id) pix_link,r.status receipt_status,r.match_status receipt_match,r.amount_cents receipt_amount FROM bookings b JOIN courts c ON c.id=b.court_id LEFT JOIN payment_orders o ON o.booking_id=b.id LEFT JOIN pix_receipts r ON r.id=(SELECT id FROM pix_receipts WHERE booking_id=b.id ORDER BY id DESC LIMIT 1) ORDER BY date,start,b.id').all());
+  if(req.method==='GET' && url.pathname==='/api/bookings') return json(res,200,db.prepare(`SELECT b.*,c.name court_name,c.type court_type,o.state online_status,o.checkout_url,o.expires_at,o.checkout_method,
+   EXISTS(SELECT 1 FROM archived_payment_orders a WHERE a.order_id=o.id) online_archived,
+   EXISTS(SELECT 1 FROM pix_links p WHERE p.booking_id=b.id) pix_link,
+   r.status receipt_status,r.match_status receipt_match,r.amount_cents receipt_amount,
+   CASE WHEN m.archived=1 THEN 'archived' ELSE m.state END misticpay_status
+   FROM bookings b JOIN courts c ON c.id=b.court_id
+   LEFT JOIN payment_orders o ON o.booking_id=b.id
+   LEFT JOIN misticpay_orders m ON m.booking_id=b.id
+   LEFT JOIN pix_receipts r ON r.id=(SELECT id FROM pix_receipts WHERE booking_id=b.id ORDER BY id DESC LIMIT 1)
+   ORDER BY date,start,b.id`).all());
   if(req.method==='POST' && url.pathname==='/api/bookings'){
    const result=transaction(db,()=>booking(body));
    await notifications.dispatch(result.id);
@@ -181,13 +208,16 @@ const server=http.createServer(async(req,res)=>{
   }
   const match=/^\/api\/bookings\/(\d+)\/(payment|cancel)$/.exec(url.pathname);
   if(req.method==='POST' && match) {
-   const b=db.prepare('SELECT * FROM bookings WHERE id=?').get(Number(match[1])); if(!b) fail('Agendamento não encontrado.',404);
-   if(b.status==='cancelled') fail('Agendamento cancelado.');
-   if(db.prepare('SELECT id FROM payment_orders WHERE booking_id=?').get(b.id)) fail('Esta reserva possui cobrança online. Gerencie o pagamento ou estorno no Mercado Pago antes de alterar a reserva.',409);
-   if(match[2]==='payment'&&db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(b.id))fail('Analise o comprovante Pix antes de confirmar o recebimento.',409);
-   if(match[2]==='cancel'&&db.prepare("SELECT id FROM pix_receipts WHERE booking_id=? AND status='pending'").get(b.id))fail('Analise o comprovante pendente antes de cancelar a reserva.',409);
-   if(match[2]==='payment') { if(b.paid) fail('Pagamento já registrado.',409); if(!['Pix','Dinheiro','Cartão','Transferência'].includes(body.method)) fail('Selecione a forma de pagamento.'); db.prepare("UPDATE bookings SET paid=1,method=?,paid_at=? WHERE id=?").run(body.method,new Date().toISOString(),b.id); }
-   else { if(b.paid) fail('Não é possível cancelar uma reserva paga. Resolva o estorno antes de cancelar.'); db.prepare("UPDATE bookings SET status='cancelled' WHERE id=?").run(b.id); }
+   transaction(db,()=>{
+    const b=db.prepare('SELECT * FROM bookings WHERE id=?').get(Number(match[1])); if(!b) fail('Agendamento não encontrado.',404);
+    if(b.status==='cancelled') fail('Agendamento cancelado.');
+    if(db.prepare('SELECT 1 FROM misticpay_orders WHERE booking_id=?').get(b.id))fail('Esta reserva possui cobrança MisticPay. Consulte a cobrança antes de alterar a reserva.',409);
+    if(db.prepare('SELECT id FROM payment_orders WHERE booking_id=?').get(b.id)) fail('Esta reserva possui cobrança online. Gerencie o pagamento ou estorno no Mercado Pago antes de alterar a reserva.',409);
+    if(match[2]==='payment'&&db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(b.id))fail('Analise o comprovante Pix antes de confirmar o recebimento.',409);
+    if(match[2]==='cancel'&&db.prepare("SELECT id FROM pix_receipts WHERE booking_id=? AND status='pending'").get(b.id))fail('Analise o comprovante pendente antes de cancelar a reserva.',409);
+    if(match[2]==='payment') { if(b.paid) fail('Pagamento já registrado.',409); if(!['Pix','Dinheiro','Cartão','Transferência'].includes(body.method)) fail('Selecione a forma de pagamento.'); db.prepare("UPDATE bookings SET paid=1,method=?,paid_at=? WHERE id=?").run(body.method,new Date().toISOString(),b.id); }
+    else { if(b.paid) fail('Não é possível cancelar uma reserva paga. Resolva o estorno antes de cancelar.'); db.prepare("UPDATE bookings SET status='cancelled' WHERE id=?").run(b.id); }
+   });
    return json(res,200,{ok:true});
   }
   return json(res,404,{error:'Não encontrado.'});

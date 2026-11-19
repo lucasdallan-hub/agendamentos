@@ -3,7 +3,6 @@ import {mkdirSync,readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import {createApplication} from './server-core.js';
-import {nativeOCRAvailable,readReceipt} from './receipt-ocr.js';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const files={'/sidebar.js':['sidebar.js','text/javascript; charset=utf-8'],'/theme.js':['theme.js','text/javascript; charset=utf-8'],'/catalogo':['catalog.html','text/html; charset=utf-8'],'/catalog.js':['catalog.js','text/javascript; charset=utf-8'],'/branding.js':['branding.js','text/javascript; charset=utf-8'],'/':['index.html','text/html; charset=utf-8'],'/pagamento':['payment.html','text/html; charset=utf-8'],'/pix':['pix.html','text/html; charset=utf-8'],'/pix.js':['pix.js','text/javascript; charset=utf-8'],'/app.js':['app.js','text/javascript; charset=utf-8'],'/style.css':['style.css','text/css; charset=utf-8'],
@@ -15,12 +14,11 @@ function serveStatic(req,res,url){
  if(!file){res.writeHead(404,{'Content-Type':'application/json; charset=utf-8'});return res.end(JSON.stringify({error:'Não encontrado.'}));}
  res.writeHead(200,{'Content-Type':file[1]});return res.end(readFileSync(path.join(root,'public',file[0])));
 }
-export function createApp({dataDir=process.env.DATA_DIR||path.join(root,'data'),receiptReader=readReceipt,...options}={}){
+export function createApp({dataDir=process.env.DATA_DIR||path.join(root,'data'),...options}={}){
  mkdirSync(dataDir,{recursive:true});
  const db=new DatabaseSync(path.join(dataDir,'arena.sqlite'));
  db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;');
- const ocrReady=typeof receiptReader==='function'&&(receiptReader!==readReceipt||nativeOCRAvailable());
- return createApplication({db,receiptReader:ocrReady?receiptReader:null,ocrReady,serveStatic,cookieSecure:process.env.COOKIE_SECURE==='1',...options});
+ return createApplication({db,serveStatic,cookieSecure:process.env.COOKIE_SECURE==='1',...options});
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const {server}=createApp();

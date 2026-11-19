@@ -5,7 +5,7 @@ const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status
 const localNow=()=>{const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date()).map(p=>[p.type,p.value]));return {date:`${parts.year}-${parts.month}-${parts.day}`,minute:Number(parts.hour)*60+Number(parts.minute)};};
 const minutes=value=>{if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(value||''))fail('Horário inválido.');return Number(value.slice(0,2))*60+Number(value.slice(3));};
 const time=value=>`${String(Math.floor(value/60)).padStart(2,'0')}:${String(value%60).padStart(2,'0')}`;
-export function publicCatalog(db,{book,pix,payments,paymentConfig,attempts,courtPhotos}){
+export function publicCatalog(db,{book,pix,payments,misticpay,paymentConfig,attempts,courtPhotos}){
  db.exec('CREATE TABLE IF NOT EXISTS public_booking_requests(request_key TEXT PRIMARY KEY,booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),token TEXT NOT NULL UNIQUE,expires_at INTEGER NOT NULL)');
  const settings=()=>setting(db,'catalog',{enabled:true,open:'06:00',close:'23:00'});
  function saveSettings(body){
@@ -45,17 +45,38 @@ export function publicCatalog(db,{book,pix,payments,paymentConfig,attempts,court
   const request=db.prepare('SELECT * FROM public_booking_requests WHERE token=?').get(token);
   if(!request)fail('Reserva não encontrada.',404);
   if(request.expires_at<=Date.now())fail('O link desta reserva expirou. Entre em contato com a arena.',410);
-  const b=db.prepare('SELECT b.id,b.customer,b.date,b.start,b.end,b.total,b.status,b.paid,c.name court_name FROM bookings b JOIN courts c ON c.id=b.court_id WHERE b.id=?').get(request.booking_id);
+  return bookingDetails(request.booking_id);
+ }
+ function bookingDetails(id){
+  const b=db.prepare('SELECT b.id,b.customer,b.date,b.start,b.end,b.total,b.status,b.paid,c.name court_name FROM bookings b JOIN courts c ON c.id=b.court_id WHERE b.id=?').get(id);
+  if(!b)fail('Reserva não encontrada.',404);
   const order=db.prepare('SELECT id,state,checkout_method,checkout_url,preference_id,expires_at FROM payment_orders WHERE booking_id=?').get(b.id);
   const failedWithoutCharge=order?.state==='failed'&&!order.checkout_url&&!order.preference_id
-   &&!db.prepare('SELECT id FROM provider_payments WHERE order_id=? LIMIT 1').get(order.id);
+   &&!db.prepare('SELECT id FROM provider_payments WHERE order_id=? LIMIT 1').get(order.id)
+   &&!db.prepare('SELECT order_id FROM archived_payment_orders WHERE order_id=?').get(order.id);
   const checkoutLinkReady=!!(order?.checkout_url&&Date.parse(order.expires_at)>Date.now()&&['open','pending','rejected'].includes(order.state));
+  const directPix=!!db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(b.id);
+  const mistic=misticpay.details(b.id);
   return {...b,
-   pix_ready:pix.settings().ready&&(!order||failedWithoutCharge),
-   checkout_ready:!!paymentConfig.ready&&(!order||failedWithoutCharge||checkoutLinkReady)&&!db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(b.id),
+   pix_ready:!mistic&&pix.settings().ready&&(!order||failedWithoutCharge),
+   checkout_ready:!mistic&&!directPix&&!!paymentConfig.ready&&(!order||failedWithoutCharge||checkoutLinkReady),
    checkout_method:checkoutLinkReady?order.checkout_method:null,
-   checkout_link_ready:checkoutLinkReady
+   checkout_link_ready:!mistic&&checkoutLinkReady,
+   misticpay_ready:!mistic&&!directPix&&(!order||failedWithoutCharge)&&misticpay.settings().ready,
+   misticpay:mistic
   };
+ }
+ function misticpayLink(id){
+  return transaction(db,()=>{
+   const b=bookingDetails(id);
+   if(b.status!=='confirmed'||b.paid||(!b.misticpay_ready&&!b.misticpay)||b.misticpay?.status==='archived')fail('Esta reserva não pode receber um link MisticPay.',409);
+   const request=db.prepare('SELECT token,expires_at FROM public_booking_requests WHERE booking_id=?').get(id);
+   if(request?.expires_at>Date.now())return {path:`/catalogo#${request.token}`};
+   const token=randomBytes(32).toString('hex'),expires=Date.now()+7*24*3600000;
+   db.prepare('INSERT INTO public_booking_requests VALUES(?,?,?,?) ON CONFLICT(booking_id) DO UPDATE SET token=excluded.token,expires_at=excluded.expires_at')
+    .run(randomBytes(32).toString('hex'),id,token,expires);
+   return {path:`/catalogo#${token}`};
+  });
  }
  function reserve(body,key){
   enabled();
@@ -82,5 +103,5 @@ export function publicCatalog(db,{book,pix,payments,paymentConfig,attempts,court
   if(kind==='pix')return pix.createLink(b.id);
   return payments.checkout(b.id,method);
  }
- return {settings,saveSettings,catalog,reserve,confirmation,payment};
+ return {settings,saveSettings,catalog,reserve,confirmation,payment,misticpayLink};
 }

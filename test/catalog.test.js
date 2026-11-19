@@ -24,7 +24,7 @@ async function fixture(t,{checkout=false}={}){
    return {id,sandbox_init_point:`https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=${id}`};
   }
  };
- const {server}=createApplication({db,paymentConfig:{ready:checkout,mode:'test',baseUrl:'https://arena.example'},paymentClient,receiptReader:async()=>({amount_cents:null})});
+ const {server}=createApplication({db,paymentConfig:{ready:checkout,mode:'test',baseUrl:'https://arena.example'},paymentClient});
  server.listen(0,'127.0.0.1');await once(server,'listening');
  t.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();});let cookie='';
  async function api(route,body,{auth=true,method='POST',headers={}}={}){const r=await fetch(`http://127.0.0.1:${server.address().port}/api/`+route,{method:body===undefined?'GET':method,headers:{'Content-Type':'application/json',...(auth?{Cookie:cookie}:{}),...headers},body:body===undefined?undefined:JSON.stringify(body)});if(auth&&r.headers.get('set-cookie'))cookie=r.headers.get('set-cookie').split(';')[0];return {status:r.status,headers:r.headers,data:r.headers.get('content-type')==='image/jpeg'?Buffer.from(await r.arrayBuffer()):await r.json()};}

@@ -18,7 +18,7 @@ npm run deploy:cloudflare
 
 No painel conectado ao GitHub: branch `main`, raiz `/`, build `npm run build` e deploy `npm run deploy:cloudflare`. Em um banco novo, o acesso inicial é usuário `admin` e senha `admin`. O segredo opcional `ADMIN_INITIAL_PASSWORD` substitui a senha inicial.
 
-Na Cloudflare, a arena pode ativar a leitura automática de comprovantes Pix com um serviço de OCR próprio. O administrador sempre confere o crédito na conta antes de aprovar. Veja [como ativar a leitura na Cloudflare](docs/cloudflare.md#ativar-leitura-automática-em-produção).
+A arena pode usar Pix direto com conferência manual ou configurar Pix com QR Code e conciliação pela MisticPay. [Configuração de pagamentos na Cloudflare](docs/cloudflare.md#pix-via-misticpay)
 
 ## Sistemas filhos e identidade própria
 
@@ -56,7 +56,7 @@ Use o botão de tema no topo do painel ou das páginas públicas. A preferência
 
 ## Executar
 
-Requer Node.js 24.5 ou superior, Tesseract OCR (idioma `eng`) e Poppler (`pdftotext`, `pdftoppm`). Não há dependências npm externas. Em Debian/Ubuntu, os pacotes do leitor são `tesseract-ocr`, `tesseract-ocr-eng` e `poppler-utils`.
+Requer Node.js 24.5 ou superior.
 
 ```sh
 cd /workspace/agendamentos
@@ -71,7 +71,8 @@ O servidor usa a porta 3000. No primeiro acesso, crie a senha do administrador (
 - Reservas com cliente, telefone, data, horário e observações. Valor proporcional à duração, com mínimo de 30 minutos e bloqueio de sobreposição na mesma quadra.
 - Filtros de data e pagamento, cancelamento de reservas não pagas e liberação do horário.
 - Cobrança online pelo Checkout Pro do Mercado Pago: link compartilhável, confirmação por webhook assinado, consulta de status e histórico financeiro. Formas de pagamento dependem da conta do Mercado Pago.
-- Pix direto com chave da arena, página de pagamento por link privado, envio de comprovante e leitura local do valor em PNG, JPG ou PDF.
+- Pix direto com chave da arena, link privado e envio de comprovante PNG, JPG ou PDF para conferência manual.
+- Pix via MisticPay com QR Code, código copia e cola e confirmação pela API do provedor.
 - Acesso administrativo com senha armazenada por scrypt, cookie HttpOnly e limite de tentativas de login.
 - Dados persistidos em SQLite; sessões em memória expiram em 12 horas e exigem novo login após reinício.
 
@@ -89,21 +90,23 @@ O teste de integração usa banco temporário e porta 3217. Exercita autenticaç
 
 Os testes de pagamentos usam um cliente simulado, bancos temporários e portas dinâmicas. Cobrem assinatura, webhook duplicado, estorno, valor/conta/ambiente divergentes, reutilização de link e respostas incertas. Não fazem cobranças reais ou validam a conta do Mercado Pago.
 
-Os testes Pix cobrem permissões, divergência de valor, aprovação explícita, reenvio, duplicidade, expiração e concorrência com o checkout. Os testes de OCR executam Tesseract e Poppler de verdade com comprovantes fictícios em imagem, PDF com texto e PDF escaneado.
+Os testes Pix cobrem permissões, validação de arquivos, conferência manual de valor, aprovação explícita, reenvio, duplicidade, expiração e prevenção de cobranças concorrentes. Os testes da MisticPay simulam a API do provedor.
 
 ## Pix com envio de comprovante
 
 1. No **Financeiro → Pix direto**, cadastre a chave Pix da arena e o nome do favorecido.
 2. Na reserva, selecione **Pix + comprovante**, gere o link e envie ao cliente. O cliente não precisa acessar a conta administrativa.
 3. O cliente confere a chave e o nome no aplicativo do banco, transfere o valor exato e envia um comprovante PNG, JPG ou PDF de até 5 MB.
-4. Quando a leitura automática está disponível, o leitor identifica o valor e compara com o total da reserva. Um valor igual aparece como **Valor compatível · em análise**. Arquivos enviados sem leitor disponível ficam em **Conferência manual necessária**.
-5. Em **Ver comprovante**, o administrador abre o original e confere o crédito na conta. Se a leitura automática encontrou o valor correto, basta marcar **Conferi o recebimento na conta** e aprovar. Na conferência manual, o administrador também informa o valor recebido, que deve ser igual ao total da reserva. Se a leitura apontar valor diferente ou inconclusivo, recuse o comprovante para permitir um novo envio.
+4. A reserva fica com pagamento pendente enquanto o comprovante aguarda conferência.
+5. Em **Ver comprovante**, abra o arquivo, confira o crédito na conta e informe o valor recebido. Marque **Conferi o recebimento na conta** e aprove se o valor for igual ao total da reserva. A recusa permite um novo envio.
 
-A leitura de um comprovante não verifica autenticidade, destinatário ou entrada de dinheiro na conta e nunca confirma pagamento sozinha. Para confirmação bancária automática, use a integração Mercado Pago. O Pix direto funciona sem credenciais desse provedor.
+O link Pix vale por 7 dias. A chave e o favorecido são preservados ao gerar o link. Emitir um novo link após expiração invalida o anterior. Um comprovante pendente impede reenvio até a análise, e arquivos idênticos não podem ser reutilizados. O painel mantém os originais e o histórico no SQLite.
 
-Cada link Pix vale por 7 dias e contém um token aleatório; trate-o como privado. A chave e o favorecido são preservados ao gerar o link, mesmo que a configuração mude depois. Após expirar, emitir novamente invalida o token antigo. Um comprovante pendente impede reenvio até análise; arquivos idênticos não podem ser reutilizados em outra reserva. Pix direto e checkout Mercado Pago são exclusivos por reserva para evitar cobranças concorrentes.
+## Pix via MisticPay
 
-O OCR usa Tesseract e Poppler no ambiente local ou no serviço próprio configurado para o Worker. Processa as primeiras 3 páginas de texto ou 2 páginas escaneadas do PDF, com limites de tempo, tamanho e concorrência. Use documentos nítidos e sem senha. Os originais e os resultados ficam no SQLite. Inclua o banco no backup e acesse os arquivos originais pelo painel administrativo. Não há limpeza automática do histórico nesta versão.
+Em **Financeiro → Configurar MisticPay**, informe as chaves de acesso da arena e a origem HTTPS pública do site. No catálogo, selecione **Pix via MisticPay** e informe o CPF do pagador para gerar o QR Code. O painel também pode compartilhar um link de pagamento para uma reserva existente. A confirmação depende da consulta autenticada da transação e do valor integral.
+
+Cada reserva pode ter uma cobrança ativa por vez. As credenciais e os detalhes da configuração estão no [guia da Cloudflare](docs/cloudflare.md#pix-via-misticpay).
 
 ## Ativar Mercado Pago
 
@@ -119,7 +122,7 @@ Configure os valores nas variáveis seguras do ambiente de execução, sem coloc
 
 Na aplicação Mercado Pago, configure notificações de **Pagamentos** para `https://SEU-DOMINIO/api/payments/webhook` e use a assinatura secreta dessa mesma aplicação. O link de notificação também é enviado na criação de cada preferência. Reinicie o servidor após alterar variáveis. A rede precisa permitir saída HTTPS para `api.mercadopago.com`; o checkout do cliente abre no domínio do Mercado Pago. `npm start` respeita os proxies herdados com `--use-env-proxy`.
 
-Na confirmação de uma reserva no catálogo, o cliente escolhe **Pix**, **Cartão de crédito** ou **Cartão de débito** conforme os meios habilitados na arena. Se o Pix direto estiver configurado, a opção **Pix** usa a chave da arena e permite enviar o comprovante. Quando o Pix direto está indisponível e o checkout está habilitado, a opção **Pix** abre o Mercado Pago. A disponibilidade do cartão de débito depende das opções exibidas pelo Mercado Pago no checkout.
+Na confirmação de uma reserva no catálogo, o cliente escolhe entre as opções Pix e os cartões habilitados na arena. Se o Pix direto estiver configurado, a opção **Pix** usa a chave da arena e permite enviar o comprovante. Quando o Pix direto está indisponível e o checkout está habilitado, a opção **Pix** abre o Mercado Pago. A disponibilidade do cartão de débito depende das opções exibidas pelo Mercado Pago no checkout.
 
 No painel, o administrador seleciona **Mercado Pago** na reserva, escolhe o meio de pagamento e gera o link para enviar ao cliente. Os dados do cartão são preenchidos no site do Mercado Pago. A página de retorno em `/pagamento` orienta o cliente a consultar a confirmação. A confirmação exige assinatura válida e uma consulta à API que verifique conta recebedora, referência, valor integral, moeda BRL e ambiente. Notificações repetidas são idempotentes, e uma consulta administrativa também pode reconciliar o pagamento. O painel atualiza a cada 30 segundos enquanto estiver visível.
 

@@ -10,12 +10,11 @@ import assert from 'node:assert/strict';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const directory=await mkdtemp(path.join(os.tmpdir(),'arena-cloudflare-test-'));
-const withReceipts=true;
 console.log('Cloudflare smoke: production Worker, SQLite and manual receipt review');
 const password='admin';
 const configFile=path.join(directory,'wrangler.json');
 const persist=path.join(directory,'state');
-let worker,localWorker,output='',cookie='',checks=0;
+let worker,output='',cookie='',checks=0;
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const freePort=()=>new Promise((resolve,reject)=>{const server=net.createServer();server.on('error',reject);server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolve(port));});});
 const port=await freePort();
@@ -23,21 +22,19 @@ const base=`http://127.0.0.1:${port}`;
 const fixture=await readFile(path.join(root,'test/fixtures/pix-receipt.png'));
 function passed(label){checks++;console.log('PASS:',label);}
 function logs(){return output.split('\n').slice(-70).join('\n').replaceAll(password,'[test password]');}
-async function makeConfig({bootstrap=false,containers=false,stub=false,local=false}={}){
+async function makeConfig({bootstrap=false}={}){
  const config=JSON.parse(await readFile(path.join(root,'wrangler.jsonc'),'utf8'));
  delete config.$schema;
  config.name='arena-volei-local-smoke';
  config.main=path.join(root,'cloudflare/worker.js');
  config.assets.directory=path.join(root,'public');
  config.assets.html_handling='none';
- config.dev={...config.dev,enable_containers:containers};
+ config.dev={...config.dev,enable_containers:false};
  config.observability={enabled:false};
- if(config.containers)config.containers=config.containers.map(item=>({...item,image:path.join(root,'cloudflare/Dockerfile'),image_build_context:root}));
  config.vars={...config.vars,...(bootstrap?{ADMIN_INITIAL_PASSWORD:password}:{})};
  await writeFile(configFile,JSON.stringify(config,null,2),{mode:0o600});
 }
 async function stop(){
- if(localWorker){await localWorker.dispose();localWorker=undefined;}
  if(!worker)return;
  const child=worker;worker=undefined;
  if(child.exitCode!==null)return;
@@ -46,39 +43,11 @@ async function stop(){
  await Promise.race([exited,delay(5000)]);
  if(child.exitCode===null){try{process.kill(-child.pid,'SIGKILL');}catch{}await exited;}
 }
-async function startWithOCR(service){
- await makeConfig();
- process.env.XDG_CONFIG_HOME=path.join(directory,'config');
- process.env.WRANGLER_SEND_METRICS='false';
- process.env.WRANGLER_WRITE_LOGS='false';
- const {unstable_startWorker}=await import('wrangler');
- localWorker=await unstable_startWorker({
-  config:configFile,
-  bindings:{
-   RECEIPT_OCR_URL:{type:'plain_text',value:'https://receipt-ocr.invalid'},
-   RECEIPT_OCR_TOKEN:{type:'secret_text',value:'test-local-ocr'}
-  },
-  dev:{
-   server:{hostname:'127.0.0.1',port},persist:path.join(directory,'ocr-state'),watch:false,inspector:false,logLevel:'warn',
-   async outboundService(request){
-    assert.equal(request.url,'https://receipt-ocr.invalid/read');
-    assert.equal(request.headers.get('authorization'),'Bearer test-local-ocr');
-    return service(request);
-   }
-  }
- });
- let timer;
- try{
-  await Promise.race([localWorker.ready,new Promise((_,reject)=>{
-   timer=setTimeout(()=>reject(Error('Wrangler OCR test runtime did not become ready')),60000);
-  })]);
- }finally{clearTimeout(timer);}
-}
 async function start(options){
  await makeConfig(options);output='';
  worker=spawn(process.execPath,[path.join(root,'node_modules/wrangler/bin/wrangler.js'),'dev','--local','--config',configFile,'--ip','127.0.0.1','--port',String(port),'--inspector-port','0','--persist-to',persist,'--log-level','warn','--show-interactive-dev-session','false'],{cwd:root,detached:true,stdio:['ignore','pipe','pipe'],env:{...process.env,XDG_CONFIG_HOME:path.join(directory,'config'),WRANGLER_SEND_METRICS:'false',WRANGLER_LOG_PATH:path.join(directory,'wrangler.log')}});
  for(const stream of [worker.stdout,worker.stderr])stream.on('data',chunk=>{output+=chunk.toString();if(output.length>100000)output=output.slice(-80000);});
- const deadline=Date.now()+(options.containers?240000:60000);
+ const deadline=Date.now()+60000;
  while(Date.now()<deadline){
   if(worker.exitCode!==null)throw Error(`Wrangler exited before readiness (${worker.exitCode})\n${logs()}`);
   try{const response=await fetch(base+'/api/session',{signal:AbortSignal.timeout(1000)});if(response.headers.get('content-type')?.includes('application/json'))return;}catch{}
@@ -95,7 +64,7 @@ async function api(route,body,{auth=true,headers={},method}={}){
 }
 
 try{
- await start({bootstrap:false,containers:false});
+ await start({bootstrap:false});
  const unconfigured=await api('/api/session');assert.equal(unconfigured.status,200,JSON.stringify(unconfigured.data));
  assert.equal(unconfigured.data.setup,false);
  assert.equal((await api('/api/login',{username:'other',password})).status,401);
@@ -103,7 +72,7 @@ try{
  cookie='';
  passed('default admin login works without a bootstrap secret and rejects other usernames');
  await stop();
- await start({bootstrap:true,containers:false});
+ await start({bootstrap:true});
  for(const route of ['/','/catalogo','/pix','/pagamento','/theme.js','/sidebar.js','/app.js','/pix.js','/style.css','/refresh.css','/refresh-public.css','/arena-hero.webp']){
   const response=await api(route);assert.equal(response.status,200,`Asset ${route}: ${response.status}`);assert.equal(response.headers.get('x-content-type-options'),'nosniff');
  }
@@ -127,30 +96,28 @@ try{
  const settings=await api('/api/pix/settings',{key:'pix@arena.example',receiver:'Arena de teste'},{method:'PUT'});assert.equal(settings.status,200,JSON.stringify(settings.data));
  const link=await api(`/api/bookings/${id}/pix-link`,{});assert.equal(link.status,200,JSON.stringify(link.data));
  const token=link.data.path.split('#')[1];
- const payer=await api(`/api/pix/payments/${token}`,undefined,{auth:false});assert.equal(payer.status,200);assert.equal(payer.data.total,18000);assert.equal(payer.data.phone,undefined);assert.equal(payer.data.notes,undefined);assert.equal(payer.data.ocr_ready,false);
+ const payer=await api(`/api/pix/payments/${token}`,undefined,{auth:false});assert.equal(payer.status,200);assert.equal(payer.data.total,18000);assert.equal(payer.data.phone,undefined);assert.equal(payer.data.notes,undefined);assert.equal(payer.data.ocr_ready,undefined);
  assert.equal((await api(`/api/bookings/${id}/checkout`,{})).status,409);
  passed('private Pix link, payer privacy and payment-provider exclusivity');
- if(withReceipts){
-  const proof=await api(`/api/pix/payments/${token}/receipt`,{filename:'pix-receipt.png',content_base64:fixture.toString('base64')},{auth:false});assert.equal(proof.status,201,JSON.stringify(proof.data)+'\n'+logs());assert.equal(proof.data.amount_cents,null);assert.equal(proof.data.match_status,'manual');assert.equal(proof.data.status,'pending');
-  assert.equal((await api('/api/bookings')).data.find(b=>b.id===id).paid,0);
-  const receiptId=proof.data.id;
-  assert.equal((await api(`/api/receipts/${receiptId}/file`,undefined,{auth:false})).status,401);
-  const original=await api(`/api/receipts/${receiptId}/file`);assert.equal(original.status,200);assert.deepEqual(original.data,fixture);
-  assert.equal((await api(`/api/receipts/${receiptId}/review`,{decision:'approve',confirmed_amount_cents:18000})).status,400);
-  assert.equal((await api(`/api/receipts/${receiptId}/review`,{decision:'approve',confirmed_received:true})).status,409);
-  assert.equal((await api(`/api/receipts/${receiptId}/review`,{decision:'approve',confirmed_received:true,confirmed_amount_cents:1})).status,409);
-  assert.equal((await api(`/api/receipts/${receiptId}/review`,{decision:'approve',confirmed_received:true,confirmed_amount_cents:18000})).status,200);
-  assert.equal((await api(`/api/pix/payments/${token}`,undefined,{auth:false})).data.paid,true);
-  passed('manual review, durable receipt BLOB, protected original and explicit approval');
-  const largeReservation=await api('/api/bookings',{...reservation,date:'2026-12-02'});assert.equal(largeReservation.status,201);
-  const largeLink=await api(`/api/bookings/${largeReservation.data.id}/pix-link`,{});assert.equal(largeLink.status,200);
-  const largeToken=largeLink.data.path.split('#')[1];
-  const large=Buffer.alloc(5*1024*1024);fixture.copy(large);
-  const largeProof=await api(`/api/pix/payments/${largeToken}/receipt`,{filename:'large-pix-receipt.png',content_base64:large.toString('base64')},{auth:false});
-  assert.equal(largeProof.status,201,JSON.stringify(largeProof.data)+'\n'+logs());assert.equal(largeProof.data.amount_cents,null);
-  const largeOriginal=await api(`/api/receipts/${largeProof.data.id}/file`);assert.equal(largeOriginal.status,200);assert.deepEqual(largeOriginal.data,large);
-  passed('advertised 5 MiB receipt limit supported by Durable SQLite BLOB storage');
- }else console.log('UNRUN: container OCR and receipt lifecycle (--without-ocr selected).');
+ const proof=await api(`/api/pix/payments/${token}/receipt`,{filename:'pix-receipt.png',content_base64:fixture.toString('base64')},{auth:false});assert.equal(proof.status,201,JSON.stringify(proof.data)+'\n'+logs());assert.equal(proof.data.amount_cents,null);assert.equal(proof.data.match_status,'manual');assert.equal(proof.data.status,'pending');
+ assert.equal((await api('/api/bookings')).data.find(b=>b.id===id).paid,0);
+ const receiptId=proof.data.id;
+ assert.equal((await api(`/api/receipts/${receiptId}/file`,undefined,{auth:false})).status,401);
+ const original=await api(`/api/receipts/${receiptId}/file`);assert.equal(original.status,200);assert.deepEqual(original.data,fixture);
+ assert.equal((await api(`/api/receipts/${receiptId}/review`,{decision:'approve',confirmed_amount_cents:18000})).status,400);
+ assert.equal((await api(`/api/receipts/${receiptId}/review`,{decision:'approve',confirmed_received:true})).status,409);
+ assert.equal((await api(`/api/receipts/${receiptId}/review`,{decision:'approve',confirmed_received:true,confirmed_amount_cents:1})).status,409);
+ assert.equal((await api(`/api/receipts/${receiptId}/review`,{decision:'approve',confirmed_received:true,confirmed_amount_cents:18000})).status,200);
+ assert.equal((await api(`/api/pix/payments/${token}`,undefined,{auth:false})).data.paid,true);
+ passed('manual review, durable receipt BLOB, protected original and explicit approval');
+ const largeReservation=await api('/api/bookings',{...reservation,date:'2026-12-02'});assert.equal(largeReservation.status,201);
+ const largeLink=await api(`/api/bookings/${largeReservation.data.id}/pix-link`,{});assert.equal(largeLink.status,200);
+ const largeToken=largeLink.data.path.split('#')[1];
+ const large=Buffer.alloc(5*1024*1024);fixture.copy(large);
+ const largeProof=await api(`/api/pix/payments/${largeToken}/receipt`,{filename:'large-pix-receipt.png',content_base64:large.toString('base64')},{auth:false});
+ assert.equal(largeProof.status,201,JSON.stringify(largeProof.data)+'\n'+logs());assert.equal(largeProof.data.amount_cents,null);
+ const largeOriginal=await api(`/api/receipts/${largeProof.data.id}/file`);assert.equal(largeOriginal.status,200);assert.deepEqual(largeOriginal.data,large);
+ passed('advertised 5 MiB receipt limit supported by Durable SQLite BLOB storage');
  const publicDate=new Date(Date.now()+4*86400000).toISOString().slice(0,10);
  const onlineCatalog=await api(`/api/public/catalog?date=${publicDate}`,undefined,{auth:false});
  assert.equal(onlineCatalog.status,200);assert.equal(onlineCatalog.data.courts.length,1);
@@ -207,72 +174,16 @@ try{
  const session=cookie;
  await stop();
  // No bootstrap secret on restart: persisted admin and session must still work.
- await start({bootstrap:false,containers:false});cookie=session;
+ await start({bootstrap:false});cookie=session;
  assert.equal((await api('/api/session')).data.authenticated,true);
  const persisted=await api('/api/bookings');assert.equal(persisted.status,200);assert.equal(persisted.data.find(b=>b.id===id).total,18000);
- if(withReceipts){assert.equal(persisted.data.find(b=>b.id===id).paid,1);const originals=await api(`/api/bookings/${id}/receipts`);assert.equal(originals.data.length,1);assert.equal(originals.data[0].status,'approved');}
+ assert.equal(persisted.data.find(b=>b.id===id).paid,1);
+ const originals=await api(`/api/bookings/${id}/receipts`);assert.equal(originals.data.length,1);assert.equal(originals.data[0].status,'approved');
  assert.equal((await api('/api/bookings',undefined,{headers:{...childHeaders,Cookie:childCookie}})).data.length,beforeCopy.length+1);
  assert.equal((await api('/api/system/branding',undefined,{headers:childHeaders})).data.name,'Logo do filho');
  assert.equal((await api('/api/notifications/config')).data.token_configured,true);
  passed('administrator, session, bookings and receipts persist after runtime restart');
 
- await stop();cookie='';
- const ocrCases=[
-  {filename:'pix-receipt.png',mime:'image/png',upstream:200,match:'matched',amount:18000,end:'19:30'},
-  {filename:'pix-receipt.jpg',mime:'image/jpeg',upstream:200,match:'mismatch',amount:18000,end:'19:00'},
-  {filename:'pix-receipt.pdf',mime:'application/pdf',upstream:422,match:'unreadable',amount:null,end:'19:30'},
-  {filename:'pix-scanned.pdf',mime:'application/pdf',upstream:503,match:'manual',amount:null,end:'19:30'}
- ];
- for(const item of ocrCases)item.bytes=await readFile(path.join(root,'test/fixtures',item.filename));
- const seen=[];
- await startWithOCR(async request=>{
-  assert.equal(request.method,'POST');
-  assert.equal(new URL(request.url).pathname,'/read');
-  const bytes=Buffer.from(await request.arrayBuffer());
-  const item=ocrCases.find(candidate=>candidate.bytes.equals(bytes));
-  assert.ok(item,'The OCR adapter gets the original uploaded bytes');
-  assert.equal(request.headers.get('content-type'),item.mime);
-  seen.push(item.filename);
-  return item.upstream===200
-   ? Response.json({amount_cents:item.amount,candidates:[item.amount]})
-   : Response.json({error:'Teste do leitor de comprovantes.'},{status:item.upstream});
- });
- assert.equal((await api('/api/login',{username:'admin',password})).status,200);
- const ocrCourt=await api('/api/courts',{name:'Quadra OCR',type:'Vôlei de areia',price:120});
- assert.equal(ocrCourt.status,201);
- const ocrSettings=await api('/api/pix/settings',{key:'pix@arena.example',receiver:'Arena OCR'},{method:'PUT'});
- assert.equal(ocrSettings.status,200);assert.equal(ocrSettings.data.ocr_ready,true);
- for(let i=0;i<ocrCases.length;i++){
-  const item=ocrCases[i];
-  const booked=await api('/api/bookings',{...reservation,court_id:ocrCourt.data.id,date:`2026-12-0${i+1}`,end:item.end});
-  assert.equal(booked.status,201);
-  const payment=await api(`/api/bookings/${booked.data.id}/pix-link`,{});
-  assert.equal(payment.status,200);
-  const pixPath=`/api/pix/payments/${payment.data.path.split('#')[1]}`;
-  assert.equal((await api(pixPath,undefined,{auth:false})).data.ocr_ready,true);
-  const uploaded=await api(pixPath+'/receipt',{filename:item.filename,content_base64:item.bytes.toString('base64')},{auth:false});
-  assert.equal(uploaded.status,201,JSON.stringify(uploaded.data));
-  assert.equal(uploaded.data.match_status,item.match);
-  assert.equal(uploaded.data.amount_cents,item.amount);
-  assert.equal(uploaded.data.status,'pending');
-  assert.equal((await api(pixPath,undefined,{auth:false})).data.paid,false);
-  const review=`/api/receipts/${uploaded.data.id}/review`;
-  const confirmed={decision:'approve',confirmed_received:true};
-  if(item.match==='matched'){
-   assert.equal((await api(review,{decision:'approve'})).status,400);
-   assert.equal((await api(review,confirmed)).status,200);
-   assert.equal((await api(pixPath,undefined,{auth:false})).data.paid,true);
-  }else if(item.match==='manual'){
-   assert.equal((await api(review,confirmed)).status,409);
-   assert.equal((await api(review,{...confirmed,confirmed_amount_cents:18000})).status,200);
-   assert.equal((await api(pixPath,undefined,{auth:false})).data.paid,true);
-  }else{
-   assert.equal((await api(review,{...confirmed,confirmed_amount_cents:item.end==='19:00'?12000:18000})).status,409);
-   assert.equal((await api(pixPath,undefined,{auth:false})).data.paid,false);
-  }
- }
- assert.deepEqual(seen,ocrCases.map(item=>item.filename));
- passed('optional OCR transport matches amounts, retains 422/unavailable receipts and requires bank confirmation');
  console.log(`Cloudflare runtime smoke: ${checks} checks passed without Containers.`);
 }catch(error){console.error(error);console.error(logs());process.exitCode=1;}
 finally{await stop();await rm(directory,{recursive:true,force:true});}

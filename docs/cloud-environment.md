@@ -40,11 +40,9 @@ No ambiente gerenciado, use `npm run dev:cloud` sem argumentos extras para encam
 
 O banco local não é o banco de produção. Ao restaurar um ambiente, reinicie o servidor: processos e conexões não devem ser considerados parte do snapshot.
 
-### Leitura de comprovantes no desenvolvimento
+### Comprovantes no desenvolvimento
 
-`npm run dev:cloud` conecta o Worker local ao leitor nativo quando Tesseract com idioma `eng` e Poppler estão instalados. Em Debian ou Ubuntu, instale `tesseract-ocr`, `tesseract-ocr-eng` e `poppler-utils` e reinicie o servidor. Com as ferramentas ausentes, os comprovantes ficam disponíveis para conferência manual.
-
-Use um comprovante fictício para validar a leitura em **Financeiro → Pix direto**. O modo de desenvolvimento usa o leitor privado do próprio ambiente. Em produção, o Worker pode usar o [serviço HTTPS de OCR](cloudflare.md#ativar-leitura-automática-em-produção).
+Use um comprovante fictício em **Financeiro → Pix direto** para validar o envio e a conferência manual do valor recebido.
 
 ## Verificações do projeto
 
@@ -54,7 +52,7 @@ npm run test:cloudflare
 npm run build
 ```
 
-`npm test` também executa o OCR nativo do modo Node. Ele exige Tesseract com idioma `eng` e Poppler (`pdftotext` e `pdftoppm`). Os pacotes Debian/Ubuntu são `tesseract-ocr`, `tesseract-ocr-eng` e `poppler-utils`; eles já estavam instalados no ambiente preparado. Os testes Cloudflare usam o Worker e SQLite locais e exercitam a conferência manual e a integração com um leitor simulado.
+`npm test` valida a API Node com SQLite e respostas simuladas dos provedores. Os testes Cloudflare exercitam o Worker, SQLite local e a conferência manual de comprovantes.
 
 O build não faz deploy. Os comandos existentes de CI continuam sendo `npm run build` e `npm run deploy:cloudflare`; a publicação exige a conta e a autenticação Cloudflare adequadas. Consulte [o guia de hospedagem](cloudflare.md).
 

@@ -6,7 +6,7 @@ import {captureSystem,createChild,installSystem,branding,saveBranding,updateChil
 
 function database(t){
  const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');
- createApplication({db,paymentConfig:{ready:false,mode:'test'},receiptReader:async()=>({amount_cents:null})});
+ createApplication({db,paymentConfig:{ready:false,mode:'test'}});
  t.after(()=>db.close());return db;
 }
 test('sistemas: cópia integral conserva dados financeiros e BLOBs, sem sessões ou senha da mãe',async t=>{

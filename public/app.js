@@ -8,7 +8,7 @@ const whatsappProviders={
 let whatsappProvider='evolution';
 const notificationRoute=(route,provider=whatsappProvider)=>`notifications/${route}?provider=${provider}`;
 let notificationConfig={enabled:false,base_url:'https://api.dallan.pro',connection_ready:false,token_configured:false,target:'both',arena_number:'',country_code:'55',ready:false},notificationEvents=[];
-let courts=[], bookings=[], paymentConfig={ready:false,mode:'test'}, pixSettings={ready:false,ocr_ready:false}, view='overview', setup=false, submitModal;
+let courts=[], bookings=[], paymentConfig={ready:false,mode:'test'}, pixSettings={ready:false}, misticpayConfig={ready:false}, view='overview', setup=false, submitModal;
 const money=n=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(n/100);
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const dateLabel=d=>new Date(d+'T12:00:00').toLocaleDateString('pt-BR',{day:'2-digit',month:'short'});
@@ -34,30 +34,43 @@ async function init(){
 $('#startup-retry').onclick=()=>init();
 $('#auth-form').onsubmit=async e=>{e.preventDefault();$('#auth-error').textContent='';$('#auth-submit').disabled=true;try{await api(setup?'setup':'login',{username:new FormData(e.target).get('username'),password:new FormData(e.target).get('password')});e.target.reset();await init();}catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=false;}};
 $('#logout').onclick=async()=>{if(qrSession){stopQrSession();$('#modal').close();}try{await api('logout',{});await init();}catch(e){toast(e.message);}};
-async function refresh(){[courts,bookings,paymentConfig,pixSettings,notificationConfig,notificationEvents]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings'),api(notificationRoute('config')),api('notifications/events')]);await loadSystems();render();}
+async function refresh(){[courts,bookings,paymentConfig,pixSettings,misticpayConfig,notificationConfig,notificationEvents]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings'),api('misticpay/config'),api(notificationRoute('config')),api('notifications/events')]);await loadSystems();render();}
 const stat=(title,value,note,icon)=>`<div class="stat"><div class="stat-top">${title}<span class="stat-icon">${icon}</span></div><strong>${value}</strong><small>${note}</small></div>`;
 function receiptLabel(b){
  if(b.receipt_status==='rejected')return 'Comprovante recusado';
- if(b.receipt_status==='pending')return b.receipt_match==='matched'?'Valor compatível · em análise':b.receipt_match==='mismatch'?'Valor divergente · em análise':b.receipt_match==='manual'?'Conferência manual · em análise':'Leitura inconclusiva · em análise';
+ if(b.receipt_status==='pending')return 'Aguardando conferência';
  return 'Aguardando pagamento';
 }
+const misticpayLabels={
+ pending:'Pix MisticPay pendente',approved:'Pix MisticPay confirmado',failed:'Falha na cobrança MisticPay',
+ creating:'Preparando Pix MisticPay',unknown:'Aguardando confirmação da MisticPay',
+ review:'⚠ Conferir Pix MisticPay',archived:'Pix MisticPay no histórico'
+};
+const misticpayInProgress=['pending','creating','unknown','review'];
 function bookingPaymentLabel(b){
  if(b.status==='cancelled')return 'Cancelado';
  if(b.online_status==='review')return '⚠ Conferir pagamento';
  if(b.online_status==='refunded')return 'Estornado';
  if(b.online_status==='charged_back')return 'Contestado';
  if(b.paid)return '✓ Pago';
+ if(b.misticpay_status)return misticpayLabels[b.misticpay_status]||'Consultar pagamento MisticPay';
  if(b.receipt_status)return receiptLabel(b);
  if(b.online_status==='pending')return 'Em processamento';
  return '◷ Pendente';
 }
 function bookingActions(b){
- if(b.online_archived)return '<span>Histórico do sistema mãe</span>'+(b.receipt_status?`<button class="table-button" data-receipts="${b.id}">Ver comprovante</button>`:'');
+ const receipts=b.receipt_status?`<button class="table-button" data-receipts="${b.id}">Ver comprovante</button>`:'';
+ if(b.online_archived||b.misticpay_status==='archived')return '<span>Histórico do sistema mãe</span>'+receipts;
+ if(b.misticpay_status){
+  const link=!b.paid&&misticpayInProgress.includes(b.misticpay_status)?`<button class="table-button" data-misticpay-link="${b.id}">Ver link MisticPay</button>`:'';
+  return link+`<button class="table-button" data-misticpay-sync="${b.id}">Consultar MisticPay</button>`+receipts;
+ }
  let html='';
  if(b.status==='confirmed'&&!b.paid&&!b.pix_link&&!['refunded','charged_back','review','creating','unknown'].includes(b.online_status))html+=`<button class="table-button" data-pay="${b.id}">${b.checkout_url?'Ver link':'Gerar cobrança'}</button>`;
  if(b.online_status)html+=`<button class="table-button" data-sync="${b.id}">Consultar</button>`;
  if(b.status==='confirmed'&&(!b.online_status||(b.online_status==='failed'&&!b.checkout_url))&&!b.paid)html+=`<button class="table-button" data-pix="${b.id}">${b.pix_link?'Link Pix':'Pix + comprovante'}</button>`;
- if(b.receipt_status)html+=`<button class="table-button" data-receipts="${b.id}">Ver comprovante</button>`;
+ if(misticpayConfig.ready&&b.status==='confirmed'&&!b.paid&&!b.online_status&&!b.pix_link)html+=`<button class="table-button" data-misticpay-link="${b.id}">Pix via MisticPay</button>`;
+ html+=receipts;
  if(b.status==='confirmed'&&!b.paid&&!b.online_status&&!b.pix_link)html+=`<button class="table-button cancel" data-cancel="${b.id}">Cancelar</button>`;
  return html||'—';
 }
@@ -78,10 +91,11 @@ function courtCard(court){
 function render(){
  renderNotifications();
  if(view==='history')renderHistory();
- const active=bookings.filter(b=>b.status==='confirmed'), daily=active.filter(b=>b.date===today()), paid=active.filter(b=>b.paid), pending=active.filter(b=>!b.paid&&!['refunded','charged_back','review'].includes(b.online_status));
+ const active=bookings.filter(b=>b.status==='confirmed'), daily=active.filter(b=>b.date===today()), paid=active.filter(b=>b.paid), pending=active.filter(b=>!b.paid&&!['refunded','charged_back','review'].includes(b.online_status)&&b.misticpay_status!=='review');
  document.querySelectorAll('[data-payment-banner]').forEach(el=>{el.classList.toggle('payment-ready',paymentConfig.ready);el.innerHTML=`<div><strong>Mercado Pago · ${paymentConfig.ready?(paymentConfig.mode==='test'?'Modo de teste':'Cobrança online ativa'):'Aguardando ativação'}</strong><p>${paymentConfig.ready?(paymentConfig.mode==='test'?'Links de teste: use contas de teste do Mercado Pago. Não representam recebimentos reais.':'Envie o link ao cliente. A confirmação é consultada diretamente no Mercado Pago.'):'Configure a conta Mercado Pago, a assinatura das notificações e o endereço público para gerar cobranças.'}</p></div><span class="badge ${paymentConfig.ready?'paid':''}">${paymentConfig.ready?'Checkout Pro':'Configuração pendente'}</span>`;});
  $('#financial-connection-description').textContent=paymentConfig.ready?`Conta ${paymentConfig.account_id||'configurada'} · ${paymentConfig.mode==='production'?'Produção':'Teste'} · conexão exclusiva desta arena.`:'Configure as credenciais da conta que receberá os pagamentos desta arena.';
- $('#pix-settings-description').textContent=pixSettings.ready?`Chave cadastrada para ${pixSettings.receiver}.${pixSettings.ocr_ready?' Leitura automática de valores ativada.':' Comprovantes com conferência manual do valor e do crédito na conta.'}`:'Cadastre a chave da arena para que o cliente pague por Pix e envie o comprovante.';
+ $('#misticpay-connection-description').textContent=misticpayConfig.ready?'A arena pode gerar cobranças Pix com QR Code pela MisticPay.':'Cadastre as chaves da conta que receberá os pagamentos Pix.';
+ $('#pix-settings-description').textContent=pixSettings.ready?`Chave cadastrada para ${pixSettings.receiver}. A arena confere o valor e o crédito na conta.`:'Cadastre a chave da arena para que o cliente pague por Pix e envie o comprovante.';
  const sum=a=>a.reduce((s,b)=>s+b.total,0);
  $('#stats').innerHTML=stat('Agendamentos hoje',daily.length,'Reservas confirmadas','▤')+stat('Recebido hoje',money(sum(paid.filter(b=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo'}).format(new Date(b.paid_at))===today()))),'Pagamentos registrados hoje','↑')+stat('A receber',money(sum(pending)),'Reservas ativas não pagas','◷')+stat('Quadras ativas',courts.filter(c=>c.active).length,'Prontas para receber jogos','▱');
  $('#finance-stats').innerHTML=stat('Total recebido',money(sum(paid)),'Todos os recebimentos','↑')+stat('A receber',money(sum(pending)),'Reservas ativas não pagas','◷')+stat('Pagamentos',paid.length,'Recebimentos confirmados','✓')+stat('Reservas pendentes',pending.length,'Aguardando pagamento','▤');
@@ -90,7 +104,9 @@ function render(){
  $('#booking-rows').innerHTML=filtered.map(b=>`<tr><td><div class="client"><span class="client-initials">${esc(b.customer.split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase())}</span><div>${esc(b.customer)}<small>${esc(b.phone)}</small></div></div></td><td>${esc(b.court_name)}<small>${dateLabel(b.date)} · ${esc(b.court_type)}</small></td><td>${b.start} — ${b.end}</td><td>${money(b.total)}</td><td><span class="badge ${b.status==='cancelled'?'cancelled':b.paid?'paid':''}">${bookingPaymentLabel(b)}</span>${b.paid?`<small>${esc(b.method)}</small>`:''}</td><td>${bookingActions(b)}</td></tr>`).join('');
  $('#booking-empty').hidden=filtered.length>0;
  $('#court-list').innerHTML=courts.length?courts.map(courtCard).join(''):'<div class="empty"><h3>A sua arena começa aqui</h3><p>Adicione a primeira quadra para criar agendamentos.</p></div>';
- $('#finance-rows').innerHTML=bookings.filter(b=>b.paid||b.online_status||b.pix_link||b.receipt_status).sort((a,b)=>(b.paid_at||b.date).localeCompare(a.paid_at||a.date)).map(b=>`<tr><td>${esc(b.customer)}</td><td>${esc(b.court_name)}</td><td>${b.paid_at?new Date(b.paid_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'—'}</td><td>${esc(b.method||(b.pix_link?'Pix direto':'Mercado Pago'))}</td><td>${money(b.total)}</td><td><span class="badge ${b.paid?'paid':''}">${b.paid?'Pago':bookingPaymentLabel(b)}</span></td></tr>`).join('');$('#finance-empty').hidden=bookings.some(b=>b.paid||b.online_status||b.pix_link||b.receipt_status);
+ const payments=bookings.filter(b=>b.paid||b.online_status||b.misticpay_status||b.pix_link||b.receipt_status);
+ $('#finance-rows').innerHTML=payments.sort((a,b)=>(b.paid_at||b.date).localeCompare(a.paid_at||a.date)).map(b=>`<tr><td>${esc(b.customer)}</td><td>${esc(b.court_name)}</td><td>${b.paid_at?new Date(b.paid_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'—'}</td><td>${esc(b.misticpay_status?'Pix via MisticPay':b.method||(b.pix_link?'Pix direto':'Mercado Pago'))}</td><td>${money(b.total)}</td><td><span class="badge ${b.paid?'paid':''}">${b.paid?'Pago':bookingPaymentLabel(b)}</span></td></tr>`).join('');
+ $('#finance-empty').hidden=payments.length>0;
 }
 const historyPageSize=50;
 let historyPage=1;
@@ -141,13 +157,14 @@ function newCourt(){openModal('Adicionar quadra','<label>Nome da quadra<input na
 $('#new-court').onclick=newCourt;
 const checkoutLabels={credit_card:'Cartão de crédito',debit_card:'Cartão de débito',pix:'Pix'};
 function checkoutOptions(methods,selected){
- return methods.map(method=>`<option value="${method}" ${method===selected?'selected':''}>${checkoutLabels[method]}</option>`).join('');
+ return methods.map(method=>`<option value="${method}" ${method===selected?'selected':''}>${method==='misticpay'?'Pix via MisticPay':checkoutLabels[method]}</option>`).join('');
 }
 function newBooking(){
  if(!courts.some(c=>c.active)){
   setView('courts');newCourt();toast('Cadastre uma quadra ativa para começar.');return;
  }
  const methods=paymentConfig.ready?Object.keys(checkoutLabels):pixSettings.ready?['pix']:[];
+ if(misticpayConfig.ready)methods.push('misticpay');
  const paymentField=methods.length?`<label>Forma de pagamento<select name="payment_method"><option value="">Escolher depois</option>${checkoutOptions(methods)}</select></label>`:'';
  openModal('Novo agendamento',`<label>Quadra<select name="court_id" id="reserve-court">${courts.filter(c=>c.active).map(c=>`<option value="${c.id}">${esc(c.name)} · ${money(c.price)}/h</option>`).join('')}</select></label><div class="form-row"><label>Nome do cliente<input name="customer" maxlength="120" placeholder="Nome completo" required></label><label>Telefone / WhatsApp<input name="phone" type="tel" maxlength="30" placeholder="(11) 99999-9999" required></label></div><label>Data<input name="date" type="date" value="${today()}" required></label><div class="form-row"><label>Início<input name="start" type="time" id="reserve-start" value="18:00" required></label><label>Fim<input name="end" type="time" id="reserve-end" value="19:00" required></label></div><label>Observações (opcional)<textarea name="notes" maxlength="1000" placeholder="Informações sobre a reserva"></textarea></label>${paymentField}<div class="estimate" id="estimate"></div>`,async ({payment_method,...data})=>{
   const {id}=await api('bookings',data);
@@ -156,7 +173,8 @@ function newBooking(){
   try{
    await refresh();
    const booking=bookings.find(item=>item.id===id);
-   if(payment_method==='pix'&&pixSettings.ready)openPix(booking);
+   if(payment_method==='misticpay')await openMisticpayLink(booking);
+   else if(payment_method==='pix'&&pixSettings.ready)openPix(booking);
    else onlinePayment(booking,payment_method);
   }catch{
    toast('Reserva confirmada. Abra o pagamento na lista de agendamentos.');
@@ -187,8 +205,30 @@ function onlinePayment(b,selected="credit_card"){
  }
  openModal('Cobrar com Mercado Pago',`<p>Gere um link para <strong>${esc(b.customer)}</strong> pagar <strong>${money(b.total)}</strong> pela reserva de ${esc(b.court_name)}.</p><label>Forma de pagamento<select name="payment_method" required>${checkoutOptions(Object.keys(checkoutLabels),selected)}</select></label><p>O checkout usa os meios habilitados na conta Mercado Pago da arena.</p>${paymentConfig.mode==='test'?'<div class="estimate">Modo de teste. Use apenas contas de teste do Mercado Pago.</div>':''}<p>O link vale por 24 horas. O horário fica reservado enquanto o pagamento é acompanhado. Reservas com cobrança online devem ser tratadas pelo Mercado Pago para cancelamentos e estornos.</p>`,async fields=>{const data=await api(`bookings/${b.id}/checkout`,fields);await refresh();checkoutLink(b,data);return false;},'Gerar link de pagamento');
 }
+async function openMisticpayLink(b){
+ const {path}=await api(`bookings/${b.id}/misticpay-link`,{});
+ const link=new URL(path,location.origin);
+ if(link.origin!==location.origin||link.pathname!=='/catalogo')throw Error('Não foi possível abrir o link Pix da reserva.');
+ openModal('Enviar Pix via MisticPay',`<p>Envie este link para <strong>${esc(b.customer)}</strong>. O cliente seleciona Pix via MisticPay e informa o CPF para pagar <strong>${money(b.total)}</strong>.</p><label>Link para o cliente<input id="misticpay-link" value="${esc(link.href)}" readonly></label><div class="checkout-actions"><button type="button" class="outline" id="copy-misticpay-link">Copiar link</button><a class="primary checkout-open" href="${esc(link.href)}" target="_blank" rel="noopener noreferrer">Abrir reserva ↗</a></div>`,async()=>{},'Concluir');
+ $('#copy-misticpay-link').onclick=async()=>{try{await navigator.clipboard.writeText(link.href);toast('Link copiado. Envie ao cliente.');}catch{$('#misticpay-link').select();toast('Selecione e copie o link Pix.');}};
+}
 $('#booking-rows').onclick=async e=>{
  const pay=e.target.closest('[data-pay]'),cancel=e.target.closest('[data-cancel]'),sync=e.target.closest('[data-sync]'),pix=e.target.closest('[data-pix]'),receipts=e.target.closest('[data-receipts]');
+ const misticpayLink=e.target.closest('[data-misticpay-link]'),misticpaySync=e.target.closest('[data-misticpay-sync]');
+ if(misticpayLink){
+  misticpayLink.disabled=true;
+  try{await openMisticpayLink(bookings.find(b=>b.id===Number(misticpayLink.dataset.misticpayLink)));}
+  catch(error){toast(error.message);}
+  finally{misticpayLink.disabled=false;}
+  return;
+ }
+ if(misticpaySync){
+  misticpaySync.disabled=true;
+  try{await api(`bookings/${misticpaySync.dataset.misticpaySync}/sync-misticpay`,{});await refresh();toast('Pagamento consultado na MisticPay.');}
+  catch(error){toast(error.message);}
+  finally{misticpaySync.disabled=false;}
+  return;
+ }
  if(pix)openPix(bookings.find(b=>b.id===Number(pix.dataset.pix)));
  if(receipts){receipts.disabled=true;try{await showReceipts(bookings.find(b=>b.id===Number(receipts.dataset.receipts)));}catch(e){toast(e.message);}finally{receipts.disabled=false;}}
  if(pay)onlinePayment(bookings.find(b=>b.id===Number(pay.dataset.pay)));
@@ -206,44 +246,33 @@ function pixLinkModal(b,data){
 }
 function openPix(b){
  if(!pixSettings.ready){configurePix(()=>openPix(b));return;}
- const reviewDescription=pixSettings.ocr_ready
-  ?'O sistema tenta ler o valor do comprovante e comparar com a reserva.'
-  :'A arena confere manualmente o valor do comprovante.';
- openModal('Pix com comprovante',`<p>O cliente receberá a chave Pix de <strong>${esc(pixSettings.receiver)}</strong> e o valor de <strong>${money(b.total)}</strong>, com espaço para enviar o comprovante.</p><div class="estimate">${reviewDescription} A reserva só ficará paga depois da confirmação de recebimento pelo administrador.</div>`,async()=>{const data=await api(`bookings/${b.id}/pix-link`,{});await refresh();pixLinkModal(b,data);return false;},b.pix_link?'Mostrar link Pix':'Gerar link Pix');
+ openModal('Pix com comprovante',`<p>O cliente receberá a chave Pix de <strong>${esc(pixSettings.receiver)}</strong> e o valor de <strong>${money(b.total)}</strong>, com espaço para enviar o comprovante.</p><div class="estimate">A arena confirma o pagamento após conferir o valor do comprovante e o crédito na conta.</div>`,async()=>{const data=await api(`bookings/${b.id}/pix-link`,{});await refresh();pixLinkModal(b,data);return false;},b.pix_link?'Mostrar link Pix':'Gerar link Pix');
 }
 async function showReceipts(b){
  const receipts=await api(`bookings/${b.id}/receipts`);
- const labels={manual:'Conferência manual necessária',matched:'Valor compatível',mismatch:'Valor divergente',unreadable:'Leitura inconclusiva'};
  const statusLabels={pending:'Aguardando conferência',approved:'Aprovado',rejected:'Recusado'};
- const cards=receipts.map(r=>{
-  const manual=r.match_status==='manual',matched=r.match_status==='matched';
-  const canApprove=manual||matched;
-  const amount=r.amount_cents===null?(manual?'Conferência manual':'Não identificado'):money(r.amount_cents);
-  return `<article class="receipt-card">
+ const cards=receipts.map(r=>`<article class="receipt-card">
    <div class="receipt-heading"><strong>${esc(r.filename)}</strong><span class="badge ${r.status==='approved'?'paid':''}">${statusLabels[r.status]||'Em análise'}</span></div>
    <p>${new Date(r.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</p>
-   <div class="receipt-values"><span>Esperado<strong>${money(b.total)}</strong></span><span>Identificado<strong>${amount}</strong></span></div>
-   <p class="receipt-match ${matched?'is-matched':'is-warning'}">${labels[r.match_status]||'Leitura inconclusiva'}</p>
    <a class="receipt-original" href="/api/receipts/${r.id}/file" target="_blank" rel="noopener noreferrer">Abrir comprovante original ↗</a>
    ${r.review_note?`<p>Observação: ${esc(r.review_note)}</p>`:''}
    ${r.status==='pending'?`
     <label>Observação da conferência<textarea data-review-note="${r.id}" maxlength="1000" placeholder="Motivo da recusa ou observação (opcional)"></textarea></label>
-    ${manual?`<label>Valor recebido (R$)<input type="number" min="0.01" step="0.01" data-received-amount="${r.id}" placeholder="0,00"></label>`:''}
-    ${canApprove?`<label class="check-label"><input type="checkbox" data-confirm-receipt="${r.id}"> Conferi o recebimento na conta</label>`:'<p>Peça um novo comprovante legível e com o valor correto antes de aprovar.</p>'}
+    <label>Valor recebido (R$)<input type="number" min="0.01" step="0.01" data-received-amount="${r.id}" placeholder="0,00"></label>
+    <label class="check-label"><input type="checkbox" data-confirm-receipt="${r.id}"> Conferi o recebimento na conta</label>
     <div class="receipt-actions">
-     ${canApprove?`<button type="button" class="primary" data-approve-receipt="${r.id}" disabled>Confirmar recebimento</button>`:''}
+     <button type="button" class="primary" data-approve-receipt="${r.id}" disabled>Confirmar recebimento</button>
      <button type="button" class="outline" data-reject-receipt="${r.id}">Recusar comprovante</button>
     </div>`:''}
-  </article>`;
- }).join('');
+  </article>`).join('');
  openModal('Conferir comprovante Pix',`<p>Reserva de <strong>${esc(b.customer)}</strong> · valor esperado <strong>${money(b.total)}</strong>.</p><p>Abra o original e confira o crédito na conta antes de aprovar. A arena confirma o pagamento depois dessa conferência.</p>${cards||'<p>Nenhum comprovante enviado para esta reserva.</p>'}`,async()=>{},'Fechar');
  $('#modal-fields').onchange=e=>{const checkbox=e.target.closest('[data-confirm-receipt]');if(checkbox)$(`[data-approve-receipt="${checkbox.dataset.confirmReceipt}"]`).disabled=!checkbox.checked;};
  $('#modal-fields').onclick=async e=>{
- const button=e.target.closest('[data-approve-receipt],[data-reject-receipt]');if(!button)return;
+ const button=e.target.closest('[data-approve-receipt],[data-reject-receipt]');if(!button||button.disabled)return;
  const id=button.dataset.approveReceipt||button.dataset.rejectReceipt,approve=!!button.dataset.approveReceipt;
  const confirmed=$(`[data-confirm-receipt="${id}"]`)?.checked===true;
  if(approve&&!confirmed){$('#modal-error').textContent='Confira o recebimento na conta e marque a confirmação.';return;}
- const buttons=[...$('#modal-fields').querySelectorAll('button')];buttons.forEach(el=>el.disabled=true);$('#modal-error').textContent='';
+ const buttons=[...$('#modal-fields').querySelectorAll('button:not(:disabled)')];buttons.forEach(el=>el.disabled=true);$('#modal-error').textContent='';
  const amountInput=approve&&$(`[data-received-amount="${id}"]`);
  const review={decision:approve?'approve':'reject',note:$(`[data-review-note="${id}"]`)?.value||'',confirmed_received:approve&&confirmed};
  if(amountInput)review.confirmed_amount_cents=Math.round(Number(amountInput.value)*100);
@@ -564,6 +593,11 @@ $('#configure-catalog').onclick=async()=>{
  try{const config=await api('catalog/settings');openModal('Catálogo e agendamento online',`<p>Divulgue <a href="/catalogo" target="_blank" rel="noopener noreferrer">${esc(location.origin)}/catalogo</a> para seus clientes reservarem diretamente.</p><label class="check-label"><input name="enabled" type="checkbox" ${config.enabled?'checked':''}> Aceitar reservas pelo catálogo</label><label>Abertura<input name="open" type="time" step="1800" value="${esc(config.open)}" required></label><label>Fechamento<input name="close" type="time" step="1800" value="${esc(config.close)}" required></label><p>Reservas de 30 minutos a 4 horas, até 180 dias à frente. O pagamento é confirmado separadamente.</p>`,data=>api('catalog/settings',{...data,enabled:data.enabled==='on'},'PUT'));}catch(error){toast(error.message);}
 };
 $('#configure-financial').onclick=()=>openModal('Conectar Mercado Pago desta arena',`<p>Use as credenciais da aplicação Mercado Pago desta arena. Elas não serão compartilhadas com a mãe ou com outros filhos.</p><label>Ambiente<select name="mode"><option value="test" ${paymentConfig.mode==='test'?'selected':''}>Teste</option><option value="production" ${paymentConfig.mode==='production'?'selected':''}>Produção</option></select></label><label>Endereço público HTTPS<input name="base_url" type="url" value="${esc(paymentConfig.base_url||location.origin)}" required></label><label>Access Token<input name="token" type="password" autocomplete="new-password" maxlength="2000" placeholder="${paymentConfig.token_configured?'Já configurado; deixe vazio para manter':'Token da aplicação desta arena'}" ${paymentConfig.token_configured?'':'required'}></label><label>Segredo de assinatura do webhook<input name="webhook_secret" type="password" autocomplete="new-password" maxlength="2000" placeholder="${paymentConfig.webhook_configured?'Já configurado; deixe vazio para manter':'Segredo do webhook desta aplicação'}" ${paymentConfig.webhook_configured?'':'required'}></label><p>Configure no Mercado Pago notificações de Pagamentos para <strong>${esc(paymentConfig.base_url||location.origin)}/api/payments/webhook</strong>. O sistema verificará a conta antes de salvar. Os campos secretos nunca são devolvidos ao navegador.</p>`,data=>api('payments/config',data,'PUT'),'Salvar e verificar conta');
+$('#configure-misticpay').onclick=()=>openModal('Conectar MisticPay',`
+ <label>Endereço público HTTPS da arena<input name="base_url" type="url" value="${esc(misticpayConfig.base_url||location.origin)}" required></label>
+ <label>Chave pública<input name="public_key" type="password" autocomplete="new-password" maxlength="2000" placeholder="${misticpayConfig.public_key_configured?'Deixe vazio para manter a chave salva':'Chave pública da conta MisticPay'}" ${misticpayConfig.public_key_configured?'':'required'}></label>
+ <label>Chave secreta<input name="secret_key" type="password" autocomplete="new-password" maxlength="2000" placeholder="${misticpayConfig.secret_key_configured?'Deixe vazio para manter a chave salva':'Chave secreta da conta MisticPay'}" ${misticpayConfig.secret_key_configured?'':'required'}></label>
+`,data=>api('misticpay/config',data,'PUT'),'Salvar chaves');
 $('#edit-branding').onclick=()=>{
  openModal('Nome e logo do sistema',`<label>Nome<input name="name" value="${esc(systemBranding.name)}" maxlength="80" required></label><label>Logo PNG ou JPEG (até 250 KB)<input id="system-logo-file" type="file" accept="image/png,image/jpeg"></label><label class="check-label"><input name="remove_logo" type="checkbox"> Remover logo atual</label>`,async data=>{
   let logo=data.remove_logo?'':systemBranding.logo;const file=$('#system-logo-file').files[0];

@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
+import {readFile} from 'node:fs/promises';
 import {once} from 'node:events';
 import {createApp} from '../server.js';
 
@@ -8,14 +9,12 @@ const PNG=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42
 const file=(suffix='')=>({filename:'comprovante.png',content_base64:Buffer.concat([PNG,Buffer.from(suffix)]).toString('base64')});
 const rejected=r=>assert.ok(r.status>=400&&r.status<500,`Esperava rejeição 4xx, recebeu ${r.status}: ${JSON.stringify(r.data)}`);
 
-async function fixture(t,{reader,ready=false,preferenceError}={}){
+async function fixture(t,{ready=false,preferenceError}={}){
  const dataDir=mkdtempSync('/tmp/arena-pix-test-');
- let result={text:'Comprovante Pix\nValor pago R$ 180,00',amount_cents:18000,candidates:[18000]};
- const receiptReader=reader||(async()=>structuredClone(result));
  let preferences=0;
  const paymentClient={async createPreference(){preferences++;if(preferenceError)throw preferenceError;return{id:'test-preference',sandbox_init_point:'https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=test-preference'};}};
  const paymentConfig={ready,token:'test-token',webhookSecret:'test-secret',baseUrl:'https://arena.example',mode:'test'};
- const {server,db}=createApp({dataDir,receiptReader,paymentClient,paymentConfig,ocrReady:true});
+ const {server,db}=createApp({dataDir,paymentClient,paymentConfig});
  server.listen(0,'127.0.0.1');await once(server,'listening');
  t.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();rmSync(dataDir,{recursive:true,force:true});});
  let cookie='';
@@ -36,7 +35,7 @@ async function fixture(t,{reader,ready=false,preferenceError}={}){
  async function settings(){const r=await request('/api/pix/settings',{key:'pix@arena.example',receiver:'Arena Teste'},{method:'PUT'});assert.equal(r.status,200);return r;}
  async function link(id){const r=await request(`/api/bookings/${id}/pix-link`,{});assert.equal(r.status,200);assert.match(r.data.path,/^\/pix#[a-f0-9]{64}$/);return{...r.data,token:r.data.path.split('#')[1]};}
  const bookingId=await reserve();
- return{db,request,bookingId,reserve,settings,link,setResult:value=>result=value,stats:()=>({preferences})};
+ return{db,request,bookingId,reserve,settings,link,stats:()=>({preferences})};
 }
 
 test('Pix: configurações administrativas, link privado e dados públicos mínimos',async t=>{
@@ -45,12 +44,14 @@ test('Pix: configurações administrativas, link privado e dados públicos míni
  assert.equal((await f.request('/api/pix/settings')).data.ready,false);
  rejected(await f.request(`/api/bookings/${f.bookingId}/pix-link`,{}));
  rejected(await f.request('/api/pix/settings',{key:'',receiver:'Arena'},{method:'PUT'}));
- await f.settings();
+ const settings=await f.settings();
+ assert.equal(settings.data.manual_review,true);
+ assert.equal(settings.data.ocr_ready,undefined);
  const l=await f.link(f.bookingId);
  assert.equal((await f.link(f.bookingId)).path,l.path,'Reutiliza o link da reserva');
  const publicData=await f.request(`/api/pix/payments/${l.token}`,undefined,{auth:false});
  assert.equal(publicData.status,200);assert.equal(publicData.data.total,18000);assert.equal(publicData.data.key,'pix@arena.example');assert.equal(publicData.data.receiver,'Arena Teste');assert.equal(publicData.data.paid,false);
- assert.equal(publicData.data.ocr_ready,true);
+ assert.equal(publicData.data.ocr_ready,undefined);
  assert.equal(publicData.data.phone,undefined);assert.equal(publicData.data.notes,undefined);
  assert.ok(!JSON.stringify(publicData.data).includes('11999887766'));
  assert.ok(!JSON.stringify(publicData.data).includes('NOTA PRIVADA'));
@@ -58,58 +59,73 @@ test('Pix: configurações administrativas, link privado e dados públicos míni
  assert.equal((await f.request(`/api/bookings/${f.bookingId}/pix-link`,{},{auth:false})).status,401);
 });
 
-test('Pix: reconhece valor sem dar baixa; apenas admin com conferência explícita aprova',async t=>{
+test('Pix: guarda comprovante pendente e só aprova após conferência bancária pelo admin',async t=>{
  const f=await fixture(t);await f.settings();const l=await f.link(f.bookingId);
- const uploaded=await f.request(`/api/pix/payments/${l.token}/receipt`,file(),{auth:false});
- assert.equal(uploaded.status,201);assert.equal(uploaded.data.amount_cents,18000);assert.equal(uploaded.data.match_status,'matched');assert.equal(uploaded.data.status,'pending');
+ const uploaded=await f.request(`/api/pix/payments/${l.token}/receipt`,{...file(),amount_cents:18000,match_status:'matched',status:'approved'},{auth:false});
+ assert.equal(uploaded.status,201);assert.equal(uploaded.data.amount_cents,null);assert.equal(uploaded.data.match_status,'manual');assert.equal(uploaded.data.status,'pending');
  const id=uploaded.data.id;
  let b=f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(f.bookingId);assert.equal(b.paid,0);
- const listed=await f.request('/api/bookings');const row=listed.data.find(b=>b.id===f.bookingId);assert.equal(Boolean(row.pix_link),true);assert.equal(row.receipt_status,'pending');assert.equal(row.receipt_match,'matched');assert.equal(row.receipt_amount,18000);
+ const listed=await f.request('/api/bookings');const row=listed.data.find(b=>b.id===f.bookingId);assert.equal(Boolean(row.pix_link),true);assert.equal(row.receipt_status,'pending');assert.equal(row.receipt_match,'manual');assert.equal(row.receipt_amount,null);
  assert.equal((await f.request(`/api/bookings/${f.bookingId}/receipts`,undefined,{auth:false})).status,401);
  assert.equal((await f.request(`/api/receipts/${id}/file`,undefined,{auth:false})).status,401);
  const original=await f.request(`/api/receipts/${id}/file`);assert.equal(original.status,200);assert.equal(original.headers.get('content-type'),'image/png');assert.deepEqual(original.data,PNG);
- assert.equal((await f.request(`/api/receipts/${id}/review`,{decision:'approve',confirmed_received:true},{auth:false})).status,401);
- rejected(await f.request(`/api/receipts/${id}/review`,{decision:'approve'}));
- rejected(await f.request(`/api/receipts/${id}/review`,{decision:'approve',confirmed_received:false}));
+ const review=`/api/receipts/${id}/review`,confirmed={decision:'approve',confirmed_received:true,confirmed_amount_cents:18000};
+ assert.equal((await f.request(review,confirmed,{auth:false})).status,401);
+ rejected(await f.request(review,{decision:'approve'}));
+ assert.equal((await f.request(review,{...confirmed,confirmed_received:false})).status,400);
+ assert.equal((await f.request(review,{decision:'approve',confirmed_received:true})).status,409);
+ assert.equal((await f.request(review,{...confirmed,confirmed_amount_cents:1})).status,409);
  assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(f.bookingId).paid,0);
- assert.equal((await f.request(`/api/receipts/${id}/review`,{decision:'approve',confirmed_received:true})).status,200);
+ assert.equal((await f.request(review,confirmed)).status,200);
  b=f.db.prepare('SELECT paid,method,paid_at FROM bookings WHERE id=?').get(f.bookingId);assert.equal(b.paid,1);assert.match(b.method,/Pix/i);assert.ok(b.paid_at);
- rejected(await f.request(`/api/receipts/${id}/review`,{decision:'approve',confirmed_received:true}));
+ rejected(await f.request(review,confirmed));
  rejected(await f.request(`/api/pix/payments/${l.token}/receipt`,file('second'),{auth:false}));
 });
 
-test('Pix: valor divergente ou ilegível nunca pode aprovar automaticamente nem pelo review',async t=>{
- const f=await fixture(t);await f.settings();const l=await f.link(f.bookingId);
- for(const [i,value,expected]of [[1,9000,'mismatch'],[2,null,'unreadable']]){
-  f.setResult({text:value?'Valor R$ 90,00':'Imagem sem valor legível',amount_cents:value,candidates:value?[value]:[]});
-  const r=await f.request(`/api/pix/payments/${l.token}/receipt`,file('variant'+i),{auth:false});assert.equal(r.status,201);assert.equal(r.data.match_status,expected);
-  rejected(await f.request(`/api/receipts/${r.data.id}/review`,{decision:'approve',confirmed_received:true}));
-  assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(f.bookingId).paid,0);
-  assert.equal((await f.request(`/api/receipts/${r.data.id}/review`,{decision:'reject',note:'Envie comprovante com o valor correto.'})).status,200);
+test('Pix: comprovantes antigos preservam a leitura original e exigem conferência bancária',async t=>{
+ const f=await fixture(t);await f.settings();
+ for(const [match,amount] of [['mismatch',9000],['unreadable',null],['unknown',null]]){
+  const bookingId=await f.reserve();
+  const {token}=await f.link(bookingId);
+  const path=`/api/pix/payments/${token}`;
+  const uploaded=await f.request(path+'/receipt',file(match),{auth:false});
+  assert.equal(uploaded.status,201);
+  const {id}=uploaded.data;
+  f.db.prepare('UPDATE pix_receipts SET amount_cents=?,match_status=? WHERE id=?').run(amount,match,id);
+  const historical=(await f.request(path,undefined,{auth:false})).data;
+  assert.equal(historical.receipt.amount_cents,amount);
+  assert.equal(historical.receipt.match_status,match);
+  assert.equal(historical.paid,false);
+  const review=`/api/receipts/${id}/review`;
+  assert.equal((await f.request(review,{decision:'approve',confirmed_amount_cents:18000})).status,400);
+  assert.equal((await f.request(review,{decision:'approve',confirmed_received:true,confirmed_amount_cents:9000})).status,409);
+  assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(bookingId).paid,0);
+  const approved=await f.request(review,{decision:'approve',confirmed_received:true,confirmed_amount_cents:18000});
+  assert.equal(approved.status,200);
+  assert.equal(approved.data.status,'approved');
+  assert.equal(approved.data.amount_cents,amount);
+  assert.equal(approved.data.match_status,match);
+  assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(bookingId).paid,1);
  }
 });
 
-test('Pix: OCR que retorna 422 registra comprovante ilegível, sem dar baixa',async t=>{
- const f=await fixture(t,{reader:async(buffer,mime)=>{
-  assert.equal(mime,'image/png');
-  assert.deepEqual(buffer,PNG);
-  throw Object.assign(new Error('Não foi possível ler o valor.'),{status:422});
- }});
- await f.settings();
- const {token}=await f.link(f.bookingId);
- const path=`/api/pix/payments/${token}`;
- const uploaded=await f.request(path+'/receipt',file(),{auth:false});
- assert.equal(uploaded.status,201);
- assert.equal(uploaded.data.amount_cents,null);
- assert.equal(uploaded.data.match_status,'unreadable');
- assert.equal(uploaded.data.status,'pending');
- const status=await f.request(path,undefined,{auth:false});
- assert.equal(status.data.paid,false);
- assert.equal(status.data.receipt.match_status,'unreadable');
- rejected(await f.request(`/api/receipts/${uploaded.data.id}/review`,{
-  decision:'approve',confirmed_received:true,confirmed_amount_cents:18000
- }));
- assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(f.bookingId).paid,0);
+test('Pix: aceita originais PNG, JPEG e PDF para análise manual',async t=>{
+ const f=await fixture(t);await f.settings();
+ for(const [extension,mime] of [['png','image/png'],['jpg','image/jpeg'],['pdf','application/pdf']]){
+  const bookingId=await f.reserve();
+  const {token}=await f.link(bookingId);
+  const filename=`pix-receipt.${extension}`;
+  const bytes=await readFile(new URL(`./fixtures/${filename}`,import.meta.url));
+  const uploaded=await f.request(`/api/pix/payments/${token}/receipt`,{filename,content_base64:bytes.toString('base64')},{auth:false});
+  assert.equal(uploaded.status,201,extension);
+  assert.equal(uploaded.data.match_status,'manual');
+  assert.equal(uploaded.data.amount_cents,null);
+  assert.equal(uploaded.data.status,'pending');
+  const original=await f.request(`/api/receipts/${uploaded.data.id}/file`);
+  assert.equal(original.status,200);
+  assert.equal(original.headers.get('content-type'),mime);
+  assert.deepEqual(original.data,bytes);
+ }
 });
 
 test('Pix: impede reenvio pendente, mantém histórico após rejeição e detecta reuso entre reservas',async t=>{
@@ -124,13 +140,22 @@ test('Pix: impede reenvio pendente, mantém histórico após rejeição e detect
  assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(otherId).paid,0);
 });
 
-test('Pix: valida assinatura do arquivo, base64 e limite de 5 MiB antes da leitura',async t=>{
- let reads=0;const f=await fixture(t,{reader:async()=>{reads++;return{text:'',amount_cents:18000,candidates:[18000]};}});await f.settings();const l=await f.link(f.bookingId);
- rejected(await f.request(`/api/pix/payments/${l.token}/receipt`,{filename:'comprovante.png',content_base64:Buffer.from('<html>arquivo falso</html>').toString('base64')},{auth:false}));
- rejected(await f.request(`/api/pix/payments/${l.token}/receipt`,{filename:'comprovante.png',content_base64:'%%%não-é-base64%%%'},{auth:false}));
+test('Pix: valida assinatura, base64, tamanho e dimensões antes de guardar comprovante',async t=>{
+ const f=await fixture(t);await f.settings();const l=await f.link(f.bookingId);
+ const submit=(filename,content_base64)=>f.request(`/api/pix/payments/${l.token}/receipt`,{filename,content_base64},{auth:false});
+ assert.equal((await submit('comprovante.png',Buffer.from('<html>arquivo falso</html>').toString('base64'))).status,415);
+ rejected(await submit('comprovante.png','%%%não-é-base64%%%'));
  const large=Buffer.alloc(5*1024*1024+1);PNG.copy(large);
- assert.equal((await f.request(`/api/pix/payments/${l.token}/receipt`,{filename:'grande.png',content_base64:large.toString('base64')},{auth:false})).status,413);
- assert.equal(reads,0);
+ assert.equal((await submit('grande.png',large.toString('base64'))).status,413);
+ const hugePng=Buffer.from(PNG);
+ hugePng.writeUInt32BE(65535,16);hugePng.writeUInt32BE(65535,20);
+ assert.equal((await submit('dimensoes.png',hugePng.toString('base64'))).status,422);
+ const hugeJpeg=await readFile(new URL('./fixtures/pix-receipt.jpg',import.meta.url));
+ const frame=hugeJpeg.indexOf(Buffer.from([0xff,0xc0]));
+ assert.ok(frame>=0);
+ hugeJpeg.writeUInt16BE(65535,frame+5);hugeJpeg.writeUInt16BE(65535,frame+7);
+ assert.equal((await submit('dimensoes.jpg',hugeJpeg.toString('base64'))).status,422);
+ assert.deepEqual((await f.request(`/api/bookings/${f.bookingId}/receipts`)).data,[]);
 });
 
 test('Pix e Mercado Pago não criam cobranças concorrentes para a mesma reserva',async t=>{
@@ -171,18 +196,17 @@ test('Pix: reserva cancelada deixa de receber comprovantes',async t=>{
  assert.equal((await f.request(`/api/pix/payments/${l.token}/receipt`,file(),{auth:false})).status,409);
 });
 
-test('Pix: não salva comprovante se a reserva muda enquanto a leitura está em andamento',async t=>{
- let release,reading;
- const started=new Promise(r=>reading=r);
- const gate=new Promise(r=>release=r);
- const f=await fixture(t,{reader:async()=>{reading();await gate;return{text:'Valor R$ 180,00',amount_cents:18000,candidates:[18000]};}});
+test('Pix: envios e aprovações simultâneos não duplicam o comprovante nem a baixa',async t=>{
+ const f=await fixture(t);
  await f.settings();const l=await f.link(f.bookingId);
- const upload=f.request(`/api/pix/payments/${l.token}/receipt`,file(),{auth:false});
- try{
-  await Promise.race([started,upload.then(r=>{throw new Error(`Upload terminou antes de iniciar OCR: ${r.status}`);})]);
-  // Simulate a concurrent settlement arriving independently during OCR.
-  f.db.prepare("UPDATE bookings SET paid=1,method='Pix' WHERE id=?").run(f.bookingId);release();
-  assert.equal((await upload).status,409);
-  const receipts=await f.request(`/api/bookings/${f.bookingId}/receipts`);assert.equal(receipts.data.length,0);
- }finally{release();await upload.catch(()=>{});}
+ const path=`/api/pix/payments/${l.token}/receipt`;
+ const attempts=await Promise.all(['primeiro','segundo'].map(variant=>f.request(path,file(variant),{auth:false})));
+ assert.deepEqual(attempts.map(({status})=>status).sort(),[201,409]);
+ const {id}=attempts.find(({status})=>status===201).data;
+ const confirmed={decision:'approve',confirmed_received:true,confirmed_amount_cents:18000};
+ const reviews=await Promise.all([confirmed,confirmed].map(body=>f.request(`/api/receipts/${id}/review`,body)));
+ assert.deepEqual(reviews.map(({status})=>status).sort(),[200,409]);
+ const receipts=(await f.request(`/api/bookings/${f.bookingId}/receipts`)).data;
+ assert.equal(receipts.length,1);assert.equal(receipts[0].status,'approved');
+ assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(f.bookingId).paid,1);
 });

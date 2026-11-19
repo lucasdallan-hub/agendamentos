@@ -1,7 +1,0 @@
-**
-!package.json
-!receipt-ocr.js
-!image-size.js
-!cloudflare/
-!cloudflare/ocr-server.js
-!cloudflare/Dockerfile

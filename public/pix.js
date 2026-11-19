@@ -14,12 +14,11 @@ function toast(message){$('#pix-toast').textContent=message;$('#pix-toast').hidd
 function renderReceipt(receipt){
  const box=$('#pix-receipt-result');
  box.hidden=!receipt;if(!receipt)return;
- const matched=receipt.match_status==='matched',manual=receipt.match_status==='manual';
- const title=receipt.status==='approved'?'Comprovante aprovado':receipt.status==='rejected'?'Comprovante recusado':manual?'Aguardando conferência da arena':matched?'Valor compatível · em análise':receipt.match_status==='mismatch'?'Valor diferente da reserva':'Não foi possível identificar um valor único';
- const description=receipt.status==='approved'?'O administrador confirmou o recebimento.':receipt.status==='rejected'?'Envie outro comprovante legível do Pix com o valor exato da reserva.':manual?'A arena conferirá o valor no comprovante e o crédito na conta.':matched?'A arena vai conferir o crédito na conta.':receipt.match_status==='mismatch'?'O valor lido difere do total da reserva. Aguarde a orientação da arena para enviar outro comprovante.':'A arena poderá solicitar um comprovante mais legível.';
- box.className='pix-receipt-result '+(matched?'pix-match':'pix-review');
- const amount=receipt.amount_cents===null?(manual?'Conferência manual':'Não identificado'):money(receipt.amount_cents);
- box.innerHTML=`<strong>${title}</strong><div class="receipt-values"><span>Valor da reserva<strong>${money(current.total)}</strong></span><span>Valor identificado<strong>${amount}</strong></span></div><p>${description}</p>${receipt.review_note?`<p>Observação da arena: ${escape(receipt.review_note)}</p>`:''}`;
+ const approved=receipt.status==='approved',rejected=receipt.status==='rejected';
+ const title=approved?'Comprovante aprovado':rejected?'Comprovante recusado':'Aguardando conferência';
+ const description=approved?'A arena confirmou o recebimento.':rejected?'Envie outro comprovante legível do Pix com o valor exato da reserva.':'A arena vai conferir o arquivo e o crédito na conta.';
+ box.className=approved?'pix-receipt-result pix-approved':'pix-receipt-result';
+ box.innerHTML=`<strong>${title}</strong><p>${description}</p>${receipt.review_note?`<p>Observação da arena: ${escape(receipt.review_note)}</p>`:''}`;
 }
 function render(){
  $('#pix-loading').hidden=true;$('#pix-error-card').hidden=true;$('#pix-content').hidden=false;
@@ -27,9 +26,6 @@ function render(){
  $('#pix-booking-detail').textContent=`${current.court_name} · ${new Date(current.date+'T12:00:00').toLocaleDateString('pt-BR')} · ${current.start}–${current.end}`;
  $('#pix-key').value=current.key;$('#pix-receiver').textContent=current.receiver;
  const paid=Boolean(current.paid),pending=current.receipt?.status==='pending';
- $('#pix-upload-description').textContent=current.ocr_ready===true
-  ?'O sistema tenta ler o valor do comprovante e comparar com o total da reserva.'
-  :'A arena confere o valor no comprovante e o crédito na conta.';
  $('#pix-transfer-section').hidden=paid;$('#pix-paid-section').hidden=!paid;
  $('#pix-upload-form').hidden=paid||pending;
  renderReceipt(current.receipt);
@@ -56,7 +52,6 @@ $('#pix-upload-form').onsubmit=async event=>{
  if(!/\.(png|jpe?g|pdf)$/i.test(file.name)){ $('#pix-upload-error').textContent='Envie uma imagem PNG, JPG ou um arquivo PDF.';return; }
  uploading=true;$('#pix-submit').disabled=true;$('#pix-file').disabled=true;
  const progress=$('#pix-upload-progress');
- progress.textContent=current.ocr_ready===true?'Enviando o comprovante e analisando o valor…':'Enviando o comprovante para conferência…';
  progress.hidden=false;
  try{
   const content=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(Error('Não foi possível abrir o arquivo selecionado.'));reader.readAsDataURL(file);});

@@ -241,11 +241,42 @@ body:has(.payment-return) .payment-return {
   color: var(--public-muted);
 }
 
-.catalog-body #catalog-modal {
+.catalog-body :is(#catalog-modal,#catalog-misticpay-modal) {
   border: 1px solid var(--public-line);
   border-radius: 20px;
   background: var(--public-surface);
   color: var(--public-ink);
+}
+
+.catalog-body #catalog-misticpay-modal {
+  max-width: 520px;
+}
+
+.catalog-body #catalog-misticpay-form {
+  padding: clamp(18px, 4vw, 28px);
+}
+
+.catalog-body #catalog-misticpay-submit {
+  width: 100%;
+}
+
+.catalog-body .misticpay-details {
+  margin: 20px 0;
+  padding: clamp(14px, 4vw, 22px);
+  border: 1px solid var(--public-line);
+  border-radius: 14px;
+  background: var(--public-soft);
+}
+
+.catalog-body .misticpay-qr {
+  display: block;
+  box-sizing: border-box;
+  width: min(100%, 200px);
+  aspect-ratio: 1;
+  padding: 8px;
+  margin: 14px auto;
+  object-fit: contain;
+  background: #fff;
 }
 
 .catalog-body #catalog-selection {
@@ -254,7 +285,7 @@ body:has(.payment-return) .payment-return {
   background: var(--public-soft);
 }
 
-.catalog-body :is(#catalog-error,#catalog-booking-error),
+.catalog-body :is(#catalog-error,#catalog-booking-error,#catalog-misticpay-error),
 .pix-public-body :is(#pix-load-error,.pix-public-card .pix-error) {
   color: var(--public-danger);
 }
@@ -351,14 +382,10 @@ body:has(.payment-return) .payment-return {
   color: var(--public-warning);
 }
 
-.pix-public-body :is(.pix-receipt-result.pix-match,.pix-confirmed) {
+.pix-public-body :is(.pix-receipt-result.pix-approved,.pix-confirmed) {
   border-color: color-mix(in srgb, var(--public-mint) 36%, transparent);
   background: var(--public-mint-bg);
   color: var(--public-mint);
-}
-
-.pix-public-body .pix-receipt-result .receipt-values {
-  background: var(--public-surface);
 }
 
 .pix-public-body #pix-toast {
