@@ -20,7 +20,7 @@
   const theme=preference||(system?.matches?'dark':'light');
   root.dataset.theme=theme;root.style.colorScheme=theme;
   const color=document.querySelector('meta[name="theme-color"]');
-  if(color)color.content=theme==='dark'?'#101d18':'#f7f8f4';
+  if(color)color.content=theme==='dark'?'#10172a':'#f4f6fc';
   updateControls();
  }
  apply();
