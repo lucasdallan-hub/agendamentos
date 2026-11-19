@@ -5,7 +5,7 @@ const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status
 const localNow=()=>{const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date()).map(p=>[p.type,p.value]));return {date:`${parts.year}-${parts.month}-${parts.day}`,minute:Number(parts.hour)*60+Number(parts.minute)};};
 const minutes=value=>{if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(value||''))fail('Horário inválido.');return Number(value.slice(0,2))*60+Number(value.slice(3));};
 const time=value=>`${String(Math.floor(value/60)).padStart(2,'0')}:${String(value%60).padStart(2,'0')}`;
-export function publicCatalog(db,{book,pix,payments,paymentConfig,attempts}){
+export function publicCatalog(db,{book,pix,payments,paymentConfig,attempts,courtPhotos}){
  db.exec('CREATE TABLE IF NOT EXISTS public_booking_requests(request_key TEXT PRIMARY KEY,booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),token TEXT NOT NULL UNIQUE,expires_at INTEGER NOT NULL)');
  const settings=()=>setting(db,'catalog',{enabled:true,open:'06:00',close:'23:00'});
  function saveSettings(body){
@@ -28,6 +28,7 @@ export function publicCatalog(db,{book,pix,payments,paymentConfig,attempts}){
   if(!Number.isInteger(duration)||duration<30||duration>240||duration%30)fail('Escolha uma duração de 30 minutos a 4 horas, em intervalos de 30 minutos.');
   const courts=db.prepare('SELECT id,name,type,price FROM courts WHERE active=1 ORDER BY id').all();
   for(const court of courts){
+   court.photos=courtPhotos.list(court.id,true);
    const busy=db.prepare("SELECT start,end FROM bookings WHERE court_id=? AND date=? AND status='confirmed'").all(court.id,date);
    court.slots=[];
    for(let start=minutes(config.open);start+duration<=minutes(config.close);start+=30){

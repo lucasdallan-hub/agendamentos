@@ -61,6 +61,20 @@ function bookingActions(b){
  if(b.status==='confirmed'&&!b.paid&&!b.online_status&&!b.pix_link)html+=`<button class="table-button cancel" data-cancel="${b.id}">Cancelar</button>`;
  return html||'—';
 }
+function courtCard(court){
+ const cover=court.photos?.[0];
+ const image=cover?`<img class="court-cover-photo" src="${esc(cover.url)}" alt="" loading="lazy" decoding="async">`:'';
+ return `<article class="court-card ${court.active?'':'inactive'}">
+  <div class="court-visual" aria-hidden="true"><div class="court-lines"><div></div></div>${image}</div>
+  <div class="court-info">
+   <h3>${esc(court.name)}</h3><p>${esc(court.type)}</p><div class="court-price">${money(court.price)} <small>/ hora</small></div>
+   <span class="badge ${court.active?'paid':'cancelled'}">${court.active?'● Ativa':'Inativa'}</span>
+   <div class="court-card-actions">
+    <button type="button" class="outline" data-court-photos="${court.id}">Fotos da quadra</button>
+    <button type="button" class="outline" data-toggle="${court.id}">${court.active?'Desativar quadra':'Ativar quadra'}</button>
+   </div>
+  </div></article>`;
+}
 function render(){
  renderNotifications();
  if(view==='history')renderHistory();
@@ -75,7 +89,7 @@ function render(){
  $('#booking-count').textContent=filtered.length;
  $('#booking-rows').innerHTML=filtered.map(b=>`<tr><td><div class="client"><span class="client-initials">${esc(b.customer.split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase())}</span><div>${esc(b.customer)}<small>${esc(b.phone)}</small></div></div></td><td>${esc(b.court_name)}<small>${dateLabel(b.date)} · ${esc(b.court_type)}</small></td><td>${b.start} — ${b.end}</td><td>${money(b.total)}</td><td><span class="badge ${b.status==='cancelled'?'cancelled':b.paid?'paid':''}">${bookingPaymentLabel(b)}</span>${b.paid?`<small>${esc(b.method)}</small>`:''}</td><td>${bookingActions(b)}</td></tr>`).join('');
  $('#booking-empty').hidden=filtered.length>0;
- $('#court-list').innerHTML=courts.length?courts.map(c=>`<article class="court-card ${c.active?'':'inactive'}"><div class="court-visual"><div class="court-lines"><div></div></div></div><div class="court-info"><h3>${esc(c.name)}</h3><p>${esc(c.type)}</p><div class="court-price">${money(c.price)} <small>/ hora</small></div><span class="badge ${c.active?'paid':'cancelled'}">${c.active?'● Ativa':'Inativa'}</span><button class="outline" data-toggle="${c.id}">${c.active?'Desativar quadra':'Ativar quadra'}</button></div></article>`).join(''):'<div class="empty"><h3>A sua arena começa aqui</h3><p>Adicione a primeira quadra para criar agendamentos.</p></div>';
+ $('#court-list').innerHTML=courts.length?courts.map(courtCard).join(''):'<div class="empty"><h3>A sua arena começa aqui</h3><p>Adicione a primeira quadra para criar agendamentos.</p></div>';
  $('#finance-rows').innerHTML=bookings.filter(b=>b.paid||b.online_status||b.pix_link||b.receipt_status).sort((a,b)=>(b.paid_at||b.date).localeCompare(a.paid_at||a.date)).map(b=>`<tr><td>${esc(b.customer)}</td><td>${esc(b.court_name)}</td><td>${b.paid_at?new Date(b.paid_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'}):'—'}</td><td>${esc(b.method||(b.pix_link?'Pix direto':'Mercado Pago'))}</td><td>${money(b.total)}</td><td><span class="badge ${b.paid?'paid':''}">${b.paid?'Pago':bookingPaymentLabel(b)}</span></td></tr>`).join('');$('#finance-empty').hidden=bookings.some(b=>b.paid||b.online_status||b.pix_link||b.receipt_status);
 }
 const historyPageSize=50;
@@ -236,7 +250,136 @@ async function showReceipts(b){
  try{await api(`receipts/${id}/review`,review);await refresh();await showReceipts(bookings.find(row=>row.id===b.id)||b);toast(approve?'Recebimento confirmado pelo administrador.':'Comprovante recusado. O cliente pode enviar outro.');}catch(e){$('#modal-error').textContent=e.message;buttons.forEach(el=>el.disabled=false);}
  };
 }
-$('#court-list').onclick=e=>{const btn=e.target.closest('[data-toggle]');if(!btn)return;const c=courts.find(c=>c.id===Number(btn.dataset.toggle));openModal(c.active?'Desativar quadra':'Ativar quadra',`<p>${c.active?'A quadra deixará de aceitar novas reservas. Os agendamentos existentes serão preservados.':'A quadra voltará a aceitar agendamentos.'}</p>`,()=>api(`courts/${c.id}`,{active:!c.active},'PATCH'),'Confirmar');};
+const courtPhotoLimit=4;
+const courtPhotoMaxBytes=350*1024;
+
+async function prepareCourtPhoto(file){
+ const supported=['image/jpeg','image/png','image/webp'].includes(file.type)||(!file.type&&/\.(?:jpe?g|png|webp)$/i.test(file.name));
+ if(!supported)throw Error('Escolha imagens em JPG, PNG ou WebP.');
+ let image;
+ try{
+  image=await createImageBitmap(file);
+  const canvas=document.createElement('canvas');
+  const context=canvas.getContext('2d');
+  for(const maxSide of [1600,1200,900,640]){
+   const scale=Math.min(1,maxSide/Math.max(image.width,image.height));
+   canvas.width=Math.max(1,Math.round(image.width*scale));
+   canvas.height=Math.max(1,Math.round(image.height*scale));
+   context.fillStyle='#fff';
+   context.fillRect(0,0,canvas.width,canvas.height);
+   context.drawImage(image,0,0,canvas.width,canvas.height);
+   for(const quality of [.86,.72,.58]){
+    const jpeg=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));
+    if(jpeg?.type==='image/jpeg'&&jpeg.size<=courtPhotoMaxBytes)return await new Promise((resolve,reject)=>{
+     const reader=new FileReader();
+     reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(jpeg);
+    });
+   }
+  }
+ }catch{
+  throw Error('Não foi possível ler uma das fotos. Escolha um arquivo de imagem válido.');
+ }finally{
+  image?.close();
+ }
+ throw Error('Não foi possível reduzir uma das fotos ao tamanho aceito.');
+}
+
+function editCourtPhotos(court){
+ const photos=(court.photos||[]).map(({id,url})=>({id,url}));
+ const expected_ids=photos.map(photo=>photo.id);
+ let preparing=false,saving=false;
+ const dialog=$('#modal');
+ dialog.setAttribute('aria-labelledby','modal-title');
+ openModal('Fotos da quadra',`<fieldset class="court-photo-editor" id="court-photo-editor">
+  <legend>${esc(court.name)}</legend>
+  <p id="court-photo-help">Adicione até ${courtPhotoLimit} fotos em JPG, PNG ou WebP. A primeira aparece como capa.</p>
+  <label class="court-photo-picker"><span class="outline">Adicionar fotos</span><input id="court-photo-files" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple aria-describedby="court-photo-help"></label>
+  <p id="court-photo-status" role="status"></p><p id="court-photo-error" class="court-photo-error" role="alert"></p>
+  <ol id="court-photo-list" class="court-photo-list" role="list" aria-label="Fotos da quadra"></ol>
+ </fieldset>`,async()=>{
+  if(preparing)throw Error('Aguarde a preparação das fotos.');
+  if(saving)return false;
+  saving=true;
+  renderPhotos();
+  try{
+   await api(`courts/${court.id}/photos`,{expected_ids,photos:photos.map(photo=>photo.id?{id:photo.id}:{data_url:photo.data_url})},'PUT');
+  }finally{
+   saving=false;
+   if(editor.isConnected&&dialog.open)renderPhotos();
+  }
+ },'Salvar fotos');
+ const editor=$('#court-photo-editor'),picker=$('#court-photo-files'),list=$('#court-photo-list');
+ const status=$('#court-photo-status'),error=$('#court-photo-error');
+ function renderPhotos(){
+  const busy=preparing||saving;
+  picker.disabled=busy||photos.length>=courtPhotoLimit;
+  status.textContent=preparing?'Preparando fotos…':saving?'Salvando fotos…':`${photos.length} de ${courtPhotoLimit} fotos`;
+  const disabled=busy?' disabled':'';
+  list.innerHTML=photos.map((photo,index)=>`<li class="court-photo-item">
+   <img src="${esc(photo.url||photo.data_url)}" alt="Foto ${index+1} da quadra">
+   <div class="court-photo-item-info">
+    <strong>${index===0?'Capa':`Foto ${index+1}`}</strong>
+    <div class="court-photo-item-actions">
+     ${index>0?`<button type="button" class="outline" data-photo-action="cover" data-photo-index="${index}" aria-label="Definir foto ${index+1} como capa"${disabled}>Definir capa</button>`:''}
+     <button type="button" class="outline court-photo-remove" data-photo-action="remove" data-photo-index="${index}" aria-label="Remover foto ${index+1}"${disabled}>Remover</button>
+    </div>
+   </div>
+  </li>`).join('');
+ }
+ picker.onchange=async()=>{
+  const selected=[...picker.files];
+  picker.value='';
+  const available=courtPhotoLimit-photos.length;
+  if(selected.length>available){
+   error.textContent=`Selecione até ${available} ${available===1?'foto':'fotos'} por vez.`;
+   return;
+  }
+  if(!selected.length)return;
+  preparing=true;
+  error.textContent='';
+  renderPhotos();
+  const errors=new Set();
+  for(const file of selected){
+   if(!editor.isConnected||!dialog.open)break;
+   try{photos.push({data_url:await prepareCourtPhoto(file)});}
+   catch(failure){errors.add(failure.message);}
+  }
+  preparing=false;
+  if(!editor.isConnected||!dialog.open)return;
+  error.textContent=[...errors].join(' ');
+  renderPhotos();
+  if(picker.disabled)list.querySelector('button')?.focus();
+  else picker.focus();
+ };
+ list.onclick=event=>{
+  const button=event.target.closest('[data-photo-action]');
+  if(!button||preparing||saving)return;
+  const index=Number(button.dataset.photoIndex);
+  const [photo]=photos.splice(index,1);
+  const cover=button.dataset.photoAction==='cover';
+  if(cover)photos.unshift(photo);
+  error.textContent='';
+  renderPhotos();
+  const item=list.children[cover?0:Math.min(index,photos.length-1)];
+  (item?.querySelector('[data-photo-action="remove"]')||picker).focus();
+ };
+ renderPhotos();
+}
+
+$('#court-list').addEventListener('error',event=>{
+ if(event.target.matches('.court-cover-photo'))event.target.hidden=true;
+},true);
+$('#court-list').onclick=e=>{
+ const photosButton=e.target.closest('[data-court-photos]');
+ if(photosButton){
+  const court=courts.find(c=>c.id===Number(photosButton.dataset.courtPhotos));
+  if(court)editCourtPhotos(court);
+  return;
+ }
+ const btn=e.target.closest('[data-toggle]');if(!btn)return;
+ const c=courts.find(c=>c.id===Number(btn.dataset.toggle));
+ openModal(c.active?'Desativar quadra':'Ativar quadra',`<p>${c.active?'A quadra deixará de aceitar novas reservas. Os agendamentos existentes serão preservados.':'A quadra voltará a aceitar agendamentos.'}</p>`,()=>api(`courts/${c.id}`,{active:!c.active},'PATCH'),'Confirmar');
+};
 
 function applyBranding(){
  document.title=systemBranding.name+' · Gestão de quadras';

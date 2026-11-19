@@ -3,6 +3,7 @@ import {promisify} from 'node:util';
 import {mkdtemp,writeFile,readdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import {jpegDimensions} from './image-size.js';
 
 const execute=promisify(execFile);
 const MAX_BYTES=5*1024*1024;
@@ -52,25 +53,10 @@ function validateFile(buffer,mime){
   type='image/png';const width=buffer.readUInt32BE(16),height=buffer.readUInt32BE(20);
   if(!width||!height||width*height>MAX_PIXELS)throw failure('A imagem é grande demais. Envie uma imagem de até 20 megapixels.');
  }else if(buffer.length>=4&&buffer[0]===0xff&&buffer[1]===0xd8&&buffer[buffer.length-2]===0xff&&buffer[buffer.length-1]===0xd9){
-  type='image/jpeg';let foundDimensions=false;
-  // Validate frame dimensions before handing the image to a native decoder.
-  for(let offset=2;offset+4<buffer.length;){
-   if(buffer[offset]!==0xff)break;
-   while(buffer[offset]===0xff)offset++;
-   const marker=buffer[offset++];
-   if(marker===0xda||marker===0xd9)break;
-   if(marker===0x01||marker>=0xd0&&marker<=0xd7)continue;
-   if(offset+2>buffer.length)break;
-   const length=buffer.readUInt16BE(offset);if(length<2||offset+length>buffer.length)break;
-   if([0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf].includes(marker)){
-    if(length<8)break;
-    const height=buffer.readUInt16BE(offset+3),width=buffer.readUInt16BE(offset+5);
-    if(!width||!height||width*height>MAX_PIXELS)throw failure('A imagem é grande demais. Envie uma imagem de até 20 megapixels.');
-    foundDimensions=true;break;
-   }
-   offset+=length;
-  }
-  if(!foundDimensions)throw failure('Não foi possível ler esta imagem JPEG.');
+  type='image/jpeg';
+  const size=jpegDimensions(buffer);
+  if(!size)throw failure('Não foi possível ler esta imagem JPEG.');
+  if(!size.width||!size.height||size.width*size.height>MAX_PIXELS)throw failure('A imagem é grande demais. Envie uma imagem de até 20 megapixels.');
  }else if(buffer.subarray(0,5).toString('ascii')==='%PDF-')type='application/pdf';
  else throw failure('Arquivo inválido. Envie uma imagem PNG, JPEG ou um PDF.');
  const declared=String(mime||'').split(';')[0].trim().toLowerCase();

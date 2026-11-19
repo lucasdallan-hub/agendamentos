@@ -14,7 +14,7 @@ RUN --mount=type=secret,id=proxy_ca \
     && rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99-build-ca
 
 WORKDIR /app
-COPY --chown=node:node package.json receipt-ocr.js ./
+COPY --chown=node:node package.json receipt-ocr.js image-size.js ./
 COPY --chown=node:node cloudflare/ocr-server.js ./cloudflare/ocr-server.js
 
 ENV NODE_ENV=production \

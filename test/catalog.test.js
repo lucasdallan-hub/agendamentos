@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {once} from 'node:events';
+import {readFile} from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
 import {createApplication} from '../server-core.js';
 const key=()=>randomBytes(32).toString('hex');
@@ -26,7 +27,7 @@ async function fixture(t,{checkout=false}={}){
  const {server}=createApplication({db,paymentConfig:{ready:checkout,mode:'test',baseUrl:'https://arena.example'},paymentClient,receiptReader:async()=>({amount_cents:null})});
  server.listen(0,'127.0.0.1');await once(server,'listening');
  t.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();});let cookie='';
- async function api(route,body,{auth=true,method='POST',headers={}}={}){const r=await fetch(`http://127.0.0.1:${server.address().port}/api/`+route,{method:body===undefined?'GET':method,headers:{'Content-Type':'application/json',...(auth?{Cookie:cookie}:{}),...headers},body:body===undefined?undefined:JSON.stringify(body)});if(auth&&r.headers.get('set-cookie'))cookie=r.headers.get('set-cookie').split(';')[0];return {status:r.status,data:await r.json()};}
+ async function api(route,body,{auth=true,method='POST',headers={}}={}){const r=await fetch(`http://127.0.0.1:${server.address().port}/api/`+route,{method:body===undefined?'GET':method,headers:{'Content-Type':'application/json',...(auth?{Cookie:cookie}:{}),...headers},body:body===undefined?undefined:JSON.stringify(body)});if(auth&&r.headers.get('set-cookie'))cookie=r.headers.get('set-cookie').split(';')[0];return {status:r.status,headers:r.headers,data:r.headers.get('content-type')==='image/jpeg'?Buffer.from(await r.arrayBuffer()):await r.json()};}
  await api('setup',{password:'catalog-admin-password'});
  const court=(await api('courts',{name:'Quadra pública',type:'Areia',price:120})).data.id;
  return {api,db,court,preferences,body:(overrides={})=>({court_id:court,date:future(),start:'18:00',end:'19:00',customer:'Cliente catálogo',phone:'11999887766',request_key:key(),...overrides})};
@@ -125,4 +126,50 @@ test('catálogo: checkout anterior sem uma forma selecionada continua disponíve
  assert.equal(reused.data.checkout_method,null);
  assert.equal(reused.data.checkout_url,legacy.data.checkout_url);
  assert.equal(f.preferences.length,1);
+});
+
+test('catálogo: galeria ordenada, atualização atômica e acesso público só para quadras ativas',async t=>{
+ const f=await fixture(t);
+ const route=`courts/${f.court}/photos`;
+ const other=(await f.api('courts',{name:'Outra quadra',type:'Areia',price:100})).data.id;
+ const bytes=await readFile(new URL('./fixtures/pix-receipt.jpg',import.meta.url));
+ const photo={data_url:`data:image/jpeg;base64,${bytes.toString('base64')}`};
+ const save=(photos,expected_ids,auth=true)=>f.api(route,{photos,expected_ids},{method:'PUT',auth});
+ const catalog=async()=> (await f.api(`public/catalog?date=${future()}`,undefined,{auth:false})).data;
+ assert.deepEqual((await catalog()).courts[0].photos,[]);
+ assert.equal((await save([photo],[],false)).status,401);
+ assert.equal((await save(Array(5).fill(photo),[])).status,400);
+ assert.equal((await save([{data_url:'data:image/jpeg;base64,PHN2Zz4='}],[])).status,400);
+
+ const inserted=await save([photo,photo],[]);
+ assert.equal(inserted.status,200);
+ const [first,second]=inserted.data.photos;
+ assert.notEqual(first.id,second.id);
+ assert.equal((await f.api(first.url.slice(5),undefined,{auth:false})).status,401);
+ const initial=await catalog();
+ assert.deepEqual(initial.courts[0].photos.map(({id})=>id),[first.id,second.id]);
+ assert.equal(JSON.stringify(initial).includes(photo.data_url),false);
+ const exposed=initial.courts[0].photos[0].url.slice(5);
+ const image=await f.api(exposed,undefined,{auth:false});
+ assert.equal(image.status,200);
+ assert.equal(image.headers.get('content-type'),'image/jpeg');
+ assert.deepEqual(image.data,bytes);
+ assert.equal((await f.api(`public/courts/${other}/photos/${first.id}`,undefined,{auth:false})).status,404);
+ assert.equal((await save([{id:first.id},{id:first.id}],[first.id,second.id])).status,400);
+ assert.equal((await save([{id:second.id}],[])).status,409);
+ assert.deepEqual((await f.api('courts')).data[0].photos.map(({id})=>id),[first.id,second.id]);
+
+ const updated=await save([{id:second.id},{id:first.id}],[first.id,second.id]);
+ assert.equal(updated.status,200);
+ assert.deepEqual((await catalog()).courts[0].photos.map(({id})=>id),[second.id,first.id]);
+ await f.api(`courts/${f.court}`,{active:false},{method:'PATCH'});
+ assert.equal((await f.api(exposed,undefined,{auth:false})).status,404);
+ assert.equal((await f.api(first.url.slice(5))).status,200);
+ await f.api(`courts/${f.court}`,{active:true},{method:'PATCH'});
+ await f.api('catalog/settings',{enabled:false,open:'06:00',close:'23:00'},{method:'PUT'});
+ assert.equal((await f.api(exposed,undefined,{auth:false})).status,404);
+ await f.api('catalog/settings',{enabled:true,open:'06:00',close:'23:00'},{method:'PUT'});
+ assert.equal((await save([],[second.id,first.id])).status,200);
+ assert.equal((await f.api(exposed,undefined,{auth:false})).status,404);
+ assert.deepEqual((await catalog()).courts[0].photos,[]);
 });

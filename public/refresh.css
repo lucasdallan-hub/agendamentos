@@ -272,6 +272,39 @@ tbody tr:hover { background: color-mix(in srgb, var(--surface-soft) 55%, var(--s
 .court-visual, :root[data-theme="dark"] .court-visual { background: linear-gradient(145deg, #272970, #5548c3); }
 .court-visual .court-lines, :root[data-theme="dark"] .court-visual .court-lines { border-color: #cafcfe; }
 .court-visual .court-lines::before, .court-visual .court-lines div { border-color: #cafcfea8; }
+#court-list .court-visual { position: relative; overflow: hidden; }
+.court-cover-photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.court-card-actions { display: grid; gap: 8px; margin-top: 15px; }
+.court-card-actions button { margin-top: 0; }
+
+.court-photo-editor { margin: 0; padding: 0; min-inline-size: 0; border: 0; }
+.court-photo-editor legend { padding: 0; font-weight: 700; }
+.court-photo-picker { position: relative; display: inline-flex; margin: 8px 0 0; }
+.court-photo-picker .outline { display: inline-flex; align-items: center; }
+.court-photo-picker input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; opacity: 0; cursor: pointer; }
+.court-photo-picker:hover:not(:has(input:disabled)) .outline { border-color: var(--theme-focus); background: var(--surface-soft); }
+.court-photo-picker:focus-within .outline { outline: 3px solid var(--theme-focus); outline-offset: 3px; }
+.court-photo-picker:has(input:disabled) .outline { opacity: .65; }
+.court-photo-picker input:disabled { cursor: not-allowed; }
+.court-photo-error { color: var(--danger-text); }
+.court-photo-error:empty { display: none; }
+.court-photo-list { display: grid; gap: 8px; padding: 0; margin: 8px 0 14px; list-style: none; }
+.court-photo-list:empty { display: none; }
+.court-photo-item {
+  display: grid;
+  grid-template-columns: clamp(64px, 21vw, 112px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--field);
+  padding: 8px;
+}
+.court-photo-item img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 7px; background: var(--surface-soft); }
+.court-photo-item-info { display: grid; gap: 6px; }
+.court-photo-item-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.court-photo-item-actions button { min-height: 34px; border-radius: 8px; padding: 5px 8px; font-size: 12px; }
+.court-photo-item-actions .court-photo-remove { color: var(--danger-text); }
 .payment-banner, :root[data-theme="dark"] .payment-banner {
   background: var(--surface);
   border-color: var(--line);

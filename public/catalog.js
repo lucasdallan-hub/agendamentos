@@ -5,16 +5,53 @@ const dateLabel=date=>new Date(date+'T12:00:00Z').toLocaleDateString('pt-BR',{ti
 const key=()=>Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,'0')).join('');
 let catalog,selection,requestKey;
 async function api(path,body){const response=await fetch('/api/public/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const result=await response.json();if(!response.ok)throw Error(result.error||'Não foi possível concluir. Tente novamente.');return result;}
+const courtArt='<div class="court-lines" aria-hidden="true"><div></div></div>';
+function courtPhotos(court){
+ return (Array.isArray(court.photos)?court.photos:[]).filter(photo=>
+  typeof photo?.id==='string'&&/^[a-f0-9]{32}$/.test(photo.id)&&photo.url===`/api/public/courts/${court.id}/photos/${photo.id}`
+ );
+}
+const courtPhotoLabel=(court,index)=>`Foto ${index+1} da quadra ${court.name}`;
+function courtVisual(court){
+ const photos=courtPhotos(court);
+ if(!photos.length)return `<div class="court-visual">${courtArt}</div>`;
+ return `<div class="court-visual catalog-photo-gallery" data-photo-court="${esc(court.id)}" data-photo-index="0" role="group" aria-label="Fotos da quadra ${esc(court.name)}">
+  ${courtArt}
+  <img class="catalog-court-photo" src="${esc(photos[0].url)}" alt="${esc(courtPhotoLabel(court,0))}" loading="lazy" decoding="async">
+  ${photos.length>1?`<div class="catalog-photo-controls">
+   <button type="button" data-photo-step="-1" aria-label="Foto anterior">‹</button>
+   <span class="catalog-photo-count" role="status">1 de ${photos.length}</span>
+   <button type="button" data-photo-step="1" aria-label="Próxima foto">›</button>
+  </div>`:''}
+ </div>`;
+}
+function changeCourtPhoto(button){
+ const gallery=button.closest('.catalog-photo-gallery');
+ const court=catalog.courts.find(c=>c.id===Number(gallery.dataset.photoCourt));
+ const photos=courtPhotos(court);
+ const index=(Number(gallery.dataset.photoIndex)+Number(button.dataset.photoStep)+photos.length)%photos.length;
+ const image=gallery.querySelector('img');
+ gallery.dataset.photoIndex=index;
+ image.alt=courtPhotoLabel(court,index);
+ image.src=photos[index].url;
+ image.hidden=false;
+ gallery.querySelector('.catalog-photo-count').textContent=`${index+1} de ${photos.length}`;
+}
 async function search(){
  $('#catalog-error').textContent='';$('#catalog-message').textContent='Buscando quadras e horários…';$('#catalog-courts').replaceChildren();
  try{
   catalog=await api(`catalog?date=${encodeURIComponent($('#catalog-date').value)}&duration=${$('#catalog-duration').value}`);
   $('#catalog-message').textContent=catalog.courts.length?'Escolha um horário disponível. O valor exibido corresponde ao tempo de jogo selecionado.':'Nenhuma quadra disponível para agendamento online.';
-  $('#catalog-courts').innerHTML=catalog.courts.map(c=>`<article class="catalog-court"><div class="court-visual"><div class="court-lines"><div></div></div></div><div class="court-info"><span class="eyebrow">${esc(c.type)}</span><h2>${esc(c.name)}</h2><p>${money(c.price)} / hora</p><div class="catalog-slots">${c.slots.length?c.slots.map((s,i)=>`<button class="catalog-slot" data-court="${c.id}" data-slot="${i}"><strong>${s.start} – ${s.end}</strong><span>${money(s.total)}</span></button>`).join(''):'<p>Sem horários livres nesta data e duração. Tente outra data.</p>'}</div></div></article>`).join('');
+  $('#catalog-courts').innerHTML=catalog.courts.map(c=>`<article class="catalog-court">${courtVisual(c)}<div class="court-info"><span class="eyebrow">${esc(c.type)}</span><h2>${esc(c.name)}</h2><p>${money(c.price)} / hora</p><div class="catalog-slots">${c.slots.length?c.slots.map((s,i)=>`<button class="catalog-slot" data-court="${c.id}" data-slot="${i}"><strong>${s.start} – ${s.end}</strong><span>${money(s.total)}</span></button>`).join(''):'<p>Sem horários livres nesta data e duração. Tente outra data.</p>'}</div></div></article>`).join('');
  }catch(error){$('#catalog-message').textContent='';$('#catalog-error').textContent=error.message;}
 }
 $('#catalog-filter').onsubmit=e=>{e.preventDefault();search();};
+$('#catalog-courts').addEventListener('error',e=>{
+ if(e.target.matches('.catalog-court-photo'))e.target.hidden=true;
+},true);
 $('#catalog-courts').onclick=e=>{
+ const photoButton=e.target.closest('[data-photo-step]');
+ if(photoButton){changeCourtPhoto(photoButton);return;}
  const button=e.target.closest('[data-court]');if(!button)return;
  const court=catalog.courts.find(c=>c.id===Number(button.dataset.court));
  selection={court_id:court.id,date:catalog.date,...court.slots[Number(button.dataset.slot)]};requestKey=key();

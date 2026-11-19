@@ -12,6 +12,7 @@ function database(t){
 test('sistemas: cópia integral conserva dados financeiros e BLOBs, sem sessões ou senha da mãe',async t=>{
  const mother=database(t),child=database(t);
  mother.exec(`INSERT INTO courts VALUES(1,'Quadra', 'Areia',10000,1);
+ INSERT INTO court_photos(id,court_id,position,data_base64) VALUES('0123456789abcdef0123456789abcdef',1,0,'dGVzdGU=');
  INSERT INTO bookings VALUES(1,1,'Cliente','11999999999','2026-12-01','18:00','19:00',10000,'confirmed',1,'Pix','2026-12-01','Observação');
  INSERT INTO payment_orders(id,booking_id,preference_id,checkout_url,state,expires_at,created_at) VALUES('order-1',1,'pref-1','https://www.mercadopago.com.br/checkout','approved','2026-12-02','2026-12-01');
  INSERT INTO provider_payments VALUES('payment-1','order-1','approved',10000,0,'2026-12-01');

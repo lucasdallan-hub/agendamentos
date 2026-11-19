@@ -6,6 +6,7 @@ import {Buffer} from 'node:buffer';
 import {transaction} from './storage.js';
 import {bookingNotifications} from './notifications.js';
 import {publicCatalog} from './public-catalog.js';
+import {createCourtPhotos,courtPhotoBodyLimit} from './court-photos.js';
 import {financialSettings} from './financial-settings.js';
 import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
@@ -17,6 +18,7 @@ initializeSystems(db);
 const payments=createPayments(db,paymentConfig,paymentClient);
 const financial=financialSettings(db,paymentConfig);
 const pix=createPix(db,{receiptReader,ocrReady,manualReceiptReview});
+const courtPhotos=createCourtPhotos(db);
 const notifications=bookingNotifications(db,{fetchImpl:notificationFetch});
 const sessions = sessionStore;
 const attempts = attemptStore;
@@ -37,7 +39,12 @@ function booking(body) {
  const id=Number(result.lastInsertRowid);notifications.enqueue(id,phone);
  return {id};
 }
-const catalog=publicCatalog(db,{book:booking,pix,payments,paymentConfig,attempts});
+const catalog=publicCatalog(db,{book:booking,pix,payments,paymentConfig,attempts,courtPhotos});
+function sendCourtPhoto(res,route,publicView){
+ const bytes=courtPhotos.image(Number(route[1]),route[2],publicView);
+ res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store','Content-Length':bytes.length,'Content-Security-Policy':"sandbox; default-src 'none'"});
+ return res.end(bytes);
+}
 const server=http.createServer(async(req,res)=>{
  res.setHeader('X-Content-Type-Options','nosniff');
  res.setHeader('X-Frame-Options','DENY');
@@ -51,8 +58,9 @@ const server=http.createServer(async(req,res)=>{
    return json(res,404,{error:'Não encontrado.'});
   }
   if(url.pathname!=='/api/payments/webhook' && req.headers.origin && req.headers.origin!==`${req.headers['x-forwarded-proto']==='https'?'https':'http'}://${req.headers.host}`) fail('Origem não permitida.',403);
+  const courtGallery=/^\/api\/courts\/(\d+)\/photos$/.exec(url.pathname);
   let body={};
-  if(['POST','PATCH','PUT'].includes(req.method)) { let raw=''; const maxBody=url.pathname==='/api/system/branding'?400000:/^\/api\/pix\/payments\/[a-f0-9]{64}\/receipt$/.test(url.pathname)?7*1024*1024:16000;for await(const chunk of req) { raw+=chunk; if(Buffer.byteLength(raw)>maxBody) fail('Requisição muito grande.',413); } try { body=JSON.parse(raw||'{}'); } catch { fail('JSON inválido.'); } if(!body||typeof body!=='object'||Array.isArray(body)) fail('Corpo inválido.'); }
+  if(['POST','PATCH','PUT'].includes(req.method)) { let raw=''; const maxBody=courtGallery&&req.method==='PUT'?courtPhotoBodyLimit:url.pathname==='/api/system/branding'?400000:/^\/api\/pix\/payments\/[a-f0-9]{64}\/receipt$/.test(url.pathname)?7*1024*1024:16000;for await(const chunk of req) { raw+=chunk; if(Buffer.byteLength(raw)>maxBody) fail('Requisição muito grande.',413); } try { body=JSON.parse(raw||'{}'); } catch { fail('JSON inválido.'); } if(!body||typeof body!=='object'||Array.isArray(body)) fail('Corpo inválido.'); }
   if(req.method==='POST'&&url.pathname==='/api/payments/webhook') {
    if(!paymentConfig.ready)fail('Integração não ativada.',503);
    if(!verifyWebhook({url,headers:req.headers,secret:paymentConfig.webhookSecret}))fail('Assinatura de notificação inválida.',401);
@@ -68,6 +76,11 @@ const server=http.createServer(async(req,res)=>{
    if(req.method==='GET'&&!publicPix[2])return json(res,200,pix.publicPayment(publicPix[1]));
    if(req.method==='POST'&&publicPix[2])return json(res,201,await pix.upload(publicPix[1],body));
    fail('Método não permitido.',405);
+  }
+  const publicPhoto=/^\/api\/public\/courts\/(\d+)\/photos\/([a-f0-9]{32})$/.exec(url.pathname);
+  if(publicPhoto&&req.method==='GET'){
+   if(!catalog.settings().enabled)fail('Foto não encontrada.',404);
+   return sendCourtPhoto(res,publicPhoto,true);
   }
   if(url.pathname==='/api/public/catalog'&&req.method==='GET')return json(res,200,catalog.catalog(url.searchParams.get('date'),url.searchParams.get('duration')||60));
   if(url.pathname==='/api/public/bookings'&&req.method==='POST'){
@@ -147,7 +160,13 @@ const server=http.createServer(async(req,res)=>{
   const checkoutMatch=/^\/api\/bookings\/(\d+)\/(checkout|sync-payment)$/.exec(url.pathname);
   if(req.method==='POST'&&checkoutMatch){const id=Number(checkoutMatch[1]);return json(res,200,checkoutMatch[2]==='checkout'?await payments.checkout(id,body.payment_method):await payments.sync(id));}
   if(req.method==='POST' && url.pathname==='/api/logout') { sessions.delete(token); res.setHeader('Set-Cookie','arena_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json(res,200,{ok:true}); }
-  if(req.method==='GET' && url.pathname==='/api/courts') return json(res,200,db.prepare('SELECT * FROM courts ORDER BY id').all());
+  if(courtGallery&&req.method==='PUT')return json(res,200,courtPhotos.save(Number(courtGallery[1]),body));
+  const adminPhoto=/^\/api\/courts\/(\d+)\/photos\/([a-f0-9]{32})$/.exec(url.pathname);
+  if(adminPhoto&&req.method==='GET')return sendCourtPhoto(res,adminPhoto,false);
+  if(req.method==='GET' && url.pathname==='/api/courts'){
+   const courts=db.prepare('SELECT * FROM courts ORDER BY id').all();
+   return json(res,200,courts.map(court=>({...court,photos:courtPhotos.list(court.id)})));
+  }
   if(req.method==='POST' && url.pathname==='/api/courts') {
    const price=Number(body.price); if(!Number.isFinite(price)||price<1||price>100000) fail('Informe um valor por hora entre R$ 1 e R$ 100.000.');
    const result=db.prepare('INSERT INTO courts(name,type,price) VALUES(?,?,?)').run(str(body.name,80),str(body.type,40),Math.round(price*100)); return json(res,201,{id:Number(result.lastInsertRowid)});
