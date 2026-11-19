@@ -224,3 +224,39 @@ test('Evolution Go webhook: sincroniza somente após confirmação da API e pres
  await f.configure({api_key:'another-instance-token'});
  assert.equal((await f.api('notifications/config')).data.webhook_configured,false);
 });
+
+test('WUZAPI: recupera o pareamento quando status retorna HTTP 500 e confirma sessão pela rota QR',async t=>{
+ let started=false,paired=false;
+ const f=await fixture(t,{respond:async request=>{
+  assert.equal(request.headers.get('token'),'wuz-test-token');
+  const {pathname}=new URL(request.url);
+  if(pathname==='/session/status')return Response.json({success:false,error:RAW_SECRET},{status:500});
+  if(pathname==='/session/connect'){
+   assert.deepEqual(JSON.parse(request.body),{Immediate:true});
+   started=true;
+   return Response.json({success:true,data:{details:'Connected!'}});
+  }
+  assert.equal(pathname,'/session/qr');
+  assert.equal(started,true);
+  if(paired)return Response.json({success:false,error:'already logged in'},{status:500});
+  return Response.json({success:true,data:{QRCode:PNG}});
+ }});
+ const route=name=>'notifications/'+name+'?provider=wuzapi';
+ assert.equal((await f.api(route('config'),{enabled:false,api_key:'wuz-test-token'},{method:'PUT'})).status,200);
+ const qr=await f.api(route('connect'),{});
+ assert.equal(qr.status,200);
+ assert.equal(qr.data.qr_code,PNG);
+ assert.deepEqual(f.requests.map(r=>new URL(r.url).pathname),['/session/status','/session/connect','/session/qr']);
+ paired=true;
+ assert.deepEqual(await f.api(route('check'),{}),{status:200,data:{connected:true,logged_in:true}});
+});
+
+test('WUZAPI: token recusado impede tentativa de iniciar sessão',async t=>{
+ const f=await fixture(t,{respond:async()=>Response.json({success:false,error:'Unauthorized'},{status:401})});
+ const route=name=>'notifications/'+name+'?provider=wuzapi';
+ await f.api(route('config'),{enabled:false,api_key:'invalid-wuz-test-token'},{method:'PUT'});
+ const result=await f.api(route('connect'),{});
+ assert.equal(result.status,502);
+ assert.match(result.data.error,/HTTP 401/);
+ assert.deepEqual(f.requests.map(r=>new URL(r.url).pathname),['/session/status']);
+});

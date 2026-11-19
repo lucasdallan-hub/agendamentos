@@ -162,10 +162,13 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   }
   if(!response.ok){
    if(id==='wuzapi'&&path==='/session/connect'&&response.status===409)return {};
-   if(id==='wuzapi'&&path==='/session/qr'&&response.status===500){
+   if(id==='wuzapi'&&response.status===500&&['/session/status','/session/qr'].includes(path)){
     const result=await response.json().catch(()=>null);
-    if(/^(?:no session|not connected)$/i.test(result?.error))return null;
-    if(/^already logged in$/i.test(result?.error))return {alreadyLoggedIn:true};
+    if(typeof result?.error==='string'){
+     const reason=result.error.trim();
+     if(/^(?:no session|not connected)$/i.test(reason))return null;
+     if(path==='/session/qr'&&/^already logged in$/i.test(reason))return {alreadyLoggedIn:true};
+    }
    }
    if(path==='/instance/qr'&&[400,500].includes(response.status)){
     const result=await response.json().catch(()=>null);
@@ -176,7 +179,8 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
    if(response.status===403)fail(`A ${provider.name} negou o acesso (HTTP 403). Verifique as permissões do token e as regras de acesso do servidor da API.`,502);
    if(response.status===404)fail(`A rota ${path} não foi encontrada na ${provider.name} (HTTP 404). Confira a URL base e a versão da API.`,502);
    if(response.status===429)fail(`A ${provider.name} atingiu o limite de consultas (HTTP 429). Aguarde antes de consultar novamente.`,502);
-   fail(`A ${provider.name} retornou HTTP ${response.status} na rota ${path}. Verifique o serviço da API e a instância.`,502);
+   const error=Object.assign(new Error(`A ${provider.name} retornou HTTP ${response.status} na rota ${path}. Verifique o serviço da API e a instância.`),{status:502,upstreamStatus:response.status});
+   throw error;
   }
   let result;
   try{result=await response.json();}catch{fail(`A rota ${path} respondeu sem JSON válido. Confira se a URL aponta para a API em vez de uma página ou proxy de autenticação.`,502);}
@@ -204,22 +208,38 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
    return {webhook_configured:true};
   });
  }
- async function check(id='evolution',config=stored(id)){
+ async function check(id='evolution',config=stored(id),probeQR=true){
   const provider=providerFor(id);
-  const data=await instanceData(provider.status,8000,undefined,config,id);
-  const connected=id==='wuzapi'?data.connected:data.Connected;
-  const logged_in=id==='wuzapi'?data.loggedIn:data.LoggedIn;
+  let data;
+  try{data=await instanceData(provider.status,8000,undefined,config,id);}
+  catch(error){
+   if(id!=='wuzapi'||!probeQR||error.upstreamStatus!==500)throw error;
+   // The QR endpoint can prove an authenticated session even if status fails.
+   const qr=await instanceData('/session/qr',8000,undefined,config,id).catch(()=>null);
+   if(qr?.alreadyLoggedIn)return {connected:true,logged_in:true};
+   throw error;
+  }
+  if(id==='wuzapi'&&!data)return {connected:false,logged_in:false};
+  const connected=id==='wuzapi'?(data.connected??data.Connected):data.Connected;
+  const logged_in=id==='wuzapi'?(data.loggedIn??data.LoggedIn):data.LoggedIn;
   if(typeof connected!=='boolean'||typeof logged_in!=='boolean')fail(`A ${provider.name} não confirmou a sessão. Verifique o token e a conexão.`,502);
   return {connected,logged_in};
  }
  async function connectWuzapi(){
   const id='wuzapi',config=stored(id);
-  const session=await check(id,config);
-  if(session.logged_in)return session;
+  let session={connected:false,logged_in:false};
+  try{session=await check(id,config,false);}
+  catch(error){
+   // A status failure must not block an explicit start on WUZAPI versions
+   // that cannot report the state of a session before it is initialized.
+   if(error.upstreamStatus!==500)throw error;
+  }
+  if(session.connected&&session.logged_in)return session;
   if(!session.connected)await updateInstance(()=>instanceData('/session/connect',8000,{Immediate:true},config,id));
   for(let attempt=0;attempt<3;attempt++){
    const data=await instanceData('/session/qr',8000,undefined,config,id);
-   if(data?.alreadyLoggedIn)return check(id,config);
+   // WUZAPI emits this only when the client is connected and authenticated.
+   if(data?.alreadyLoggedIn)return {connected:true,logged_in:true};
    if(data?.passkeyPending===true)return {...session,state:'additional_verification'};
    const code=data?.QRCode??data?.qrcode;
    if(code)return qrResult(session,code,'WUZAPI');
