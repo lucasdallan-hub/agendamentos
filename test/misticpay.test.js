@@ -14,14 +14,18 @@ const copyPaste='00020101021226820014br.gov.bcb.pix';
 
 async function fixture(t){
  const directory=await mkdtemp(join(tmpdir(),'arena-misticpay-'));
- const provider={creates:[],payments:new Map(),uncertain:false,authError:false};
+ const provider={creates:[],payments:new Map(),uncertain:false};
  const {server,db}=createApp({dataDir:directory,paymentConfig:{ready:false,mode:'test'},misticpayFetch:async(url,options)=>{
   assert.match(url,/^https:\/\/api\.misticpay\.com\/api\/transactions\/(create|check)$/);
   assert.equal(options.method,'POST');
   assert.equal(options.redirect,'manual');
   assert.match(options.headers.Authorization,/^Basic /);
   const body=JSON.parse(options.body);
-  if(provider.authError||options.headers.Authorization!=='Basic '+Buffer.from('pk_test:sk_test').toString('base64')){
+  if(provider.accessError){
+   const {code,status}=provider.accessError;
+   return Response.json({code,message:'provider-private-details'},{status});
+  }
+  if(options.headers.Authorization!=='Basic '+Buffer.from('pk_test:sk_test').toString('base64')){
    return Response.json({code:'INVALID_API_CREDENTIAL',message:'provider-private-details'},{status:401});
   }
   if(url.endsWith('/create')){
@@ -63,15 +67,27 @@ test('MisticPay: chaves privadas, QR Pix e baixa só após consulta autenticada 
  const f=await fixture(t);
  assert.equal((await f.configure(credentials,false)).status,401);
  assert.equal((await f.configure({...credentials,base_url:'http://arena.example'})).status,400);
- f.provider.authError=true;
- const denied=await f.configure();
- assert.equal(denied.status,502);
- assert.doesNotMatch(denied.data.error,/provider-private-details/);
- f.provider.authError=false;
- const config=await f.configure();
+ const legacy=await f.configure({client_id:'ci_expired',client_secret:'cs_expired',base_url:credentials.base_url});
+ assert.equal(legacy.status,400);
+ assert.match(legacy.data.error,/desativou/);
+ for(const [code,status,expected] of [
+  ['INVALID_API_CREDENTIAL',401,/inválido ou revogado/],
+  ['IP_NOT_ALLOWED',401,/IP de saída/],
+  ['API_SCOPE_DENIED',403,/TRANSACTION_READ/]
+ ]){
+  f.provider.accessError={code,status};
+  const denied=await f.configure();
+  assert.equal(denied.status,502);
+  assert.match(denied.data.error,expected);
+  assert.doesNotMatch(denied.data.error,/provider-private-details/);
+  assert.equal((await f.api('/api/misticpay/config')).data.ready,false);
+ }
+ delete f.provider.accessError;
+ const config=await f.configure({client_id:' pk_test ',client_secret:'sk_test\n',base_url:credentials.base_url});
  assert.equal(config.status,200);
  assert.equal(config.data.ready,true);
  assert.doesNotMatch(JSON.stringify(config.data),/pk_test|sk_test/);
+ assert.equal((await f.configure({client_id:'',client_secret:'',base_url:credentials.base_url})).status,200);
  await f.api('/api/pix/settings',{key:'pix@arena.example',receiver:'Arena de teste'},{method:'PUT'});
  const booking=await f.reserve('2026-12-03');
  assert.equal((await f.api(booking.path,undefined,{auth:false})).data.misticpay_ready,true);
@@ -118,6 +134,12 @@ test('MisticPay: criação simultânea e resultado incerto bloqueiam uma segunda
  const f=await fixture(t);
  assert.equal((await f.configure()).status,200);
  const first=await f.reserve('2026-12-04');
+ f.provider.accessError={code:'API_SCOPE_DENIED',status:403};
+ const scopeError=await f.api(first.path+'/misticpay',{cpf},{auth:false});
+ assert.equal(scopeError.status,502);
+ assert.match(scopeError.data.error,/permissão TRANSACTION_CREATE/);
+ assert.equal((await f.api(first.path,undefined,{auth:false})).data.misticpay,null);
+ delete f.provider.accessError;
  let release,reached;
  const gate=new Promise(resolve=>{release=resolve;});
  const arrived=new Promise(resolve=>{reached=resolve;});

@@ -36,8 +36,8 @@ O cliente pode enviar um arquivo JPG, PNG ou PDF de até 5 MB. Na reserva, abra 
 
 ## Pix via MisticPay
 
-1. Na MisticPay, abra **API → Chaves de Acesso → Criar Chave de Acesso** e marque `TRANSACTION_CREATE` e `TRANSACTION_READ`. Copie o par `pk_` e `sk_` no momento da criação.
-2. No painel da própria arena, abra **Financeiro → Configurar MisticPay**. Cadastre o par de chaves e a origem HTTPS pública da arena, como `https://sua-arena.com.br`. Salvar valida o acesso de consulta. As chaves ficam no banco privado daquela arena.
+1. Na MisticPay, abra **API → Chaves de Acesso → Criar Chave de Acesso** e marque `TRANSACTION_CREATE` e `TRANSACTION_READ`. Copie o Client ID (`pk_`) e o Client Secret (`sk_`) da mesma chave.
+2. No painel da própria arena, abra **Financeiro → Configurar MisticPay**. Cadastre o Client ID, o Client Secret e a origem HTTPS pública da arena, como `https://sua-arena.com.br`. Salvar valida o acesso de consulta. As chaves ficam no banco privado daquela arena. A MisticPay informa que as credenciais legadas `ci_` e `cs_` foram desativadas em 30/09/2026. [Autenticação da MisticPay](https://docs.misticpay.com/#authentication)
 3. No catálogo, escolha **Pix via MisticPay** na confirmação da reserva. O CPF é enviado à MisticPay para emitir a cobrança e fica fora do banco da arena. O cliente recebe o QR Code e o código copia e cola.
 4. Cada cobrança registra um endereço de webhook próprio. A aplicação recebe a notificação, consulta a API autenticada e confirma o pagamento quando a transação estiver completa e o valor integral corresponder à reserva. Também é possível consultar o status na tela de pagamento ou pelo painel.
 

@@ -35,9 +35,14 @@ async function request(fetchImpl,credentials,action,body){
  if(result.status===404&&result.data?.code==='TRANSACTION_NOT_FOUND')return null;
  const code=result.data?.code;
  const definitive=definitiveErrors.get(code)===result.status;
- const message=result.status===401||result.status===403
-  ?'A MisticPay recusou o acesso. Confira as chaves e as permissões da integração.'
-  :'A MisticPay recusou a solicitação. Verifique a transação no painel do provedor.';
+ let message='A MisticPay recusou a solicitação. Verifique a transação no painel do provedor.';
+ if(result.status===401||result.status===403)message='A MisticPay recusou o acesso. Confira o Client ID e o Client Secret em API → Chaves de Acesso.';
+ if(definitive&&code==='INVALID_API_CREDENTIAL')message='Client ID ou Client Secret inválido ou revogado. Copie o par ativo em API → Chaves de Acesso da MisticPay.';
+ if(definitive&&code==='IP_NOT_ALLOWED')message='A MisticPay bloqueou o IP de saída do servidor. Confira a lista de IPs autorizados na conta MisticPay.';
+ if(definitive&&code==='API_SCOPE_DENIED'){
+  const scope=action==='check'?'TRANSACTION_READ':'TRANSACTION_CREATE';
+  message=`A chave de acesso precisa da permissão ${scope}. Crie uma chave com TRANSACTION_READ e TRANSACTION_CREATE na MisticPay.`;
+ }
  throw Object.assign(new Error(message),{status:502,definitive});
 }
 
@@ -76,6 +81,11 @@ function validateCpf(value){
  return cpf;
 }
 
+function credential(next,stored){
+ const value=typeof next==='string'?next.trim():next;
+ return value===undefined||value===''?stored:value;
+}
+
 export function createMisticPay(db,{fetchImpl=fetch}={}){
  db.exec(`CREATE TABLE IF NOT EXISTS misticpay_connection(
   id INTEGER PRIMARY KEY CHECK(id=1),public_key TEXT NOT NULL,secret_key TEXT NOT NULL,base_url TEXT NOT NULL
@@ -99,9 +109,14 @@ export function createMisticPay(db,{fetchImpl=fetch}={}){
  }
  async function saveSettings(body){
   const stored=getConnection();
-  const publicKey=body.public_key===''||body.public_key===undefined?stored?.public_key:body.public_key;
-  const secretKey=body.secret_key===''||body.secret_key===undefined?stored?.secret_key:body.secret_key;
-  if(typeof publicKey!=='string'||!/^pk_[A-Za-z0-9_-]{1,252}$/.test(publicKey)||typeof secretKey!=='string'||!/^sk_[A-Za-z0-9_-]{1,252}$/.test(secretKey))fail('Informe as chaves de acesso pk_ e sk_ da MisticPay.');
+  const publicKey=credential(body.client_id??body.public_key,stored?.public_key);
+  const secretKey=credential(body.client_secret??body.secret_key,stored?.secret_key);
+  if((typeof publicKey==='string'&&publicKey.startsWith('ci_'))||(typeof secretKey==='string'&&secretKey.startsWith('cs_'))){
+   fail('A MisticPay desativou as credenciais ci_ e cs_. Em API → Chaves de Acesso, crie um par pk_ e sk_.');
+  }
+  if(typeof publicKey!=='string'||!/^pk_[A-Za-z0-9_-]{1,252}$/.test(publicKey)||typeof secretKey!=='string'||!/^sk_[A-Za-z0-9_-]{1,252}$/.test(secretKey)){
+   fail('Informe o Client ID (pk_) e o Client Secret (sk_) da mesma chave de acesso da MisticPay.');
+  }
   let url;
   try{url=new URL(body.base_url);}catch{fail('Informe o endereço HTTPS público da arena.');}
   if(url.protocol!=='https:'||url.username||url.password||url.pathname!=='/'||url.search||url.hash||!url.hostname.includes('.'))fail('Informe somente a origem HTTPS pública da arena.');
