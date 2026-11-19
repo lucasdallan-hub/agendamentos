@@ -4,14 +4,28 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {createHmac} from 'node:crypto';
 import {once} from 'node:events';
 import {createApp} from '../server.js';
-import {paymentConfiguration,MercadoPago,verifyWebhook} from '../payments.js';
+import {createPayments,paymentConfiguration,MercadoPago,verifyWebhook} from '../payments.js';
 
 const config={ready:true,token:'mock-token',webhookSecret:'local-test-secret',baseUrl:'https://arena.example',mode:'test'};
-async function fixture(t,ready=true){
+const supportedMethods=[
+ {id:'visa',payment_type_id:'credit_card',status:'active'},
+ {id:'master',payment_type_id:'credit_card',status:'active'},
+ {id:'debvisa',payment_type_id:'debit_card',status:'active'},
+ {id:'pix',payment_type_id:'bank_transfer',status:'active'},
+ {id:'transfer',payment_type_id:'bank_transfer',status:'active'},
+ {id:'bolbradesco',payment_type_id:'ticket',status:'active'},
+ {id:'account_money',payment_type_id:'account_money',status:'active'}
+];
+async function fixture(t,ready=true,{methodDelay=0}={}){
  const dataDir=mkdtempSync('/tmp/arena-payments-');
- const provider=new Map();let creates=0,reads=0,payload,creationFailure;
+ const provider=new Map();let creates=0,reads=0,methodReads=0,payload,creationFailure,methods=supportedMethods;
  const client={
   async createPreference(body){creates++;payload=body;if(creationFailure)throw creationFailure;return{id:'pref-1',init_point:'https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=pref-1',sandbox_init_point:'https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=pref-1'};},
+  async getPaymentMethods(){
+   methodReads++;
+   if(methodDelay)await new Promise(resolve=>setTimeout(resolve,methodDelay));
+   return structuredClone(methods);
+  },
   async getPayment(id){reads++;assert.ok(provider.has(String(id)),'Pagamento de teste existe');return structuredClone(provider.get(String(id)));},
   async getAccount(){return{id:123};},
   async searchPayments(reference){return{results:[...provider.values()].filter(p=>p.external_reference===reference),paging:{total:[...provider.values()].filter(p=>p.external_reference===reference).length}};}
@@ -34,7 +48,7 @@ async function fixture(t,ready=true){
   const ts=String(Date.now()),requestId='request-fixture';const signature=createHmac('sha256',config.webhookSecret).update(`id:${paymentId.toLowerCase()};request-id:${requestId};ts:${ts};`).digest('hex');
   return request(`/api/payments/webhook?data.id=${paymentId}&type=payment`,{type:'payment',data:{id:paymentId}},{auth:false,headers:{'x-request-id':requestId,'x-signature':`ts=${ts},v1=${signature}`,...overrides}});
  }
- return{db,request,payment,webhook,id,stats:()=>({creates,reads,payload}),setFailure:e=>creationFailure=e};
+ return{db,request,payment,webhook,id,stats:()=>({creates,reads,methodReads,payload}),setFailure:e=>creationFailure=e,setMethods:value=>methods=value};
 }
 
 test('configuração e assinatura: não aceita URL insegura ou assinatura forjada',()=>{
@@ -60,10 +74,13 @@ test('checkout: autenticação, valor do servidor, reuso e bloqueio de cancelame
  assert.equal((await f.request(`/api/bookings/${f.id}/checkout`,{total:1},{auth:false})).status,401);
  const first=await f.request(`/api/bookings/${f.id}/checkout`,{total:1});
  assert.equal(first.status,200);assert.match(first.data.checkout_url,/sandbox\.mercadopago/);
+ assert.equal(first.data.checkout_method,null);
  assert.equal(f.stats().payload.items[0].unit_price,180);
  assert.equal(f.stats().payload.items[0].currency_id,'BRL');
  assert.equal(f.stats().payload.notification_url,'https://arena.example/api/payments/webhook');
  assert.equal(f.stats().payload.back_urls.success,'https://arena.example/pagamento');
+ assert.deepEqual(f.stats().payload.payment_methods.excluded_payment_types,[{id:'ticket'},{id:'atm'}]);
+ assert.equal(f.stats().methodReads,0);
  assert.equal((await f.request(`/api/bookings/${f.id}/checkout`,{})).data.checkout_url,first.data.checkout_url);
  assert.equal(f.stats().creates,1);
  assert.equal((await f.request(`/api/bookings/${f.id}/cancel`,{})).status,409);
@@ -71,6 +88,83 @@ test('checkout: autenticação, valor do servidor, reuso e bloqueio de cancelame
  // The return page never changes payment state, regardless of query parameters.
  const r=await f.request('/pagamento?status=approved&payment_id=101');assert.equal(r.status,200);
  assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(f.id).paid,0);
+});
+
+test('checkout: preferência permite apenas crédito, débito ou Pix conforme a forma escolhida',async t=>{
+ for(const [method,allowedType] of [['credit_card','credit_card'],['debit_card','debit_card'],['pix','bank_transfer']]){
+  const f=await fixture(t);
+  const path=`/api/bookings/${f.id}/checkout`;
+  for(const invalid of ['boleto','',null,['pix'],{id:'pix'}]){
+   assert.equal((await f.request(path,{payment_method:invalid})).status,400);
+  }
+  assert.equal(f.stats().creates,0);assert.equal(f.stats().methodReads,0);
+  const first=await f.request(path,{payment_method:method,total:1});
+  assert.equal(first.status,200,method);
+  assert.equal(first.data.checkout_method,method);
+  const {payment_methods:preference,items}=f.stats().payload;
+  assert.equal(items[0].unit_price,180);
+  assert.equal(preference.installments,1);
+  const excluded=new Set(preference.excluded_payment_types.map(({id})=>id));
+  assert.equal(excluded.has(allowedType),false,method);
+  for(const type of new Set(supportedMethods.map(item=>item.payment_type_id))){
+   if(type!==allowedType)assert.ok(excluded.has(type),`${method} exclui ${type}`);
+  }
+  assert.ok(excluded.has('atm'));
+  if(method==='pix'){
+   assert.equal(preference.default_payment_method_id,'pix');
+   assert.ok(preference.excluded_payment_methods.some(({id})=>id==='transfer'));
+   assert.ok(preference.excluded_payment_methods.every(({id})=>id!=='pix'));
+  }
+  const restartWithoutChoice=await f.request(path,{});
+  assert.equal(restartWithoutChoice.status,200);
+  assert.equal(restartWithoutChoice.data.checkout_url,first.data.checkout_url);
+  assert.equal(restartWithoutChoice.data.checkout_method,method);
+  assert.equal((await f.request(path,{payment_method:method})).data.checkout_url,first.data.checkout_url);
+  const conflicting=method==='pix'?'debit_card':'pix';
+  assert.equal((await f.request(path,{payment_method:conflicting})).status,409);
+  assert.equal(f.stats().creates,1);assert.equal(f.stats().methodReads,1);
+ }
+});
+
+test('checkout: método indisponível na conta não cria preferência nem bloqueia outra escolha',async t=>{
+ const f=await fixture(t);
+ const path=`/api/bookings/${f.id}/checkout`;
+ f.setMethods(supportedMethods.map(item=>item.id==='debvisa'?{...item,status:'inactive'}:item));
+ assert.equal((await f.request(path,{payment_method:'debit_card'})).status,422);
+ assert.equal(f.stats().creates,0);
+ assert.equal(f.db.prepare('SELECT id FROM payment_orders WHERE booking_id=?').get(f.id),undefined);
+ const created=await f.request(path,{payment_method:'credit_card'});
+ assert.equal(created.status,200);assert.equal(created.data.checkout_method,'credit_card');
+ assert.equal(f.stats().creates,1);
+});
+
+test('checkout: escolhas simultâneas não geram duas preferências',async t=>{
+ const f=await fixture(t,true,{methodDelay:50});
+ const path=`/api/bookings/${f.id}/checkout`;
+ const forms=['credit_card','debit_card'];
+ const attempts=await Promise.all(forms.map(payment_method=>f.request(path,{payment_method})));
+ assert.deepEqual(attempts.map(({status})=>status).sort(),[200,409]);
+ assert.equal(f.stats().creates,1);
+ const winner=forms[attempts.findIndex(({status})=>status===200)];
+ const reused=await f.request(path,{});
+ assert.equal(reused.status,200);
+ assert.equal(reused.data.checkout_method,winner);
+ assert.equal(f.stats().creates,1);
+});
+
+test('checkout: migra a cobrança existente sem alterar a referência ou o link',async t=>{
+ const f=await fixture(t);
+ const path=`/api/bookings/${f.id}/checkout`;
+ const legacy=await f.request(path,{});
+ assert.equal(legacy.status,200);
+ const reference=f.db.prepare('SELECT id FROM payment_orders WHERE booking_id=?').get(f.id).id;
+ f.db.exec('ALTER TABLE payment_orders DROP COLUMN checkout_method');
+ createPayments(f.db,config,{});
+ assert.equal(f.db.prepare('SELECT id FROM payment_orders WHERE booking_id=?').get(f.id).id,reference);
+ const reused=await f.request(path,{payment_method:'pix'});
+ assert.equal(reused.status,200);
+ assert.deepEqual(reused.data,legacy.data);
+ assert.equal(f.stats().creates,1);assert.equal(f.stats().methodReads,0);
 });
 
 test('webhook: assinatura, pagamento pendente, aprovação repetida e estorno',async t=>{
@@ -101,22 +195,26 @@ test('webhook: rejeita valor, conta e ambiente divergentes; identifica pagamento
 
 test('resposta incerta: não gera nova preferência',async t=>{
  const f=await fixture(t);f.setFailure(Object.assign(new Error('Resposta incerta'),{status:502}));
- assert.equal((await f.request(`/api/bookings/${f.id}/checkout`,{})).status,502);
+ assert.equal((await f.request(`/api/bookings/${f.id}/checkout`,{payment_method:'credit_card'})).status,502);
  assert.equal((await f.request(`/api/bookings/${f.id}/checkout`,{})).status,409);assert.equal(f.stats().creates,1);
-
+ assert.equal((await f.request(`/api/bookings/${f.id}/checkout`,{payment_method:'debit_card'})).status,409);assert.equal(f.stats().creates,1);
 });
 
 test('falha definitiva permite corrigir a configuração e tentar novamente',async t=>{
  const f=await fixture(t);f.setFailure(Object.assign(new Error('Token inválido'),{status:502,definitive:true}));
- assert.equal((await f.request(`/api/bookings/${f.id}/checkout`,{})).status,502);
+ assert.equal((await f.request(`/api/bookings/${f.id}/checkout`,{payment_method:'credit_card'})).status,502);
  f.setFailure(undefined);
- assert.equal((await f.request(`/api/bookings/${f.id}/checkout`,{})).status,200);assert.equal(f.stats().creates,2);
+ const recovered=await f.request(`/api/bookings/${f.id}/checkout`,{payment_method:'debit_card'});
+ assert.equal(recovered.status,200);
+ assert.equal(recovered.data.checkout_method,'debit_card');
+ assert.equal(f.stats().creates,2);
 });
 
 test('cliente Mercado Pago: usa endpoint oficial e não expõe conteúdo de erro',async()=>{
  let captured;
  const client=new MercadoPago(config,async(url,options)=>{captured={url,options};return{ok:true,json:async()=>({id:123})};});
  await client.getAccount();assert.equal(captured.url,'https://api.mercadopago.com/users/me');assert.equal(captured.options.headers.Authorization,'Bearer mock-token');
+ await client.getPaymentMethods();assert.equal(captured.url,'https://api.mercadopago.com/v1/payment_methods');assert.equal(captured.options.method,'GET');
  const failed=new MercadoPago(config,async()=>({ok:false,status:401,json:async()=>({message:'secret'})}));
  await assert.rejects(()=>failed.getAccount(),e=>e.definitive===true&&!e.message.includes('secret'));
 });

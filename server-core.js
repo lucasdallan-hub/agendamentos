@@ -34,7 +34,7 @@ function booking(body) {
  if(db.prepare("SELECT id FROM bookings WHERE court_id=? AND date=? AND status='confirmed' AND start<? AND end>?").get(court.id,date,end,start)) fail('Este horário já está reservado nesta quadra.',409);
  const total=Math.round(court.price*duration/60);
  const result=db.prepare('INSERT INTO bookings(court_id,customer,phone,date,start,end,total,notes) VALUES(?,?,?,?,?,?,?,?)').run(court.id,customer,phone,date,start,end,total,typeof body.notes==='string'?body.notes.slice(0,1000):'');
- const id=Number(result.lastInsertRowid);notifications.enqueue(id);
+ const id=Number(result.lastInsertRowid);notifications.enqueue(id,phone);
  return {id};
 }
 const catalog=publicCatalog(db,{book:booking,pix,payments,paymentConfig,attempts});
@@ -78,7 +78,7 @@ const server=http.createServer(async(req,res)=>{
   const publicBooking=/^\/api\/public\/bookings\/([a-f0-9]{64})(?:\/(pix|checkout))?$/.exec(url.pathname);
   if(publicBooking){
    if(req.method==='GET'&&!publicBooking[2])return json(res,200,catalog.confirmation(publicBooking[1]));
-   if(req.method==='POST'&&publicBooking[2])return json(res,200,await catalog.payment(publicBooking[1],publicBooking[2]));
+   if(req.method==='POST'&&publicBooking[2])return json(res,200,await catalog.payment(publicBooking[1],publicBooking[2],body.payment_method));
   }
   if(req.method==='GET'&&url.pathname==='/api/system/branding')return json(res,200,branding(db));
   if(req.method==='GET' && url.pathname==='/api/session') return json(res,200,{authenticated:!!authenticated,setup:!db.prepare('SELECT id FROM admin').get()});
@@ -145,7 +145,7 @@ const server=http.createServer(async(req,res)=>{
    }
   }
   const checkoutMatch=/^\/api\/bookings\/(\d+)\/(checkout|sync-payment)$/.exec(url.pathname);
-  if(req.method==='POST'&&checkoutMatch){const id=Number(checkoutMatch[1]);if(checkoutMatch[2]==='checkout'&&db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(id))fail('Esta reserva possui um link Pix direto. Use o fluxo Pix existente.',409);return json(res,200,checkoutMatch[2]==='checkout'?await payments.checkout(id):await payments.sync(id));}
+  if(req.method==='POST'&&checkoutMatch){const id=Number(checkoutMatch[1]);return json(res,200,checkoutMatch[2]==='checkout'?await payments.checkout(id,body.payment_method):await payments.sync(id));}
   if(req.method==='POST' && url.pathname==='/api/logout') { sessions.delete(token); res.setHeader('Set-Cookie','arena_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'); return json(res,200,{ok:true}); }
   if(req.method==='GET' && url.pathname==='/api/courts') return json(res,200,db.prepare('SELECT * FROM courts ORDER BY id').all());
   if(req.method==='POST' && url.pathname==='/api/courts') {
@@ -154,7 +154,7 @@ const server=http.createServer(async(req,res)=>{
   }
   const courtMatch=/^\/api\/courts\/(\d+)$/.exec(url.pathname);
   if(req.method==='PATCH' && courtMatch) { if(typeof body.active!=='boolean') fail('Estado inválido.'); const r=db.prepare('UPDATE courts SET active=? WHERE id=?').run(body.active?1:0,Number(courtMatch[1])); if(!r.changes) fail('Quadra não encontrada.',404); return json(res,200,{ok:true}); }
-  if(req.method==='GET' && url.pathname==='/api/bookings') return json(res,200,db.prepare('SELECT b.*, c.name court_name,c.type court_type,o.state online_status,o.checkout_url,o.expires_at,EXISTS(SELECT 1 FROM archived_payment_orders a WHERE a.order_id=o.id) online_archived,EXISTS(SELECT 1 FROM pix_links p WHERE p.booking_id=b.id) pix_link,r.status receipt_status,r.match_status receipt_match,r.amount_cents receipt_amount FROM bookings b JOIN courts c ON c.id=b.court_id LEFT JOIN payment_orders o ON o.booking_id=b.id LEFT JOIN pix_receipts r ON r.id=(SELECT id FROM pix_receipts WHERE booking_id=b.id ORDER BY id DESC LIMIT 1) ORDER BY date,start,b.id').all());
+  if(req.method==='GET' && url.pathname==='/api/bookings') return json(res,200,db.prepare('SELECT b.*, c.name court_name,c.type court_type,o.state online_status,o.checkout_url,o.expires_at,o.checkout_method,EXISTS(SELECT 1 FROM archived_payment_orders a WHERE a.order_id=o.id) online_archived,EXISTS(SELECT 1 FROM pix_links p WHERE p.booking_id=b.id) pix_link,r.status receipt_status,r.match_status receipt_match,r.amount_cents receipt_amount FROM bookings b JOIN courts c ON c.id=b.court_id LEFT JOIN payment_orders o ON o.booking_id=b.id LEFT JOIN pix_receipts r ON r.id=(SELECT id FROM pix_receipts WHERE booking_id=b.id ORDER BY id DESC LIMIT 1) ORDER BY date,start,b.id').all());
   if(req.method==='POST' && url.pathname==='/api/bookings'){
    const result=transaction(db,()=>booking(body));
    await notifications.dispatch(result.id);

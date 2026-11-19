@@ -45,7 +45,16 @@ export function publicCatalog(db,{book,pix,payments,paymentConfig,attempts}){
   if(!request)fail('Reserva não encontrada.',404);
   if(request.expires_at<=Date.now())fail('O link desta reserva expirou. Entre em contato com a arena.',410);
   const b=db.prepare('SELECT b.id,b.customer,b.date,b.start,b.end,b.total,b.status,b.paid,c.name court_name FROM bookings b JOIN courts c ON c.id=b.court_id WHERE b.id=?').get(request.booking_id);
-  return {...b,pix_ready:pix.settings().ready&&!db.prepare('SELECT id FROM payment_orders WHERE booking_id=?').get(b.id),checkout_ready:!!paymentConfig.ready&&!db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(b.id)};
+  const order=db.prepare('SELECT id,state,checkout_method,checkout_url,preference_id,expires_at FROM payment_orders WHERE booking_id=?').get(b.id);
+  const failedWithoutCharge=order?.state==='failed'&&!order.checkout_url&&!order.preference_id
+   &&!db.prepare('SELECT id FROM provider_payments WHERE order_id=? LIMIT 1').get(order.id);
+  const checkoutLinkReady=!!(order?.checkout_url&&Date.parse(order.expires_at)>Date.now()&&['open','pending','rejected'].includes(order.state));
+  return {...b,
+   pix_ready:pix.settings().ready&&(!order||failedWithoutCharge),
+   checkout_ready:!!paymentConfig.ready&&(!order||failedWithoutCharge||checkoutLinkReady)&&!db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(b.id),
+   checkout_method:checkoutLinkReady?order.checkout_method:null,
+   checkout_link_ready:checkoutLinkReady
+  };
  }
  function reserve(body,key){
   enabled();
@@ -67,11 +76,10 @@ export function publicCatalog(db,{book,pix,payments,paymentConfig,attempts}){
   attempts.set(throttleKey,{count:attempt?.until>Date.now()?attempt.count+1:1,until:attempt?.until>Date.now()?attempt.until:Date.now()+3600000});
   return result;
  }
- async function payment(token,kind){
+ async function payment(token,kind,method){
   const b=confirmation(token);
   if(kind==='pix')return pix.createLink(b.id);
-  if(db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(b.id))fail('Esta reserva já utiliza Pix direto. Abra o link Pix existente.',409);
-  return payments.checkout(b.id);
+  return payments.checkout(b.id,method);
  }
  return {settings,saveSettings,catalog,reserve,confirmation,payment};
 }

@@ -41,15 +41,17 @@ export function createPix(db,{receiptReader,ocrReady=false,manualReceiptReview=f
   db.prepare('INSERT INTO pix_settings(id,key,receiver) VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET key=excluded.key,receiver=excluded.receiver').run(body.key.trim(),body.receiver.trim());return settings();
  }
  function createLink(id){
-  const b=booking(id);const current=settings();if(!current.ready)fail('Cadastre a chave Pix e o nome do recebedor no financeiro.',409);
-  // Only a definitive rejection with no external preference or payment can change lanes.
-  db.prepare("DELETE FROM payment_orders WHERE booking_id=? AND state='failed' AND preference_id IS NULL AND checkout_url IS NULL AND NOT EXISTS(SELECT 1 FROM provider_payments WHERE order_id=payment_orders.id)").run(id);
-  available(b);
-  const existing=db.prepare('SELECT * FROM pix_links WHERE booking_id=?').get(id);
-  if(existing&&new Date(existing.expires_at)>new Date())return {path:`/pix#${existing.token}`,expires_at:existing.expires_at};
-  const token=randomBytes(32).toString('hex'),expires_at=new Date(Date.now()+7*24*3600000).toISOString();
-  db.prepare('INSERT INTO pix_links(booking_id,token,expires_at,pix_key,receiver) VALUES(?,?,?,?,?) ON CONFLICT(booking_id) DO UPDATE SET token=excluded.token,expires_at=excluded.expires_at,pix_key=excluded.pix_key,receiver=excluded.receiver').run(id,token,expires_at,current.key,current.receiver);
-  return {path:`/pix#${token}`,expires_at};
+  return transaction(db,()=>{
+   const b=booking(id);const current=settings();if(!current.ready)fail('Cadastre a chave Pix e o nome do recebedor no financeiro.',409);
+   // Only a definitive rejection with no external preference or payment can change lanes.
+   db.prepare("DELETE FROM payment_orders WHERE booking_id=? AND state='failed' AND preference_id IS NULL AND checkout_url IS NULL AND NOT EXISTS(SELECT 1 FROM provider_payments WHERE order_id=payment_orders.id)").run(id);
+   available(b);
+   const existing=db.prepare('SELECT * FROM pix_links WHERE booking_id=?').get(id);
+   if(existing&&new Date(existing.expires_at)>new Date())return {path:`/pix#${existing.token}`,expires_at:existing.expires_at};
+   const token=randomBytes(32).toString('hex'),expires_at=new Date(Date.now()+7*24*3600000).toISOString();
+   db.prepare('INSERT INTO pix_links(booking_id,token,expires_at,pix_key,receiver) VALUES(?,?,?,?,?) ON CONFLICT(booking_id) DO UPDATE SET token=excluded.token,expires_at=excluded.expires_at,pix_key=excluded.pix_key,receiver=excluded.receiver').run(id,token,expires_at,current.key,current.receiver);
+   return {path:`/pix#${token}`,expires_at};
+  });
  }
  function publicPayment(token){const link=linkFor(token),b=booking(link.booking_id);if(b.status!=='confirmed')fail('Esta reserva não está mais disponível.',410);return {customer:b.customer,court_name:b.court_name,date:b.date,start:b.start,end:b.end,total:b.total,key:link.pix_key,receiver:link.receiver,paid:!!b.paid,expires_at:link.expires_at,receipt:latest(b.id)};}
  async function upload(token,body){

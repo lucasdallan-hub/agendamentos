@@ -31,19 +31,47 @@ $('#catalog-booking-form').onsubmit=async e=>{
  }catch(error){$('#catalog-booking-error').textContent=error.message;await search();}
  finally{$('#catalog-submit').disabled=false;}
 };
+const paymentLabels={pix:'Pix',credit_card:'Cartão de crédito',debit_card:'Cartão de débito'};
+function paymentChoices(booking){
+ if(booking.paid||booking.status!=='confirmed')return '';
+ if(booking.checkout_link_ready&&!booking.checkout_method){
+  return '<div class="catalog-payment-actions"><button type="button" class="primary" data-payment="checkout">Continuar pagamento</button></div>';
+ }
+ const directPix=!booking.checkout_method&&booking.pix_ready;
+ const methods=booking.checkout_ready
+  ? Object.keys(paymentLabels).filter(method=>!booking.checkout_method||booking.checkout_method===method)
+  : [];
+ if(directPix&&!methods.includes('pix'))methods.unshift('pix');
+ if(!methods.length)return '<p>Entre em contato com a arena para combinar o pagamento.</p>';
+ const buttons=methods.map(method=>{
+  const route=method==='pix'&&directPix?'pix':'checkout';
+  return `<button type="button" class="${method==='pix'?'primary':'outline'}" data-payment="${route}" data-method="${method}">${paymentLabels[method]}</button>`;
+ }).join('');
+ const debitNote=methods.includes('debit_card')?'<p>A disponibilidade do cartão de débito depende das opções exibidas pelo Mercado Pago no checkout.</p>':'';
+ return `<h3>Forma de pagamento</h3><div class="catalog-payment-actions">${buttons}</div>${debitNote}`;
+}
 async function showConfirmation(token){
  $('#catalog-error').textContent='';$('#catalog-search').hidden=true;$('#catalog-confirmation').hidden=false;
  try{
   const b=await api('bookings/'+token);
-  $('#catalog-confirmation').innerHTML=`<span class="eyebrow">${b.status==='cancelled'?'RESERVA CANCELADA':'HORÁRIO RESERVADO'}</span><h2>${b.status==='cancelled'?'Entre em contato com a arena.':`Tudo certo, ${esc(b.customer)}!`}</h2><p>${esc(b.court_name)} · ${dateLabel(b.date)} · ${b.start} – ${b.end}</p><p class="catalog-total">${money(b.total)}</p><p>${b.paid?'Pagamento confirmado.':b.status==='cancelled'?'Esta reserva foi cancelada pela arena.':'Reserva confirmada. O pagamento ainda está pendente.'}</p>${!b.paid&&b.status==='confirmed'?`<div class="catalog-payment-actions">${b.pix_ready?'<button class="primary" data-payment="pix">Pagar com Pix</button>':''}${b.checkout_ready?'<button class="outline" data-payment="checkout">Pagar pelo Mercado Pago</button>':''}</div>${!b.pix_ready&&!b.checkout_ready?'<p>Entre em contato com a arena para combinar o pagamento.</p>':''}`:''}<p>Guarde este link privado para consultar sua reserva. Não o compartilhe com terceiros.</p><button id="copy-reservation" class="outline">Copiar link da reserva</button> <a class="outline" href="/catalogo">Fazer outra reserva</a>`;
+  $('#catalog-confirmation').innerHTML=`<span class="eyebrow">${b.status==='cancelled'?'RESERVA CANCELADA':'HORÁRIO RESERVADO'}</span><h2>${b.status==='cancelled'?'Entre em contato com a arena.':`Tudo certo, ${esc(b.customer)}!`}</h2><p>${esc(b.court_name)} · ${dateLabel(b.date)} · ${b.start} – ${b.end}</p><p class="catalog-total">${money(b.total)}</p><p>${b.paid?'Pagamento confirmado.':b.status==='cancelled'?'Esta reserva foi cancelada pela arena.':'Reserva confirmada. O pagamento ainda está pendente.'}</p>${paymentChoices(b)}<p>Guarde este link privado para consultar sua reserva. Não o compartilhe com terceiros.</p><button id="copy-reservation" class="outline">Copiar link da reserva</button> <a class="outline" href="/catalogo">Fazer outra reserva</a>`;
   $('#copy-reservation').onclick=async()=>{try{await navigator.clipboard.writeText(location.href);$('#copy-reservation').textContent='Link copiado';}catch{$('#catalog-error').textContent='Copie o endereço desta página para guardar seu link.';}};
  }catch(error){$('#catalog-confirmation').textContent='Não foi possível consultar a reserva.';$('#catalog-error').textContent=error.message;}
 }
 $('#catalog-confirmation').onclick=async e=>{
- const button=e.target.closest('[data-payment]');if(!button)return;
- button.disabled=true;$('#catalog-error').textContent='';
- try{const result=await api(`bookings/${location.hash.slice(1)}/${button.dataset.payment}`,{});location.assign(result.path||result.checkout_url);}
- catch(error){$('#catalog-error').textContent=error.message;button.disabled=false;}
+ const button=e.target.closest('[data-payment]');if(!button||button.disabled)return;
+ const buttons=$('#catalog-confirmation').querySelectorAll('[data-payment]');
+ buttons.forEach(option=>{option.disabled=true;});
+ $('#catalog-error').textContent='';
+ const {payment,method}=button.dataset;
+ const body=payment==='checkout'&&method?{payment_method:method}:{};
+ try{
+  const result=await api(`bookings/${location.hash.slice(1)}/${payment}`,body);
+  location.assign(result.path||result.checkout_url);
+ }catch(error){
+  $('#catalog-error').textContent=error.message;
+  buttons.forEach(option=>{option.disabled=false;});
+ }
 };
 const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 $('#catalog-date').min=today;$('#catalog-date').value=today;

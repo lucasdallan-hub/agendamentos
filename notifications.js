@@ -33,15 +33,37 @@ function baseURL(value){
  return url.href.replace(/\/+$/,'');
 }
 
+function initializeOutbox(db){
+ transaction(db,()=>{
+  if(db.prepare('PRAGMA index_list(booking_notifications)').all().some(index=>index.name==='booking_notifications_by_role'))return;
+  const columns=db.prepare('PRAGMA table_info(booking_notifications)').all();
+  if(columns.length)db.exec('ALTER TABLE booking_notifications RENAME TO legacy_booking_notifications');
+  db.exec(`CREATE TABLE booking_notifications(
+   id TEXT PRIMARY KEY,
+   booking_id INTEGER NOT NULL REFERENCES bookings(id),
+   recipient TEXT NOT NULL,
+   role TEXT NOT NULL DEFAULT 'arena',
+   status TEXT NOT NULL,
+   created_at TEXT NOT NULL,
+   updated_at TEXT NOT NULL,
+   error TEXT NOT NULL DEFAULT '',
+   provider TEXT NOT NULL DEFAULT 'evolution'
+  );
+  CREATE UNIQUE INDEX booking_notifications_by_role ON booking_notifications(booking_id,role);`);
+  if(!columns.length)return;
+  const provider=columns.some(column=>column.name==='provider')?'provider':"'evolution'";
+  db.exec(`INSERT INTO booking_notifications(id,booking_id,recipient,role,status,created_at,updated_at,error,provider)
+   SELECT id,booking_id,recipient,role,status,created_at,updated_at,error,${provider} FROM legacy_booking_notifications;
+   DROP TABLE legacy_booking_notifications;`);
+ });
+}
+
 /** Per-arena settings and durable outbox. Neither is part of the system clone. */
 export function bookingNotifications(db,{fetchImpl=fetch}={}){
  db.exec(`CREATE TABLE IF NOT EXISTS notification_connection(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL,base_url TEXT NOT NULL,api_key TEXT NOT NULL,arena_number TEXT NOT NULL,country_code TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS notification_wuzapi(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL,base_url TEXT NOT NULL,api_key TEXT NOT NULL,arena_number TEXT NOT NULL,country_code TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS notification_webhook(id INTEGER PRIMARY KEY CHECK(id=1),url TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS booking_notifications(id TEXT PRIMARY KEY,booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),recipient TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'arena',status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,error TEXT NOT NULL DEFAULT '');`);
- if(!db.prepare('PRAGMA table_info(booking_notifications)').all().some(column=>column.name==='provider')){
-  db.exec("ALTER TABLE booking_notifications ADD COLUMN provider TEXT NOT NULL DEFAULT 'evolution'");
- }
+ CREATE TABLE IF NOT EXISTS notification_webhook(id INTEGER PRIMARY KEY CHECK(id=1),url TEXT NOT NULL);`);
+ initializeOutbox(db);
  // Earlier versions accepted the Swagger page as a base URL. Repair only
  // that stored address; preserve the instance token and notification settings.
  const legacy=db.prepare('SELECT base_url FROM notification_connection WHERE id=1').get();
@@ -60,7 +82,7 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
  };
  const sendingProvider=()=>stored('wuzapi').enabled?'wuzapi':'evolution';
  const webhookURL=()=>db.prepare('SELECT url FROM notification_webhook WHERE id=1').get()?.url||'';
- const summary=(id='evolution')=>{const c=stored(id);return {enabled:!!c.enabled,base_url:c.base_url,token_configured:!!c.api_key,webhook_configured:id==='evolution'&&!!webhookURL(),target:'arena',connection_ready:!!(c.base_url&&c.api_key),arena_number:c.arena_number,country_code:c.country_code,ready:!!(c.enabled&&c.base_url&&c.api_key&&c.arena_number)};};
+ const summary=(id='evolution')=>{const c=stored(id);return {enabled:!!c.enabled,base_url:c.base_url,token_configured:!!c.api_key,webhook_configured:id==='evolution'&&!!webhookURL(),target:'both',connection_ready:!!(c.base_url&&c.api_key),arena_number:c.arena_number,country_code:c.country_code,ready:!!(c.enabled&&c.base_url&&c.api_key&&c.arena_number)};};
  async function resolveWuzapiToken(adminToken,sessionId){
   if(typeof adminToken!=='string'||!adminToken||adminToken.length>2000||/[\s\x00-\x1f\x7f]/.test(adminToken))fail('Informe um token administrativo válido da WUZAPI.');
   let response;
@@ -83,7 +105,7 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
  }
  async function save(body,id='evolution'){
   const provider=providerFor(id);
-  if(typeof body.enabled!=='boolean'||body.target!==undefined&&body.target!=='arena')fail('As notificações devem ser destinadas ao administrador cadastrado.');
+  if(typeof body.enabled!=='boolean'||(body.target!==undefined&&!['arena','both'].includes(body.target)))fail('As notificações são destinadas ao cliente da reserva e ao administrador.');
   const previous=stored(id);
   const country=body.country_code||previous.country_code||'55';
   if(typeof country!=='string'||!/^[1-9]\d{0,2}$/.test(country))fail('Informe um código de país válido, como 55.');
@@ -118,10 +140,17 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   });
   return summary(id);
  }
- function enqueue(bookingId){
-  const id=sendingProvider(),c=stored(id);if(!c.enabled||!c.base_url||!c.api_key||!c.arena_number)return;
+ function enqueue(bookingId,phone){
+  const id=sendingProvider(),c=stored(id);
+  if(!c.enabled||!c.base_url||!c.api_key||!c.arena_number)return;
   const now=new Date().toISOString();
-  db.prepare("INSERT OR IGNORE INTO booking_notifications(id,booking_id,recipient,status,created_at,updated_at,provider) VALUES(?,?,?,'pending',?,?,?)").run(randomBytes(16).toString('hex'),bookingId,c.arena_number,now,now,id);
+  const insert=db.prepare(`INSERT INTO booking_notifications(id,booking_id,recipient,role,status,created_at,updated_at,error,provider)
+   VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(booking_id,role) DO NOTHING`);
+  insert.run(randomBytes(16).toString('hex'),bookingId,c.arena_number,'arena','pending',now,now,'',id);
+  let customerNumber='';
+  try{customerNumber=normalizeNumber(phone,c.country_code);}catch{}
+  insert.run(randomBytes(16).toString('hex'),bookingId,customerNumber,'client',customerNumber?'pending':'failed',now,now,
+   customerNumber?'':'O telefone do cliente não é um número válido para envio pelo WhatsApp.',id);
  }
  function mark(id,status,error=''){
   db.prepare('UPDATE booking_notifications SET status=?,updated_at=?,error=? WHERE id=?').run(status,new Date().toISOString(),error,id);
@@ -131,23 +160,36 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   db.prepare("UPDATE booking_notifications SET status='unknown',updated_at=?,error='O envio foi interrompido. Confira o provedor antes de tentar novamente.' WHERE status='sending' AND updated_at<?").run(new Date().toISOString(),stale);
   return db.prepare('SELECT id,booking_id,recipient,role,status,created_at,updated_at,error FROM booking_notifications ORDER BY created_at DESC,id DESC LIMIT 30').all();
  }
- function message(bookingId){
+ function message(bookingId,role){
   const b=db.prepare('SELECT b.customer,b.phone,b.date,b.start,b.end,b.total,b.status,c.name court_name FROM bookings b JOIN courts c ON c.id=b.court_id WHERE b.id=?').get(bookingId);
   if(!b||b.status!=='confirmed')return null;
   const date=new Date(b.date+'T12:00:00Z').toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'});
   const amount=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(b.total/100);
-  return `Novo agendamento · ${branding(db).name}\nReserva #${bookingId}\nCliente: ${b.customer}\nTelefone: ${b.phone}\nQuadra: ${b.court_name}\nData: ${date}\nHorário: ${b.start} às ${b.end}\nValor: ${amount}\nConsulte o painel para acompanhar a reserva e o pagamento.`;
+  const arenaName=branding(db).name;
+  if(role==='client'){
+   return `Reserva confirmada · ${arenaName}\nOlá, ${b.customer}! Sua reserva foi confirmada.\nReserva #${bookingId}\nQuadra: ${b.court_name}\nData: ${date}\nHorário: ${b.start} às ${b.end}\nValor: ${amount}`;
+  }
+  return `🏐 *Novo agendamento*
+${arenaName} · Reserva #${bookingId}
+
+👤 *Cliente:* ${b.customer}
+*Telefone:* ${b.phone}
+
+📍 *Quadra:* ${b.court_name}
+📅 *Data:* ${date}
+🕒 *Horário:* ${b.start} às ${b.end}
+
+💰 *Valor da reserva:* ${amount}
+
+📋 Acompanhe a reserva e o pagamento no painel.`;
  }
- async function dispatch(bookingId){
-  // This operation runs only after the booking transaction commits. A replay
-  // claims pending rows atomically; accepted or uncertain sends are never retried.
+ async function dispatchEvent(event){
+  // Callers only send after commit. Claim each recipient independently.
   try{
-   const event=db.prepare("SELECT * FROM booking_notifications WHERE booking_id=? AND status='pending'").get(bookingId);
-   if(!event)return;
-   const provider=providerFor(event.provider),c=stored(event.provider),text=message(bookingId);
-   if(!text||!c.enabled){mark(event.id,'failed','Envio não realizado: a reserva ou as notificações foram desativadas.');return;}
    const claim=db.prepare("UPDATE booking_notifications SET status='sending',updated_at=? WHERE id=? AND status='pending'").run(new Date().toISOString(),event.id);
    if(!claim.changes)return;
+   const provider=providerFor(event.provider),c=stored(event.provider),text=message(event.booking_id,event.role);
+   if(!text||!c.enabled){mark(event.id,'failed','Envio não realizado: a reserva ou as notificações foram desativadas.');return;}
    let response;
    try{
     const body=event.provider==='wuzapi'
@@ -159,16 +201,24 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
     const uncertain=response.status>=500||response.status===408||(response.status>=300&&response.status<400);
     mark(event.id,uncertain?'unknown':'failed',uncertain?`O provedor retornou HTTP ${response.status} sem confirmar o resultado. Confira o provedor antes de tentar novamente.`:`O provedor retornou HTTP ${response.status}. Verifique a conexão e a configuração.`);return;
    }
-   let result;try{result=await response.json();}catch{mark(event.id,'unknown','A API respondeu sem confirmação válida. Confira a Evolution Go.');return;}
-   if(!(event.provider==='wuzapi'?result?.success===true:result?.message==='success')){mark(event.id,'unknown','A API não confirmou a aceitação da mensagem. Confira a Evolution Go.');return;}
+   let result;try{result=await response.json();}catch{mark(event.id,'unknown','A API respondeu sem confirmação válida. Confira o provedor.');return;}
+   if(!(event.provider==='wuzapi'?result?.success===true:result?.message==='success')){mark(event.id,'unknown','A API não confirmou a aceitação da mensagem. Confira o provedor.');return;}
    mark(event.id,'accepted');
   }catch{
    // Do not fail a committed booking or expose provider errors/credentials.
   }
  }
+ async function dispatch(bookingId){
+  try{
+   const pending=db.prepare("SELECT * FROM booking_notifications WHERE booking_id=? AND status='pending'").all(bookingId);
+   await Promise.all(pending.map(dispatchEvent));
+  }catch{
+   // A failure reading the notification queue must not fail a saved booking.
+  }
+ }
  async function recoverPending(){
-  const pending=db.prepare("SELECT booking_id FROM booking_notifications WHERE status='pending' ORDER BY created_at LIMIT 3").all();
-  await Promise.all(pending.map(event=>dispatch(event.booking_id)));
+  const pending=db.prepare("SELECT * FROM booking_notifications WHERE status='pending' ORDER BY created_at LIMIT 3").all();
+  await Promise.all(pending.map(dispatchEvent));
   return events();
  }
  async function instanceData(path,timeout=8000,body,c=stored(),id='evolution'){

@@ -3,6 +3,32 @@ import {Buffer} from 'node:buffer';
 import {transaction} from './storage.js';
 
 const failure=(message,status=400)=>Object.assign(new Error(message),{status});
+const checkoutMethods={
+ credit_card:{name:'cartão de crédito',type:'credit_card'},
+ debit_card:{name:'cartão de débito',type:'debit_card'},
+ pix:{name:'Pix',type:'bank_transfer'}
+};
+
+async function preferencePaymentMethods(client,method){
+ const excludedTypes=new Set(['ticket','atm']);
+ const options={installments:1};
+ if(method){
+  const selected=checkoutMethods[method];
+  const methods=await client.getPaymentMethods();
+  if(!Array.isArray(methods))throw failure('O Mercado Pago não retornou a lista de meios de pagamento.',502);
+  const available=methods.filter(item=>item?.status==='active'&&typeof item.id==='string'&&typeof item.payment_type_id==='string');
+  const supported=available.some(item=>item.payment_type_id===selected.type&&(method!=='pix'||item.id==='pix'));
+  if(!supported)throw failure(`O Mercado Pago não disponibilizou ${selected.name} para a conta desta arena. Escolha outro meio de pagamento.`,422);
+  for(const item of available)if(item.payment_type_id!==selected.type)excludedTypes.add(item.payment_type_id);
+  if(method==='pix'){
+   options.default_payment_method_id='pix';
+   options.excluded_payment_methods=available
+    .filter(item=>item.payment_type_id==='bank_transfer'&&item.id!=='pix')
+    .map(({id})=>({id}));
+  }
+ }
+ return {...options,excluded_payment_types:[...excludedTypes].map(id=>({id}))};
+}
 
 export function paymentConfiguration(env=process.env) {
  let baseUrl;
@@ -28,6 +54,7 @@ export class MercadoPago {
  }
  createPreference(body) {return this.request('/checkout/preferences',body);}
  getPayment(id) {return this.request(`/v1/payments/${encodeURIComponent(id)}`);}
+ getPaymentMethods() {return this.request('/v1/payment_methods');}
  getAccount() {return this.request('/users/me');}
  searchPayments(reference) {return this.request(`/v1/payments/search?external_reference=${encodeURIComponent(reference)}&sort=date_created&criteria=desc&limit=100`);}
 }
@@ -53,38 +80,67 @@ export function createPayments(db,config,client) {
  const copiedOrder=()=>{throw failure('Esta cobrança pertence ao histórico copiado do sistema mãe e só pode ser conciliada na origem.',409);};
  db.exec(`CREATE TABLE IF NOT EXISTS payment_orders(
   id TEXT PRIMARY KEY,booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),preference_id TEXT,checkout_url TEXT,
-  state TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL);
+  state TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT NOT NULL,checkout_method TEXT);
  CREATE TABLE IF NOT EXISTS provider_payments(
   id TEXT PRIMARY KEY,order_id TEXT NOT NULL REFERENCES payment_orders(id),status TEXT NOT NULL,
   amount INTEGER NOT NULL,refunded INTEGER NOT NULL,updated_at TEXT NOT NULL);`);
+ transaction(db,()=>{
+  if(!db.prepare('PRAGMA table_info(payment_orders)').all().some(column=>column.name==='checkout_method')){
+   db.exec('ALTER TABLE payment_orders ADD COLUMN checkout_method TEXT');
+  }
+ });
  function requireReady(){if(!config.ready)throw failure('A cobrança online ainda não foi ativada. Configure o Mercado Pago e o endereço público da arena.',503);}
  function getBooking(id){const b=db.prepare('SELECT b.*,c.name court_name FROM bookings b JOIN courts c ON c.id=b.court_id WHERE b.id=?').get(id);if(!b)throw failure('Agendamento não encontrado.',404);return b;}
- async function checkout(id){
-  requireReady();const b=getBooking(id);
-  if(b.paid||b.status!=='confirmed')throw failure('Esta reserva não pode receber uma nova cobrança.',409);
-  let order=db.prepare('SELECT * FROM payment_orders WHERE booking_id=?').get(id);
-  if(order&&archived(order.id))copiedOrder();
-  if(order && order.state!=='failed'){
-   if(order.checkout_url && new Date(order.expires_at)>new Date()&&['open','pending','rejected'].includes(order.state))return {checkout_url:order.checkout_url,expires_at:order.expires_at};
-   throw failure(order.state==='creating'||order.state==='unknown'?'A criação da cobrança está em verificação. Consulte o Mercado Pago antes de gerar outra cobrança.':'Esta cobrança não permite um novo checkout. Consulte o status no Mercado Pago.',409);
-  }
-  const now=new Date(), expires=new Date(now.getTime()+24*3600000).toISOString();
-  if(!order){const ref=randomUUID();db.prepare("INSERT INTO payment_orders(id,booking_id,state,expires_at,created_at) VALUES(?,?,'creating',?,?)").run(ref,id,expires,now.toISOString());order=db.prepare('SELECT * FROM payment_orders WHERE id=?').get(ref);}
-  else db.prepare("UPDATE payment_orders SET state='creating',expires_at=? WHERE id=?").run(expires,order.id);
+ async function checkout(id,method){
+  if(method!==undefined&&(typeof method!=='string'||!Object.hasOwn(checkoutMethods,method)))throw failure('Escolha cartão de crédito, cartão de débito ou Pix.');
+  const now=new Date(),expires=new Date(now.getTime()+24*3600000).toISOString();
+  const claim=transaction(db,()=>{
+   if(db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(id)){
+    throw failure('Esta reserva já utiliza Pix direto. Abra o link Pix existente.',409);
+   }
+   requireReady();
+   const booking=getBooking(id);
+   if(booking.paid||booking.status!=='confirmed')throw failure('Esta reserva não pode receber uma nova cobrança.',409);
+   const order=db.prepare('SELECT * FROM payment_orders WHERE booking_id=?').get(id);
+   if(order&&archived(order.id))copiedOrder();
+   if(order&&order.state!=='failed'){
+    if(order.checkout_url&&Date.parse(order.expires_at)>now.getTime()&&['open','pending','rejected'].includes(order.state)){
+     if(method&&order.checkout_method&&method!==order.checkout_method)throw failure('Esta reserva já tem uma cobrança com outro meio de pagamento. Use o link existente.',409);
+     return {existing:{checkout_url:order.checkout_url,expires_at:order.expires_at,checkout_method:order.checkout_method}};
+    }
+    throw failure(order.state==='creating'||order.state==='unknown'?'A criação da cobrança está em verificação. Consulte o Mercado Pago antes de gerar outra cobrança.':'Esta cobrança não permite um novo checkout. Consulte o status no Mercado Pago.',409);
+   }
+   if(order){
+    db.prepare("UPDATE payment_orders SET state='creating',expires_at=?,checkout_method=? WHERE id=?").run(expires,method??null,order.id);
+    return {booking,reference:order.id};
+   }
+   const reference=randomUUID();
+   db.prepare("INSERT INTO payment_orders(id,booking_id,state,expires_at,created_at,checkout_method) VALUES(?,?,'creating',?,?,?)").run(reference,id,expires,now.toISOString(),method??null);
+   return {booking,reference,fresh:true};
+  });
+  if(claim.existing)return claim.existing;
+  const {booking:b,reference,fresh}=claim;
+  let preferenceStarted=false;
   try{
+   const paymentMethods=await preferencePaymentMethods(client,method);
+   preferenceStarted=true;
    const preference=await client.createPreference({
     items:[{id:String(b.id),title:`${b.court_name} · ${b.date} · ${b.start}–${b.end}`,quantity:1,currency_id:'BRL',unit_price:b.total/100}],
-    external_reference:order.id,notification_url:`${config.baseUrl}/api/payments/webhook`,
+    external_reference:reference,notification_url:`${config.baseUrl}/api/payments/webhook`,
     back_urls:{success:`${config.baseUrl}/pagamento`,pending:`${config.baseUrl}/pagamento`,failure:`${config.baseUrl}/pagamento`},
     auto_return:'approved',binary_mode:true,expires:true,expiration_date_from:now.toISOString(),expiration_date_to:expires,
-    payment_methods:{excluded_payment_types:[{id:'ticket'},{id:'atm'}],installments:1}
+    payment_methods:paymentMethods
    });
    const link=config.mode==='production'?preference.init_point:preference.sandbox_init_point;
    let parsed;try{parsed=new URL(link);}catch{}
    if(!preference.id||!parsed||parsed.protocol!=='https:'||!['www.mercadopago.com.br','sandbox.mercadopago.com.br'].includes(parsed.hostname))throw failure('O Mercado Pago não retornou um link de pagamento válido.',502);
-   db.prepare("UPDATE payment_orders SET preference_id=?,checkout_url=?,expires_at=?,state=CASE WHEN state='creating' THEN 'open' ELSE state END WHERE id=?").run(String(preference.id),link,expires,order.id);
-   return {checkout_url:link,expires_at:expires};
-  }catch(error){db.prepare("UPDATE payment_orders SET state=? WHERE id=? AND state='creating'").run(error.definitive?'failed':'unknown',order.id);throw error;}
+   db.prepare("UPDATE payment_orders SET preference_id=?,checkout_url=?,expires_at=?,state=CASE WHEN state='creating' THEN 'open' ELSE state END WHERE id=?").run(String(preference.id),link,expires,reference);
+   return {checkout_url:link,expires_at:expires,checkout_method:method??null};
+  }catch(error){
+   if(!preferenceStarted&&fresh)db.prepare("DELETE FROM payment_orders WHERE id=? AND state='creating'").run(reference);
+   else db.prepare("UPDATE payment_orders SET state=? WHERE id=? AND state='creating'").run(!preferenceStarted||error.definitive?'failed':'unknown',reference);
+   throw error;
+  }
  }
  async function reconcilePayment(paymentId,expectedReference){
   requireReady();const payment=await client.getPayment(paymentId);

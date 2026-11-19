@@ -7,7 +7,7 @@ const whatsappProviders={
 };
 let whatsappProvider='evolution';
 const notificationRoute=(route,provider=whatsappProvider)=>`notifications/${route}?provider=${provider}`;
-let notificationConfig={enabled:false,base_url:'https://api.dallan.pro',connection_ready:false,token_configured:false,target:'arena',arena_number:'',country_code:'55',ready:false},notificationEvents=[];
+let notificationConfig={enabled:false,base_url:'https://api.dallan.pro',connection_ready:false,token_configured:false,target:'both',arena_number:'',country_code:'55',ready:false},notificationEvents=[];
 let courts=[], bookings=[], paymentConfig={ready:false,mode:'test'}, pixSettings={ready:false,ocr_ready:false}, view='overview', setup=false, submitModal;
 const money=n=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(n/100);
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
@@ -54,7 +54,7 @@ function bookingPaymentLabel(b){
 function bookingActions(b){
  if(b.online_archived)return '<span>Histórico do sistema mãe</span>'+(b.receipt_status?`<button class="table-button" data-receipts="${b.id}">Ver comprovante</button>`:'');
  let html='';
- if(b.status==='confirmed'&&!b.paid&&!b.pix_link&&!['refunded','charged_back','review','creating','unknown'].includes(b.online_status))html+=`<button class="table-button" data-pay="${b.id}">${b.checkout_url?'Ver link':'Mercado Pago'}</button>`;
+ if(b.status==='confirmed'&&!b.paid&&!b.pix_link&&!['refunded','charged_back','review','creating','unknown'].includes(b.online_status))html+=`<button class="table-button" data-pay="${b.id}">${b.checkout_url?'Ver link':'Gerar cobrança'}</button>`;
  if(b.online_status)html+=`<button class="table-button" data-sync="${b.id}">Consultar</button>`;
  if(b.status==='confirmed'&&(!b.online_status||(b.online_status==='failed'&&!b.checkout_url))&&!b.paid)html+=`<button class="table-button" data-pix="${b.id}">${b.pix_link?'Link Pix':'Pix + comprovante'}</button>`;
  if(b.receipt_status)html+=`<button class="table-button" data-receipts="${b.id}">Ver comprovante</button>`;
@@ -125,19 +125,53 @@ $('#close-modal').onclick=$('#cancel-modal').onclick=()=>$('#modal').close();
 $('#modal-form').onsubmit=async e=>{e.preventDefault();$('#save-modal').disabled=true;$('#modal-error').textContent='';try{const result=await submitModal(Object.fromEntries(new FormData(e.target)));if(result!==false){$('#modal').close();await refresh();toast('Tudo certo! Alteração salva.');}}catch(e){$('#modal-error').textContent=e.message;}finally{$('#save-modal').disabled=false;}};
 function newCourt(){openModal('Adicionar quadra','<label>Nome da quadra<input name="name" placeholder="Ex.: Quadra 01" maxlength="80" required></label><label>Tipo<select name="type"><option>Vôlei de areia</option><option>Vôlei de quadra</option><option>Quadra poliesportiva</option></select></label><label>Valor por hora (R$)<input name="price" type="number" min="1" max="100000" step="0.01" placeholder="120,00" required></label>',data=>api('courts',data),'Cadastrar quadra');}
 $('#new-court').onclick=newCourt;
-function newBooking(){if(!courts.some(c=>c.active)){setView('courts');newCourt();toast('Cadastre uma quadra ativa para começar.');return;}openModal('Novo agendamento',`<label>Quadra<select name="court_id" id="reserve-court">${courts.filter(c=>c.active).map(c=>`<option value="${c.id}">${esc(c.name)} · ${money(c.price)}/h</option>`).join('')}</select></label><div class="form-row"><label>Nome do cliente<input name="customer" maxlength="120" placeholder="Nome completo" required></label><label>Telefone / WhatsApp<input name="phone" type="tel" maxlength="30" placeholder="(11) 99999-9999" required></label></div><label>Data<input name="date" type="date" value="${today()}" required></label><div class="form-row"><label>Início<input name="start" type="time" id="reserve-start" value="18:00" required></label><label>Fim<input name="end" type="time" id="reserve-end" value="19:00" required></label></div><label>Observações (opcional)<textarea name="notes" maxlength="1000" placeholder="Informações sobre a reserva"></textarea></label><div class="estimate" id="estimate"></div>`,data=>api('bookings',data),'Confirmar agendamento');const estimate=()=>{const c=courts.find(c=>c.id===Number($('#reserve-court').value));const m=t=>Number(t.slice(0,2))*60+Number(t.slice(3));const duration=m($('#reserve-end').value)-m($('#reserve-start').value);$('#estimate').textContent=duration>=30?`Total da reserva: ${money(Math.round(c.price*duration/60))} · pagamento pendente`:'Escolha um intervalo de pelo menos 30 minutos.';};['#reserve-court','#reserve-start','#reserve-end'].forEach(s=>$(s).onchange=estimate);estimate();}
+const checkoutLabels={credit_card:'Cartão de crédito',debit_card:'Cartão de débito',pix:'Pix'};
+function checkoutOptions(methods,selected){
+ return methods.map(method=>`<option value="${method}" ${method===selected?'selected':''}>${checkoutLabels[method]}</option>`).join('');
+}
+function newBooking(){
+ if(!courts.some(c=>c.active)){
+  setView('courts');newCourt();toast('Cadastre uma quadra ativa para começar.');return;
+ }
+ const methods=paymentConfig.ready?Object.keys(checkoutLabels):pixSettings.ready?['pix']:[];
+ const paymentField=methods.length?`<label>Forma de pagamento<select name="payment_method"><option value="">Escolher depois</option>${checkoutOptions(methods)}</select></label>`:'';
+ openModal('Novo agendamento',`<label>Quadra<select name="court_id" id="reserve-court">${courts.filter(c=>c.active).map(c=>`<option value="${c.id}">${esc(c.name)} · ${money(c.price)}/h</option>`).join('')}</select></label><div class="form-row"><label>Nome do cliente<input name="customer" maxlength="120" placeholder="Nome completo" required></label><label>Telefone / WhatsApp<input name="phone" type="tel" maxlength="30" placeholder="(11) 99999-9999" required></label></div><label>Data<input name="date" type="date" value="${today()}" required></label><div class="form-row"><label>Início<input name="start" type="time" id="reserve-start" value="18:00" required></label><label>Fim<input name="end" type="time" id="reserve-end" value="19:00" required></label></div><label>Observações (opcional)<textarea name="notes" maxlength="1000" placeholder="Informações sobre a reserva"></textarea></label>${paymentField}<div class="estimate" id="estimate"></div>`,async ({payment_method,...data})=>{
+  const {id}=await api('bookings',data);
+  if(!payment_method)return;
+  $('#modal').close();
+  try{
+   await refresh();
+   const booking=bookings.find(item=>item.id===id);
+   if(payment_method==='pix'&&pixSettings.ready)openPix(booking);
+   else onlinePayment(booking,payment_method);
+  }catch{
+   toast('Reserva confirmada. Abra o pagamento na lista de agendamentos.');
+  }
+  return false;
+ },'Confirmar agendamento');
+ const estimate=()=>{
+  const court=courts.find(item=>item.id===Number($('#reserve-court').value));
+  const minutes=time=>Number(time.slice(0,2))*60+Number(time.slice(3));
+  const duration=minutes($('#reserve-end').value)-minutes($('#reserve-start').value);
+  $('#estimate').textContent=duration>=30
+   ?`Total da reserva: ${money(Math.round(court.price*duration/60))} · pagamento pendente`
+   :'Escolha um intervalo de pelo menos 30 minutos.';
+ };
+ for(const selector of ['#reserve-court','#reserve-start','#reserve-end'])$(selector).onchange=estimate;
+ estimate();
+}
 $('#new-booking').onclick=$('#hero-booking').onclick=$('#empty-booking').onclick=newBooking;
 function checkoutLink(b,data){
- openModal('Link de pagamento',`<p>Envie este link para <strong>${esc(b.customer)}</strong>. Total: <strong>${money(b.total)}</strong>.</p>${paymentConfig.mode==='test'?'<div class="estimate">MODO DE TESTE · Use apenas contas de teste do Mercado Pago.</div>':''}<label>Link do checkout<input id="checkout-link" readonly value="${esc(data.checkout_url)}"></label><div class="checkout-actions"><button type="button" class="outline" id="copy-link">Copiar link</button><a class="primary checkout-open" href="${esc(data.checkout_url)}" target="_blank" rel="noopener noreferrer">Abrir checkout ↗</a></div><p>Válido até ${new Date(data.expires_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}. A confirmação é automática após aprovação do Mercado Pago.</p><p>Não libere a reserva apenas pelo comprovante ou pelo retorno do navegador.</p>`,async()=>{await refresh();},'Concluir');
+ openModal('Link de pagamento',`<p>Envie este link para <strong>${esc(b.customer)}</strong>. Total: <strong>${money(b.total)}</strong>.</p>${checkoutLabels[data.checkout_method]?`<p>Forma escolhida: ${checkoutLabels[data.checkout_method]}</p>`:''}${paymentConfig.mode==='test'?'<div class="estimate">MODO DE TESTE · Use apenas contas de teste do Mercado Pago.</div>':''}<label>Link do checkout<input id="checkout-link" readonly value="${esc(data.checkout_url)}"></label><div class="checkout-actions"><button type="button" class="outline" id="copy-link">Copiar link</button><a class="primary checkout-open" href="${esc(data.checkout_url)}" target="_blank" rel="noopener noreferrer">Abrir checkout ↗</a></div><p>Válido até ${new Date(data.expires_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}. A confirmação é automática após aprovação do Mercado Pago.</p><p>Não libere a reserva apenas pelo comprovante ou pelo retorno do navegador.</p>`,async()=>{await refresh();},'Concluir');
  $('#copy-link').onclick=async()=>{try{await navigator.clipboard.writeText(data.checkout_url);toast('Link copiado. Envie ao cliente.');}catch{$('#checkout-link').select();toast('Selecione e copie o link para enviar ao cliente.');}};
 }
-function onlinePayment(b){
+function onlinePayment(b,selected="credit_card"){
  if(!paymentConfig.ready){openModal('Ative a cobrança online','<p>A arena ainda não está conectada ao Mercado Pago. Configure a conta recebedora, a assinatura das notificações e o endereço público da aplicação antes de gerar links.</p><p>Nenhuma cobrança foi criada.</p>',async()=>{},'Entendi');return;}
  if(b.checkout_url){
   if(new Date(b.expires_at)<=new Date()){openModal('Link de pagamento expirado','<p>Este link expirou. Consulte o status e verifique a cobrança no Mercado Pago antes de tomar outra ação.</p>',async()=>{await api(`bookings/${b.id}/sync-payment`,{});},'Consultar pagamento');return;}
   checkoutLink(b,b);return;
  }
- openModal('Cobrar com Mercado Pago',`<p>Gere um link para <strong>${esc(b.customer)}</strong> pagar <strong>${money(b.total)}</strong> pela reserva de ${esc(b.court_name)}.</p><div class="estimate">${paymentConfig.mode==='test'?'Modo de teste: não use pagamentos reais.':'O cliente escolhe uma das formas habilitadas na sua conta Mercado Pago, como Pix ou cartão.'}</div><p>O link vale por 24 horas. O horário fica reservado enquanto o pagamento é acompanhado. Reservas com cobrança online devem ser tratadas pelo Mercado Pago para cancelamentos e estornos.</p>`,async()=>{const data=await api(`bookings/${b.id}/checkout`,{});await refresh();checkoutLink(b,data);return false;},'Gerar link de pagamento');
+ openModal('Cobrar com Mercado Pago',`<p>Gere um link para <strong>${esc(b.customer)}</strong> pagar <strong>${money(b.total)}</strong> pela reserva de ${esc(b.court_name)}.</p><label>Forma de pagamento<select name="payment_method" required>${checkoutOptions(Object.keys(checkoutLabels),selected)}</select></label><p>O checkout usa os meios habilitados na conta Mercado Pago da arena.</p>${paymentConfig.mode==='test'?'<div class="estimate">Modo de teste. Use apenas contas de teste do Mercado Pago.</div>':''}<p>O link vale por 24 horas. O horário fica reservado enquanto o pagamento é acompanhado. Reservas com cobrança online devem ser tratadas pelo Mercado Pago para cancelamentos e estornos.</p>`,async fields=>{const data=await api(`bookings/${b.id}/checkout`,fields);await refresh();checkoutLink(b,data);return false;},'Gerar link de pagamento');
 }
 $('#booking-rows').onclick=async e=>{
  const pay=e.target.closest('[data-pay]'),cancel=e.target.closest('[data-cancel]'),sync=e.target.closest('[data-sync]'),pix=e.target.closest('[data-pix]'),receipts=e.target.closest('[data-receipts]');
@@ -196,14 +230,17 @@ async function loadSystems(){
  $('#children-list').innerHTML=childSystems.length?childSystems.map(system=>`<article class="court-card"><div class="court-info"><h3>${esc(system.name)}</h3><p>${esc(system.hostname)}</p><span class="badge">${system.status==='ready'?'Cópia criada':'Cópia pendente'}</span><p>Dados copiados em ${new Date(system.created_at).toLocaleString('pt-BR')}</p>${system.status==='ready'?`<a class="outline" href="https://${esc(system.hostname)}" target="_blank" rel="noopener noreferrer">Abrir sistema ↗</a>`:''}<p>O acesso depende do DNS e HTTPS configurados na Cloudflare.</p></div></article>`).join(''):'<p>Nenhum sistema filho criado.</p>';
 }
 function renderNotifications(){
- $('#notifications-description').textContent=notificationConfig.enabled?(notificationConfig.ready?`Envio habilitado para o administrador no número ${notificationConfig.arena_number||'cadastrado'}. Verifique a conexão para confirmar a sessão do WhatsApp.`:'Envio habilitado, mas a configuração ainda está incompleta.'):'Envio desativado para este provedor.';
+ $('#notifications-description').textContent=notificationConfig.enabled?(notificationConfig.ready?`Confirmações de novos agendamentos habilitadas para o cliente e para o administrador (${notificationConfig.arena_number}).`:'Envio habilitado, mas a configuração ainda está incompleta.'):'Envio desativado para este provedor.';
  const canConnect=notificationConfig.connection_ready??(notificationConfig.token_configured&&!!notificationConfig.base_url);
  $('#check-notifications').disabled=!canConnect;$('#connect-notifications').disabled=!canConnect;
  $('#configure-evolution-webhook').hidden=whatsappProvider!=='evolution';
  $('#configure-evolution-webhook').disabled=!canConnect;
  $('#configure-evolution-webhook').textContent=notificationConfig.webhook_configured?'Atualizar webhook':'Sincronizar webhook';
  const labels={pending:'Aguardando envio',sending:'Envio em andamento',accepted:'Aceita pela API',failed:'Falha no envio',unknown:'Resultado incerto'};
- $('#notifications-rows').innerHTML=notificationEvents.map(event=>`<tr><td>#${esc(event.booking_id)}</td><td>Administrador<small>${esc(event.recipient)}</small></td><td><span class="badge ${event.status==='accepted'?'paid':event.status==='failed'?'cancelled':''}">${labels[event.status]||'Status desconhecido'}</span></td><td>${new Date(event.updated_at||event.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</td><td>${esc(event.error|| (event.status==='unknown'?'Confira o provedor antes de enviar novamente.':event.status==='accepted'?'A entrega no WhatsApp ainda não foi confirmada.':''))}</td></tr>`).join('');
+ $('#notifications-rows').innerHTML=notificationEvents.map(event=>{
+  const role=event.role==='client'?'Cliente':'Administrador da arena';
+  return `<tr><td>#${esc(event.booking_id)}</td><td>${role}<small>${esc(event.recipient||'Número indisponível')}</small></td><td><span class="badge ${event.status==='accepted'?'paid':event.status==='failed'?'cancelled':''}">${labels[event.status]||'Status desconhecido'}</span></td><td>${new Date(event.updated_at||event.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</td><td>${esc(event.error|| (event.status==='unknown'?'Confira o provedor antes de enviar novamente.':event.status==='accepted'?'A entrega no WhatsApp ainda não foi confirmada.':''))}</td></tr>`;
+ }).join('');
  $('#notifications-empty').hidden=notificationEvents.length>0;
 }
 $('#whatsapp-provider').onchange=async event=>{
@@ -232,8 +269,8 @@ $('#configure-notifications').onclick=()=>{
  const wuzapi=selected==='wuzapi';
  const tokenLabel=wuzapi?'Token administrativo':'Token da instância';
  const tokenName=wuzapi?'admin_token':'api_key';
- openModal('WhatsApp do administrador',`<p>Conexão exclusiva desta arena. Use o servidor ${provider.url} e o ${tokenLabel.toLowerCase()}. Você poderá conectar o WhatsApp pelo QR Code após salvar. <a href="${provider.docs}" target="_blank" rel="noopener noreferrer">Documentação da API ↗</a></p><label class="check-label"><input id="notifications-enabled" name="enabled" type="checkbox" ${notificationConfig.enabled?'checked':''}> Usar ${provider.name} para avisar o administrador sobre novos agendamentos</label><label>URL HTTPS de ${provider.name}<input id="notifications-url" name="base_url" type="url" value="${esc(notificationConfig.base_url||provider.url)}" maxlength="2000" placeholder="${provider.url}" ${selected==='wuzapi'?'readonly':''}></label><label>${tokenLabel}<input id="notifications-api-key" name="${tokenName}" type="password" autocomplete="new-password" maxlength="2000" placeholder="${notificationConfig.token_configured?'Já configurado; deixe vazio para manter':tokenLabel}"></label>${wuzapi?'<label>ID da sessão WUZAPI<input name="session_id" maxlength="200" autocomplete="off" placeholder="Obrigatório se houver mais de uma sessão"></label><p>O token administrativo é usado para localizar a sessão. O painel guarda apenas o token da sessão selecionada.</p>':''}<label>WhatsApp do administrador<input id="notifications-arena-number" name="arena_number" type="tel" maxlength="30" value="${esc(notificationConfig.arena_number||'')}" placeholder="55 11 99999-9999"></label><label>Código do país para números locais<input id="notifications-country-code" name="country_code" inputmode="numeric" maxlength="3" value="${esc(notificationConfig.country_code||'55')}"></label><p>Salvar a configuração não envia uma mensagem. Apenas novos agendamentos geram avisos; uma falha no WhatsApp não cancela a reserva. Ativar este provedor desativa o envio pelo outro. A credencial da sessão fica salva somente nesta arena.</p>`,async data=>{
-  notificationConfig=await api(notificationRoute('config',selected),{...data,enabled:data.enabled==='on',target:'arena'},'PUT');
+ openModal('Confirmações por WhatsApp',`<p>Conexão exclusiva desta arena. Use o servidor ${provider.url} e o ${tokenLabel.toLowerCase()}. Você poderá conectar o WhatsApp pelo QR Code após salvar. <a href="${provider.docs}" target="_blank" rel="noopener noreferrer">Documentação da API ↗</a></p><label class="check-label"><input id="notifications-enabled" name="enabled" type="checkbox" ${notificationConfig.enabled?'checked':''}> Usar ${provider.name} para confirmar novos agendamentos ao cliente e ao administrador</label><label>URL HTTPS de ${provider.name}<input id="notifications-url" name="base_url" type="url" value="${esc(notificationConfig.base_url||provider.url)}" maxlength="2000" placeholder="${provider.url}" ${selected==='wuzapi'?'readonly':''}></label><label>${tokenLabel}<input id="notifications-api-key" name="${tokenName}" type="password" autocomplete="new-password" maxlength="2000" placeholder="${notificationConfig.token_configured?'Já configurado; deixe vazio para manter':tokenLabel}"></label>${wuzapi?'<label>ID da sessão WUZAPI<input name="session_id" maxlength="200" autocomplete="off" placeholder="Obrigatório se houver mais de uma sessão"></label><p>O token administrativo é usado para localizar a sessão. O painel guarda apenas o token da sessão selecionada.</p>':''}<label>WhatsApp do administrador<input id="notifications-arena-number" name="arena_number" type="tel" maxlength="30" value="${esc(notificationConfig.arena_number||'')}" placeholder="55 11 99999-9999"></label><label>Código do país para números locais<input id="notifications-country-code" name="country_code" inputmode="numeric" maxlength="3" value="${esc(notificationConfig.country_code||'55')}"></label><p>Salvar a configuração não envia uma mensagem. Apenas novos agendamentos geram avisos; uma falha no WhatsApp não cancela a reserva. Ativar este provedor desativa o envio pelo outro. A credencial da sessão fica salva somente nesta arena.</p>`,async data=>{
+  notificationConfig=await api(notificationRoute('config',selected),{...data,enabled:data.enabled==='on',target:'both'},'PUT');
   $('#notifications-connection').textContent='Configuração salva. Use Verificar conexão para consultar a sessão do WhatsApp.';
  });
  const requirements=()=>{const enabled=$('#notifications-enabled').checked;$('#notifications-url').required=enabled;$('#notifications-api-key').required=(wuzapi||enabled)&&!notificationConfig.token_configured;$('#notifications-arena-number').required=enabled;$('#notifications-country-code').required=enabled;};

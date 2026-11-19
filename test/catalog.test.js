@@ -6,15 +6,30 @@ import {randomBytes} from 'node:crypto';
 import {createApplication} from '../server-core.js';
 const key=()=>randomBytes(32).toString('hex');
 const future=(days=2)=>{const d=new Date();d.setUTCDate(d.getUTCDate()+days);return d.toISOString().slice(0,10);};
-async function fixture(t){
+async function fixture(t,{checkout=false}={}){
  const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');
- const {server}=createApplication({db,paymentConfig:{ready:false,mode:'test'},receiptReader:async()=>({amount_cents:null})});
+ const preferences=[];
+ const paymentClient={
+  async getPaymentMethods(){
+   return [
+    {id:'visa',payment_type_id:'credit_card',status:'active'},
+    {id:'debvisa',payment_type_id:'debit_card',status:'active'},
+    {id:'pix',payment_type_id:'bank_transfer',status:'active'}
+   ];
+  },
+  async createPreference(body){
+   preferences.push(body);
+   const id=String(preferences.length);
+   return {id,sandbox_init_point:`https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=${id}`};
+  }
+ };
+ const {server}=createApplication({db,paymentConfig:{ready:checkout,mode:'test',baseUrl:'https://arena.example'},paymentClient,receiptReader:async()=>({amount_cents:null})});
  server.listen(0,'127.0.0.1');await once(server,'listening');
  t.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();});let cookie='';
  async function api(route,body,{auth=true,method='POST',headers={}}={}){const r=await fetch(`http://127.0.0.1:${server.address().port}/api/`+route,{method:body===undefined?'GET':method,headers:{'Content-Type':'application/json',...(auth?{Cookie:cookie}:{}),...headers},body:body===undefined?undefined:JSON.stringify(body)});if(auth&&r.headers.get('set-cookie'))cookie=r.headers.get('set-cookie').split(';')[0];return {status:r.status,data:await r.json()};}
  await api('setup',{password:'catalog-admin-password'});
  const court=(await api('courts',{name:'Quadra pública',type:'Areia',price:120})).data.id;
- return {api,db,court,body:(overrides={})=>({court_id:court,date:future(),start:'18:00',end:'19:00',customer:'Cliente catálogo',phone:'11999887766',request_key:key(),...overrides})};
+ return {api,db,court,preferences,body:(overrides={})=>({court_id:court,date:future(),start:'18:00',end:'19:00',customer:'Cliente catálogo',phone:'11999887766',request_key:key(),...overrides})};
 }
 test('catálogo: horários públicos sem dados pessoais, reserva automática, preço do servidor e repetição segura',async t=>{
  const f=await fixture(t),date=future();
@@ -36,6 +51,8 @@ test('catálogo: horários públicos sem dados pessoais, reserva automática, pr
  await f.api('pix/settings',{key:'pix@example.com',receiver:'Arena'},{method:'PUT'});
  const pix=await f.api(`public/bookings/${created.data.token}/pix`,{},{auth:false});assert.equal(pix.status,200);assert.match(pix.data.path,/^\/pix#[a-f0-9]{64}$/);
  assert.equal((await f.api(`public/bookings/${created.data.token}/checkout`,{},{auth:false})).status,409);
+ assert.equal((await f.api(`public/bookings/${created.data.token}/checkout`,{payment_method:'pix'},{auth:false})).status,409);
+ assert.equal(f.preferences.length,0);
 });
 test('catálogo: concorrência, horários inválidos, autenticação das configurações e pausa do agendamento',async t=>{
  const f=await fixture(t);
@@ -58,4 +75,54 @@ test('catálogo: limite de reservas públicas por origem preserva o painel admin
  for(let i=0;i<10;i++)assert.equal((await f.api('public/bookings',f.body({date:future(i+2)}),{auth:false})).status,201);
  assert.equal((await f.api('public/bookings',f.body({date:future(20)}),{auth:false})).status,429);
  assert.equal((await f.api('bookings',f.body({date:future(20)}))).status,201);
+});
+
+test('catálogo: escolhe forma de pagamento no checkout, preserva a escolha e reaproveita o link',async t=>{
+ const f=await fixture(t,{checkout:true});
+ await f.api('pix/settings',{key:'pix@example.com',receiver:'Arena'},{method:'PUT'});
+ const created=await f.api('public/bookings',f.body(),{auth:false});
+ assert.equal(created.status,201);
+ const path='public/bookings/'+created.data.token;
+ const publicRequest={auth:false};
+ const initial=(await f.api(path,undefined,publicRequest)).data;
+ assert.equal(initial.pix_ready,true);
+ assert.equal(initial.checkout_ready,true);
+ assert.equal(initial.checkout_method,null);
+ assert.equal((await f.api(path+'/checkout',{payment_method:'boleto'},publicRequest)).status,400);
+ assert.equal(f.preferences.length,0);
+
+ const first=await f.api(path+'/checkout',{payment_method:'credit_card'},publicRequest);
+ assert.equal(first.status,200);
+ assert.equal(first.data.checkout_method,'credit_card');
+ assert.match(first.data.checkout_url,/^https:\/\/sandbox\.mercadopago\.com\.br\//);
+ const reservation=(await f.api(path,undefined,publicRequest)).data;
+ assert.equal(reservation.checkout_ready,true);
+ assert.equal(reservation.checkout_method,'credit_card');
+ assert.equal(reservation.pix_ready,false);
+ assert.equal(reservation.paid,0);
+ assert.equal((await f.api(path+'/checkout',{payment_method:'credit_card'},publicRequest)).data.checkout_url,first.data.checkout_url);
+ assert.equal((await f.api(path+'/checkout',{},publicRequest)).data.checkout_url,first.data.checkout_url);
+ assert.equal((await f.api(path+'/checkout',{payment_method:'debit_card'},publicRequest)).status,409);
+ assert.equal((await f.api(`bookings/${created.data.reservation.id}/checkout`,{payment_method:'pix'})).status,409);
+ assert.equal((await f.api(path+'/pix',{},publicRequest)).status,409);
+ assert.equal(f.preferences.length,1);
+});
+
+test('catálogo: checkout anterior sem uma forma selecionada continua disponível',async t=>{
+ const f=await fixture(t,{checkout:true});
+ const created=await f.api('public/bookings',f.body(),{auth:false});
+ assert.equal(created.status,201);
+ const path='public/bookings/'+created.data.token;
+ const publicRequest={auth:false};
+ const legacy=await f.api(path+'/checkout',{},publicRequest);
+ assert.equal(legacy.status,200);
+ assert.equal(legacy.data.checkout_method,null);
+ const reservation=(await f.api(path,undefined,publicRequest)).data;
+ assert.equal(reservation.checkout_ready,true);
+ assert.equal(reservation.checkout_method,null);
+ const reused=await f.api(path+'/checkout',{payment_method:'pix'},publicRequest);
+ assert.equal(reused.status,200);
+ assert.equal(reused.data.checkout_method,null);
+ assert.equal(reused.data.checkout_url,legacy.data.checkout_url);
+ assert.equal(f.preferences.length,1);
 });

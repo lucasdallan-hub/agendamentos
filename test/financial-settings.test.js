@@ -50,7 +50,7 @@ test('financeiro: credenciais próprias, checkout, webhook, persistência e isol
  assert.equal((await webhook('webhook-one')).status,200);
  assert.equal((await one.api('bookings')).data[0].paid,1);
  const copied=await one.api('bookings',{court_id:court.data.id,customer:'Histórico',phone:'11999999999',date:'2026-12-02',start:'18:00',end:'19:00'});
- one.db.prepare("INSERT INTO payment_orders VALUES('copied-order',?,'old-pref','https://www.mercadopago.com.br/checkout','pending','2026-12-03','2026-12-02')").run(copied.data.id);
+ one.db.prepare("INSERT INTO payment_orders(id,booking_id,preference_id,checkout_url,state,expires_at,created_at) VALUES('copied-order',?,'old-pref','https://www.mercadopago.com.br/checkout','pending','2026-12-03','2026-12-02')").run(copied.data.id);
  one.db.prepare("INSERT INTO archived_payment_orders VALUES('copied-order')").run();
  const requestsBefore=one.requests.length;
  assert.equal((await one.api(`bookings/${copied.data.id}/sync-payment`,{})).status,409);
