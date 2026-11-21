@@ -30,7 +30,9 @@ function validateCpf(value){
  return cpf;
 }
 
-export function createMisticPay(db,{fetchImpl=fetch,encryptionKey,managedEncryptionKey,scope='main',scheduleConfirmation}={}){
+export function createMisticPay(db,{
+ fetchImpl=fetch,encryptionKey,managedEncryptionKey,scope='main',scheduleConfirmation,enqueuePaidClient,dispatchPaidClient
+}={}){
  db.exec(`CREATE TABLE IF NOT EXISTS misticpay_orders(
   booking_id INTEGER PRIMARY KEY REFERENCES bookings(id),id TEXT NOT NULL UNIQUE,provider_id TEXT UNIQUE,
   amount_cents INTEGER NOT NULL,state TEXT NOT NULL,webhook_token TEXT UNIQUE,qr_code TEXT,copy_paste TEXT,
@@ -100,7 +102,8 @@ export function createMisticPay(db,{fetchImpl=fetch,encryptionKey,managedEncrypt
   const payment=await lookupOrder(connection,order);
   if(!payment)fail('A MisticPay ainda não encontrou esta cobrança. Confira o painel do provedor.',409);
   if(payment.cents!==order.amount_cents||(order.provider_id&&payment.id!==order.provider_id&&payment.id!==order.id))fail('A transação consultada não corresponde à cobrança da reserva.',409);
-  return transaction(db,()=>{
+  let paidNow=false;
+  const result=transaction(db,()=>{
    const booking=getBooking(id);
    const current=getOrder(id);
    if(!current||current.id!==order.id||!booking||booking.total!==payment.cents||!connectionSettings.isCurrent(connection)){
@@ -125,8 +128,12 @@ export function createMisticPay(db,{fetchImpl=fetch,encryptionKey,managedEncrypt
     provider_state=?,provider_updated_at=COALESCE(?,provider_updated_at),
     last_webhook_digest=CASE WHEN provider_state=? THEN last_webhook_digest ELSE NULL END WHERE id=?`)
     .run(state,payment.id,payment.state,payment.updatedAt??null,payment.state,order.id);
+   paidNow=state==='approved'&&!booking.paid;
+   if(paidNow)enqueuePaidClient?.(id);
    return details(id);
   });
+  if(paidNow)await dispatchPaidClient?.(id);
+  return result;
  }
  function sync(id,fromWebhook=false){
   const previous=activeChecks.get(id);

@@ -73,7 +73,7 @@ export function verifyWebhook({url,headers,secret}) {
  return hashes.some(hash=>/^[a-fA-F0-9]{64}$/.test(hash||'')&&timingSafeEqual(digest,Buffer.from(hash,'hex')));
 }
 
-export function createPayments(db,config,client) {
+export function createPayments(db,config,client,{enqueuePaidClient,dispatchPaidClient}={}) {
  const queues=new Map();
  db.exec('CREATE TABLE IF NOT EXISTS archived_payment_orders(order_id TEXT PRIMARY KEY)');
  const archived=id=>!!db.prepare('SELECT order_id FROM archived_payment_orders WHERE order_id=?').get(id);
@@ -154,7 +154,8 @@ export function createPayments(db,config,client) {
   if(String(payment.id)!==String(paymentId)||!account.id||String(payment.collector_id)!==String(account.id)||payment.currency_id!=='BRL'||amount!==b.total||payment.live_mode!==(config.mode==='production')||!Number.isSafeInteger(refunded)||refunded<0||refunded>amount)throw failure('O pagamento recebido não corresponde à conta, ao valor ou ao ambiente desta reserva.',409);
   const statuses=['approved','pending','in_process','authorized','rejected','cancelled','refunded','charged_back','in_mediation'];
   if(!statuses.includes(payment.status))throw failure('Status de pagamento não reconhecido.',409);
-  return transaction(db,()=>{
+  const {state,shouldNotify}=transaction(db,()=>{
+   const previousState=db.prepare('SELECT state FROM payment_orders WHERE id=?').get(order.id).state;
    const previous=db.prepare('SELECT order_id FROM provider_payments WHERE id=?').get(String(payment.id));
    if(previous&&previous.order_id!==order.id)throw failure('Pagamento já associado a outra reserva.',409);
    db.prepare('INSERT INTO provider_payments(id,order_id,status,amount,refunded,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,refunded=excluded.refunded,updated_at=excluded.updated_at').run(String(payment.id),order.id,payment.status,amount,refunded,new Date().toISOString());
@@ -167,8 +168,12 @@ export function createPayments(db,config,client) {
    db.prepare('UPDATE payment_orders SET state=? WHERE id=?').run(state,order.id);
    const paid=approved.length>0&&b.status==='confirmed';
    db.prepare("UPDATE bookings SET paid=?,method=?,paid_at=CASE WHEN ?=1 THEN COALESCE(paid_at,?) ELSE NULL END WHERE id=?").run(paid?1:0,'Mercado Pago',paid?1:0,new Date().toISOString(),b.id);
-   return {ok:true,status:state};
+   const shouldNotify=paid&&state==='approved'&&previousState!=='approved';
+   if(shouldNotify)enqueuePaidClient?.(b.id);
+   return {state,shouldNotify};
   });
+  if(shouldNotify)await dispatchPaidClient?.(b.id);
+  return {ok:true,status:state};
  }
  function reconcile(paymentId,expectedReference){
   const key=String(paymentId);

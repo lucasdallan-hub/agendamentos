@@ -42,12 +42,19 @@ test('Evolution Go: configuração autenticada, validação, segredo preservado 
  await f.restart();const persisted=await f.api('notifications/config');assert.equal(persisted.data.ready,true);assert.equal(persisted.data.token_configured,true);
 });
 
-test('Evolution Go: novo agendamento administrativo avisa cliente e administrador com protocolo e valor corretos',async t=>{
+test('Evolution Go: agendamento administrativo avisa a arena na criação e o cliente após o pagamento',async t=>{
  const f=await arena(t);
  assert.equal((await f.api('bookings',f.booking())).status,201);assert.equal(f.requests.length,0,'disabled by default');
  assert.equal((await f.api('notifications/config',configuration(),{method:'PUT'})).status,200);
  const date=dateAfter(3);
  const booking=await f.api('bookings',f.booking({date}));assert.equal(booking.status,201);
+ assert.deepEqual(f.requests.map(({body})=>body.number),['5521988887777']);
+ assert.deepEqual((await f.api('notifications/events')).data.map(({role})=>role),['arena']);
+ assert.equal((await f.api(`bookings/${booking.data.id}/payment`,{method:'Outro'})).status,400);
+ assert.equal(f.requests.length,1);
+ const paid=await f.api(`bookings/${booking.data.id}/payment`,{method:'Pix'});
+ assert.equal(paid.status,200);
+ assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(booking.data.id).paid,1);
  const recipients=Object.fromEntries(f.requests.map(request=>[request.body.number,request]));
  assert.deepEqual(f.requests.map(request=>request.body.number).sort(),['5511999998888','5521988887777']);
  for(const request of f.requests){
@@ -61,29 +68,34 @@ test('Evolution Go: novo agendamento administrativo avisa cliente e administrado
  assert.match(recipients['5521988887777'].body.text,/^🏐 \*Novo agendamento\*/u);
  assert.match(recipients['5521988887777'].body.text,/👤 \*Cliente:\* Cliente Teste/u);
  assert.match(recipients['5521988887777'].body.text,/\n\n💰 \*Valor da reserva:\*/u);
- assert.equal(recipients['5511999998888'].body.text,`✅ *Reserva confirmada!*
-🏐 Arena Vôlei
-
-Olá, Cliente Teste! 👋
-
-🎟️ *Reserva #${booking.data.id}*
-📍 *Quadra:* Quadra WhatsApp
-📅 *Data:* ${date.split('-').reverse().join('/')}
-🕒 *Horário: 18:00 às 19:00*
-
-💰 *Valor da reserva: R$\u00a0120,00*`);
+ const customerText=recipients['5511999998888'].body.text;
+ assert.match(customerText,/^✅ \*Reserva confirmada!\*\n🏐 Arena Vôlei/u);
+ assert.match(customerText,/Olá, Cliente Teste!/u);
+ assert.ok(customerText.includes(`🎟️ *Reserva #${booking.data.id}*`));
+ assert.ok(customerText.includes(`📅 *Data:* ${date.split('-').reverse().join('/')}`));
+ assert.match(customerText,/🕒 \*Horário: 18:00 às 19:00\*/u);
+ assert.match(customerText,/💰 \*Valor da reserva: R\$\s*120,00\*/u);
  const events=await f.api('notifications/events');assert.equal(events.status,200);
  assert.deepEqual(events.data.map(({role})=>role).sort(),['arena','client']);
  assert.ok(events.data.every(event=>event.status==='accepted'&&event.booking_id===booking.data.id));
  assert.equal(JSON.stringify(events.data).includes('fake-instance-token'),false);
+ assert.equal((await f.api(`bookings/${booking.data.id}/payment`,{method:'Pix'})).status,409);
  assert.equal((await f.api('bookings',f.booking({date}))).status,409);assert.equal(f.requests.length,2,'booking conflict must not send notification');
 });
 
-test('Evolution Go: reserva pública e repetição idempotente não duplicam mensagens',async t=>{
+test('Evolution Go: reserva pública e repetição aguardam pagamento para avisar o cliente uma vez',async t=>{
  const f=await arena(t);await f.api('notifications/config',configuration(),{method:'PUT'});
- const body={...f.booking(),request_key:randomBytes(32).toString('hex')};
- const first=await f.api('public/bookings',body,{auth:false});assert.equal(first.status,201);assert.equal(f.requests.length,2);
- const replay=await f.api('public/bookings',body,{auth:false});assert.equal(replay.status,201);assert.equal(replay.data.token,first.data.token);assert.equal(f.requests.length,2);
+ const body={...f.booking(),paid:1,request_key:randomBytes(32).toString('hex')};
+ const first=await f.api('public/bookings',body,{auth:false});assert.equal(first.status,201);
+ assert.equal(first.data.reservation.paid,0);
+ const replay=await f.api('public/bookings',body,{auth:false});assert.equal(replay.status,201);assert.equal(replay.data.token,first.data.token);
+ assert.deepEqual(f.requests.map(({body})=>body.number),['5521988887777']);
+ const id=first.data.reservation.id;
+ assert.equal((await f.api(`bookings/${id}/payment`,{method:'Pix'},{auth:false})).status,401);
+ assert.equal((await f.api(`bookings/${id}/payment`,{method:'Pix'})).status,200);
+ const paidReplay=await f.api('public/bookings',body,{auth:false});assert.equal(paidReplay.status,201);
+ assert.equal(paidReplay.data.reservation.paid,1);
+ assert.deepEqual(f.requests.map(({body})=>body.number),['5521988887777','5511999998888']);
  const events=(await f.api('notifications/events')).data;
  assert.deepEqual(events.map(({role})=>role).sort(),['arena','client']);
  assert.ok(events.every(event=>event.booking_id===first.data.reservation.id));
@@ -148,7 +160,7 @@ test('WhatsApp: avisa o administrador no início e os dois destinatários perto 
  assert.equal(f.requests.length,3);
 });
 
-test('WhatsApp: ignora reservas canceladas e encerradas e não recupera alertas de início após o prazo',async t=>{
+test('WhatsApp: preserva avisos da arena e só lembra o cliente depois do pagamento',async t=>{
  t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-25T23:30:00Z')});
  const f=await arena(t);
  const date='2026-11-25';
@@ -183,23 +195,36 @@ test('WhatsApp: ignora reservas canceladas e encerradas e não recupera alertas 
  t.mock.timers.setTime(Date.parse('2026-11-26T00:53:00Z'));
  assert.equal((await f.api('notifications/config',configuration(),{method:'PUT'})).status,200);
  await f.processBookingAlerts();
- assert.deepEqual(f.requests.map(({body})=>body.number).sort(),['5511999998888','5521988887777']);
- const administrator=f.requests.find(({body})=>body.number==='5521988887777');
+ assert.deepEqual(f.requests.map(({body})=>body.number),['5521988887777']);
+ const [administrator]=f.requests;
  assert.match(administrator.body.text,/\b7 minutos\b/iu);
+ assert.deepEqual((await f.api('notifications/events')).data.map(({role})=>role),['arena_reminder']);
+
+ assert.equal((await f.api(`bookings/${upcoming.data.id}/payment`,{method:'Dinheiro'})).status,200);
+ assert.equal(f.requests.length,2);
+ assert.match(f.requests[1].body.text,/Reserva confirmada/u);
+ await f.processBookingAlerts();
+ assert.deepEqual(f.requests.map(({body})=>body.number),['5521988887777','5511999998888','5511999998888']);
+ assert.match(f.requests[2].body.text,/Seu horário está acabando/u);
+ await f.processBookingAlerts();
+ assert.equal(f.requests.length,3);
  const events=(await f.api('notifications/events')).data;
  assert.ok(events.every(({booking_id,status})=>booking_id===upcoming.data.id&&status==='accepted'));
- assert.deepEqual(events.map(({role})=>role).sort(),['arena_reminder','reminder']);
+ assert.deepEqual(events.map(({role})=>role).sort(),['arena_reminder','client','reminder']);
 });
 
 test('Evolution Go: número inválido do cliente não impede o aviso ao administrador',async t=>{
  const f=await arena(t);await f.api('notifications/config',configuration(),{method:'PUT'});
  assert.equal((await f.api('bookings',f.booking())).status,201);
- assert.deepEqual(f.requests.map(request=>request.body.number).sort(),['5511999998888','5521988887777']);
+ assert.deepEqual(f.requests.map(request=>request.body.number),['5521988887777']);
  assert.equal((await f.api('notifications/config')).data.target,'both');
  await f.api('notifications/config',configuration({arena_number:'(31) 97777-6666'}),{method:'PUT'});
  const invalid=await f.api('bookings',f.booking({date:dateAfter(3),phone:'1'}));
  assert.equal(invalid.status,201);
- assert.equal(f.requests.length,3);assert.equal(f.requests.at(-1).body.number,'5531977776666');
+ assert.equal(f.requests.length,2);assert.equal(f.requests.at(-1).body.number,'5531977776666');
+ assert.deepEqual((await f.api('notifications/events')).data.filter(event=>event.booking_id===invalid.data.id).map(({role})=>role),['arena']);
+ assert.equal((await f.api(`bookings/${invalid.data.id}/payment`,{method:'Pix'})).status,200);
+ assert.equal(f.requests.length,2);
  const invalidEvents=(await f.api('notifications/events')).data.filter(event=>event.booking_id===invalid.data.id);
  const byRole=Object.fromEntries(invalidEvents.map(event=>[event.role,event]));
  assert.equal(byRole.arena.status,'accepted');assert.equal(byRole.client.status,'failed');assert.equal(byRole.client.recipient,'');
@@ -221,9 +246,9 @@ test('Evolution Go: falha da API ou resposta incerta preserva a reserva e não r
   const f=await arena(t,{send});await f.api('notifications/config',configuration(),{method:'PUT'});
   const body={...f.booking(),request_key:randomBytes(32).toString('hex')};
   const created=await f.api('public/bookings',body,{auth:false});assert.equal(created.status,201,type);assert.equal((await f.api('bookings')).data.length,1,type);
-  const events=await f.api('notifications/events');assert.equal(events.data.length,2,type);assert.ok(events.data.every(event=>event.status===expected),type);
+  const events=await f.api('notifications/events');assert.equal(events.data.length,1,type);assert.equal(events.data[0].role,'arena');assert.equal(events.data[0].status,expected,type);
   assert.equal(JSON.stringify(events.data).includes('raw-provider-secret'),false);assert.equal(JSON.stringify(events.data).includes('fake-instance-token'),false);
-  assert.equal((await f.api('public/bookings',body,{auth:false})).status,201);assert.equal(f.requests.length,2,type);
+  assert.equal((await f.api('public/bookings',body,{auth:false})).status,201);assert.equal(f.requests.length,1,type);
  }
 });
 
@@ -235,7 +260,10 @@ test('Evolution Go: falha no envio ao cliente não afeta a notificação do admi
  }});
  await f.api('notifications/config',configuration(),{method:'PUT'});
  const body={...f.booking(),request_key:randomBytes(32).toString('hex')};
- assert.equal((await f.api('public/bookings',body,{auth:false})).status,201);
+ const booking=await f.api('public/bookings',body,{auth:false});
+ assert.equal(booking.status,201);
+ assert.deepEqual(f.requests.map(({body})=>body.number),['5521988887777']);
+ assert.equal((await f.api(`bookings/${booking.data.reservation.id}/payment`,{method:'Pix'})).status,200);
  const events=(await f.api('notifications/events')).data;
  assert.deepEqual(Object.fromEntries(events.map(({role,status})=>[role,status])),{arena:'accepted',client:'unknown'});
  assert.equal((await f.api('public/bookings',body,{auth:false})).status,201);
@@ -245,14 +273,18 @@ test('Evolution Go: falha no envio ao cliente não afeta a notificação do admi
 test('Evolution Go: filhos não herdam conexão nem disparam notificações do histórico copiado',async t=>{
  const mother=await arena(t),child=await arena(t,{seed:false});
  await mother.api('notifications/config',configuration({api_key:'mother-instance-token'}),{method:'PUT'});
- await mother.api('bookings',mother.booking());assert.equal(mother.requests.length,2);
+ const original=await mother.api('bookings',mother.booking());assert.equal(original.status,201);assert.equal(mother.requests.length,1);
+ assert.equal((await mother.api(`bookings/${original.data.id}/payment`,{method:'Pix'})).status,200);
  const snapshot=captureSystem(mother.db);assert.equal(JSON.stringify(snapshot).includes('mother-instance-token'),false);
  installSystem(child.db,{slug:'filho',name:'Arena Filha',password:'child-notification-password',snapshot});
  assert.equal((await child.api('login',{password:'child-notification-password'})).status,200);
  const config=await child.api('notifications/config');assert.equal(config.data.enabled,false);assert.equal(config.data.token_configured,false);assert.equal((await child.api('notifications/events')).data.length,0);assert.equal(child.requests.length,0);
  await child.api('notifications/config',configuration({api_key:'child-instance-token',arena_number:'(31) 97777-6666'}),{method:'PUT'});
  const court=(await child.api('courts')).data[0].id;
- assert.equal((await child.api('bookings',mother.booking({court_id:court,date:dateAfter(3)}))).status,201);
+ const created=await child.api('bookings',mother.booking({court_id:court,date:dateAfter(3)}));
+ assert.equal(created.status,201);
+ assert.deepEqual(child.requests.map(({body})=>body.number),['5531977776666']);
+ assert.equal((await child.api(`bookings/${created.data.id}/payment`,{method:'Pix'})).status,200);
  assert.deepEqual(child.requests.map(request=>request.body.number).sort(),['5511999998888','5531977776666']);
  assert.ok(child.requests.every(request=>request.headers.get('apikey')==='child-instance-token'));
  assert.deepEqual(mother.requests.map(request=>request.body.number).sort(),['5511999998888','5521988887777']);
@@ -295,19 +327,23 @@ test('Evolution Go: falha ou formato inesperado ao verificar conexão retorna er
 });
 
 
-test('Evolution Go: migra a fila antiga, retoma só o envio pendente e mantém duas mensagens para novas reservas',async t=>{
+test('Evolution Go: fila antiga retoma o aviso pendente da arena e espera pagamento para enviar ao cliente',async t=>{
  const f=await arena(t),rows=[];
  for(let i=0;i<6;i++)rows.push((await f.api('bookings',f.booking({date:dateAfter(i+2)}))).data.id);
+ const legacyBody={...f.booking({date:dateAfter(8)}),request_key:randomBytes(32).toString('hex')};
+ const legacy=await f.api('public/bookings',legacyBody,{auth:false});assert.equal(legacy.status,201);
+ rows.push(legacy.data.reservation.id);
  assert.equal(f.requests.length,0);
- assert.equal((await f.api(`bookings/${rows.at(-1)}/cancel`,{})).status,200);
+ assert.equal((await f.api(`bookings/${rows[5]}/cancel`,{})).status,200);
  await f.api('notifications/config',configuration(),{method:'PUT'});
  // Reproduce the old one-message-per-booking constraint before restarting.
  f.db.exec(`DROP TABLE booking_notifications;
  CREATE TABLE booking_notifications(id TEXT PRIMARY KEY,booking_id INTEGER NOT NULL UNIQUE REFERENCES bookings(id),recipient TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'arena',status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',provider TEXT NOT NULL DEFAULT 'evolution');`);
- const statuses=['pending','unknown','failed','accepted','sending','pending'];
+ const statuses=['pending','unknown','failed','accepted','sending','pending','pending'];
  const ids=statuses.map(()=>randomBytes(16).toString('hex'));
  const timestamp=new Date(Date.now()-60000).toISOString();
  for(let i=0;i<statuses.length;i++)f.db.prepare('INSERT INTO booking_notifications(id,booking_id,recipient,status,created_at,updated_at) VALUES(?,?,?,?,?,?)').run(ids[i],rows[i],'5521988887777',statuses[i],timestamp,timestamp);
+ f.db.prepare("UPDATE booking_notifications SET role='client',recipient='5511999998888' WHERE id=?").run(ids[6]);
  f.db.prepare('UPDATE booking_notifications SET provider=? WHERE id=?').run('wuzapi',ids[3]);
  f.db.prepare('UPDATE booking_notifications SET error=? WHERE id=?').run('Falha anterior.',ids[2]);
  await f.restart();assert.equal(f.requests.length,0,'restarting alone does not send an old uncertain message');
@@ -315,24 +351,28 @@ test('Evolution Go: migra a fila antiga, retoma só o envio pendente e mantém d
  const recovered=await f.api('notifications/events');assert.equal(recovered.status,200);assert.equal(f.requests.length,1);
  assert.equal(f.requests[0].body.id,ids[0]);assert.equal(f.requests[0].body.number,'5521988887777');
  const byId=Object.fromEntries(recovered.data.map(event=>[event.id,event]));
- assert.equal(recovered.data.length,ids.length);
- assert.ok(recovered.data.every(event=>event.role==='arena'));
+ assert.equal(recovered.data.filter(event=>event.role==='arena').length,6);
  assert.equal(byId[ids[0]].status,'accepted');assert.equal(byId[ids[1]].status,'unknown');assert.equal(byId[ids[2]].status,'failed');assert.equal(byId[ids[3]].status,'accepted');assert.equal(byId[ids[4]].status,'unknown');
  assert.equal(byId[ids[2]].error,'Falha anterior.');
  assert.equal(f.db.prepare('SELECT provider FROM booking_notifications WHERE id=?').get(ids[3]).provider,'wuzapi');
  assert.equal(byId[ids[5]].status,'failed','cancelled reservation must not send a pending notification');
  await f.api('notifications/events');assert.equal(f.requests.length,1,'refresh does not resend accepted, unknown, failed or interrupted sends');
+ const replay=await f.api('public/bookings',legacyBody,{auth:false});assert.equal(replay.status,201);
+ assert.equal(replay.data.token,legacy.data.token);
+ assert.equal(f.requests.length,1,'replay cannot dispatch a legacy customer row before payment');
+ assert.equal((await f.api(`bookings/${legacy.data.reservation.id}/payment`,{method:'Pix'})).status,200);
+ assert.deepEqual(f.requests.map(({body})=>body.number),['5521988887777','5511999998888']);
  const created=await f.api('bookings',f.booking({date:dateAfter(10)}));assert.equal(created.status,201);
  const newEvents=(await f.api('notifications/events')).data.filter(event=>event.booking_id===created.data.id);
- assert.deepEqual(newEvents.map(event=>event.role).sort(),['arena','client']);
+ assert.deepEqual(newEvents.map(event=>event.role),['arena']);
  assert.equal(f.requests.length,3);
 });
 
 test('Evolution Go: repetição simultânea de uma reserva não disputa o envio já iniciado',{timeout:5000},async t=>{
- let release,notifyStarted,attempts=0;
+ let release,notifyStarted;
  const held=new Promise(resolve=>{release=resolve;});const started=new Promise(resolve=>{notifyStarted=resolve;});
  const f=await arena(t,{send:async()=>{
-  if(++attempts===2)notifyStarted();
+  notifyStarted();
   await held;
   return Response.json({message:'success',data:{Info:{ID:'fake-concurrent-id'}}});
  }});
@@ -342,14 +382,15 @@ test('Evolution Go: repetição simultânea de uma reserva não disputa o envio 
  try{
   await started;
   replay=await f.api('public/bookings',body,{auth:false});assert.equal(replay.status,201);
-  assert.equal(f.requests.length,2);
-  assert.deepEqual(f.db.prepare('SELECT status FROM booking_notifications').all().map(({status})=>status),['sending','sending']);
+  assert.equal(f.requests.length,1);
+  const outbox=f.db.prepare('SELECT role,status FROM booking_notifications').all();
+  assert.deepEqual(outbox.map(row=>({...row})),[{role:'arena',status:'sending'}]);
  }finally{release();}
  const initial=await first;assert.equal(initial.status,201);assert.equal(initial.data.token,replay.data.token);
  const events=await f.api('notifications/events');
- assert.deepEqual(events.data.map(({role})=>role).sort(),['arena','client']);
+ assert.deepEqual(events.data.map(({role})=>role),['arena']);
  assert.ok(events.data.every(event=>event.status==='accepted'));
- assert.equal(f.requests.length,2);
+ assert.equal(f.requests.length,1);
 });
 
 test('Evolution Go: atualiza endereço Swagger legado ao reiniciar e preserva credenciais e destinatário',async t=>{
@@ -389,6 +430,8 @@ test('WUZAPI: mantém uma sessão separada, pareia por QR e assume os novos envi
  assert.deepEqual(f.requests[1].body,{Immediate:true});
  const booking=await f.api('bookings',f.booking());
  assert.equal(booking.status,201);
+ assert.deepEqual(f.requests.slice(3).map(({body})=>body.Phone),['5521988887777']);
+ assert.equal((await f.api(`bookings/${booking.data.id}/payment`,{method:'Pix'})).status,200);
  assert.deepEqual(f.requests.map(r=>new URL(r.url).pathname),['/session/status','/session/connect','/session/qr','/chat/send/text','/chat/send/text']);
  assert.ok(f.requests.every(r=>r.headers.get('token')==='fake-wuzapi-token'&&!r.headers.has('apikey')));
  const messages=Object.fromEntries(f.requests.slice(3).map(({body})=>[body.Phone,body]));

@@ -32,7 +32,7 @@ function decodeUpload(body){
  return {buffer,mime,filename:body.filename.trim()};
 }
 
-export function createPix(db){
+export function createPix(db,{enqueuePaidClient,dispatchPaidClient}={}){
  db.exec(`CREATE TABLE IF NOT EXISTS pix_settings(id INTEGER PRIMARY KEY CHECK(id=1),key TEXT NOT NULL,receiver TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS pix_links(booking_id INTEGER PRIMARY KEY REFERENCES bookings(id),token TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,pix_key TEXT NOT NULL,receiver TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS pix_receipts(id INTEGER PRIMARY KEY,booking_id INTEGER NOT NULL REFERENCES bookings(id),filename TEXT NOT NULL,mime_type TEXT NOT NULL,content BLOB NOT NULL,file_hash TEXT NOT NULL UNIQUE,amount_cents INTEGER,match_status TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL,review_note TEXT NOT NULL DEFAULT '',reviewed_at TEXT);`);
@@ -81,22 +81,29 @@ export function createPix(db){
  }
  function list(id){booking(id);return db.prepare(`SELECT ${summaryColumns} FROM pix_receipts WHERE booking_id=? ORDER BY id DESC`).all(id);}
  function file(id){const receipt=db.prepare('SELECT id,mime_type,content FROM pix_receipts WHERE id=?').get(id);if(!receipt)fail('Comprovante não encontrado.',404);return receipt;}
- function review(id,body){
-  return transaction(db,()=>{
+ async function review(id,body){
+  const {result,paidBookingId}=transaction(db,()=>{
    const receipt=db.prepare('SELECT booking_id,status FROM pix_receipts WHERE id=?').get(id);if(!receipt)fail('Comprovante não encontrado.',404);
    if(receipt.status!=='pending')fail('Este comprovante já foi analisado.',409);
    if(!['approve','reject'].includes(body.decision))fail('Escolha aprovar ou rejeitar o comprovante.');
    const b=booking(receipt.booking_id);available(b);
-   if(body.decision==='approve'){
+   const approved=body.decision==='approve';
+   if(approved){
     if(!Number.isSafeInteger(body.confirmed_amount_cents)||body.confirmed_amount_cents!==b.total)fail('Informe o valor recebido; ele deve corresponder ao total da reserva.',409);
     if(body.confirmed_received!==true)fail('Confirme que conferiu o recebimento na conta antes de aprovar.');
    }
    const note=typeof body.note==='string'?body.note.trim().slice(0,1000):'';
    const reviewedAt=new Date().toISOString();
-   db.prepare('UPDATE pix_receipts SET status=?,review_note=?,reviewed_at=? WHERE id=?').run(body.decision==='approve'?'approved':'rejected',note,reviewedAt,id);
-   if(body.decision==='approve')db.prepare("UPDATE bookings SET paid=1,method='Pix',paid_at=? WHERE id=?").run(reviewedAt,b.id);
-   return db.prepare(`SELECT ${summaryColumns} FROM pix_receipts WHERE id=?`).get(id);
+   db.prepare('UPDATE pix_receipts SET status=?,review_note=?,reviewed_at=? WHERE id=?').run(approved?'approved':'rejected',note,reviewedAt,id);
+   if(approved){
+    db.prepare("UPDATE bookings SET paid=1,method='Pix',paid_at=? WHERE id=?").run(reviewedAt,b.id);
+    enqueuePaidClient?.(b.id);
+   }
+   const result=db.prepare(`SELECT ${summaryColumns} FROM pix_receipts WHERE id=?`).get(id);
+   return {result,paidBookingId:approved?b.id:null};
   });
+  if(paidBookingId!==null)await dispatchPaidClient?.(paidBookingId);
+  return result;
  }
  return {settings,saveSettings,createLink,publicPayment,upload,list,file,review};
 }

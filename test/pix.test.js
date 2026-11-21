@@ -4,6 +4,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
 import {once} from 'node:events';
 import {createApp} from '../server.js';
+import {createPix} from '../pix.js';
 
 const PNG=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/F6cAAAAASUVORK5CYII=','base64');
 const file=(suffix='')=>({filename:'comprovante.png',content_base64:Buffer.concat([PNG,Buffer.from(suffix)]).toString('base64')});
@@ -57,6 +58,37 @@ test('Pix: configurações administrativas, link privado e dados públicos míni
  assert.ok(!JSON.stringify(publicData.data).includes('NOTA PRIVADA'));
  assert.equal((await f.request('/api/pix/payments/'+'0'.repeat(64),undefined,{auth:false})).status,404);
  assert.equal((await f.request(`/api/bookings/${f.bookingId}/pix-link`,{},{auth:false})).status,401);
+});
+
+test('Pix: avisa somente depois de confirmar o recebimento e persistir a aprovação',async t=>{
+ const f=await fixture(t);
+ await f.settings();
+ const {token}=await f.link(f.bookingId);
+ const notifications=[];
+ const booking=f.db.prepare('SELECT paid FROM bookings WHERE id=?');
+ const pix=createPix(f.db,{
+  enqueuePaidClient(id){
+   assert.equal(f.db.isTransaction,true);
+   assert.equal(booking.get(id).paid,1);
+   notifications.push(['enqueue',id]);
+  },
+  async dispatchPaidClient(id){
+   assert.equal(f.db.isTransaction,false);
+   assert.equal(pix.list(id)[0].status,'approved');
+   await new Promise(resolve=>setImmediate(resolve));
+   notifications.push(['dispatch',id]);
+  }
+ });
+ const first=pix.upload(token,file('recusado'));
+ await assert.rejects(pix.review(first.id,{decision:'approve',confirmed_received:false,confirmed_amount_cents:18000}),{status:400});
+ assert.equal((await pix.review(first.id,{decision:'reject'})).status,'rejected');
+ assert.equal(booking.get(f.bookingId).paid,0);
+ assert.deepEqual(notifications,[]);
+
+ const second=pix.upload(token,file('aprovado'));
+ const reviewed=await pix.review(second.id,{decision:'approve',confirmed_received:true,confirmed_amount_cents:18000,note:'Crédito conferido'});
+ assert.deepEqual({...reviewed},{...second,status:'approved',review_note:'Crédito conferido'});
+ assert.deepEqual(notifications,[['enqueue',f.bookingId],['dispatch',f.bookingId]]);
 });
 
 test('Pix: guarda comprovante pendente e só aprova após conferência bancária pelo admin',async t=>{

@@ -23,6 +23,7 @@ const basicAuth=({client_id,client_secret})=>'Basic '+Buffer.from(client_id+':'+
 async function fixture(t,{key=encryptionKey,managedKey='',scheduleMisticpayConfirmation}={}){
  const directory=await mkdtemp(join(tmpdir(),'arena-misticpay-'));
  const provider={calls:[],creates:[],checks:[],payments:new Map(),allowedCredentials:new Set([basicAuth(credentials)]),uncertain:false};
+ const whatsapp=[];
  const misticpayFetch=async(url,options)=>{
   assert.match(url,/^https:\/\/api\.misticpay\.com\/api\/transactions\/(create|check)$/);
   assert.equal(options.method,'POST');
@@ -58,10 +59,17 @@ async function fixture(t,{key=encryptionKey,managedKey='',scheduleMisticpayConfi
   return provider.missing?provider.missing(body.transactionId):Response.json({code:'TRANSACTION_NOT_FOUND'},{status:404});
  };
  let server,db,base,cookie,retryMisticpayConfirmations;
+ const notificationFetch=async(url,options)=>{
+  const body=JSON.parse(options.body);
+  const state=db.prepare(`SELECT n.role,b.paid,m.state FROM booking_notifications n
+   JOIN bookings b ON b.id=n.booking_id LEFT JOIN misticpay_orders m ON m.booking_id=b.id WHERE n.id=?`).get(body.id);
+  whatsapp.push({url,body,state,inTransaction:db.isTransaction});
+  return Response.json({message:'success'});
+ };
  async function start(primary,managed){
   ({server,db,retryMisticpayConfirmations}=createApp({
    dataDir:directory,misticpayEncryptionKey:primary,misticpayManagedEncryptionKey:managed,
-   paymentConfig:{ready:false,mode:'test'},misticpayFetch,scheduleMisticpayConfirmation
+   paymentConfig:{ready:false,mode:'test'},misticpayFetch,scheduleMisticpayConfirmation,notificationFetch
   }));
   server.listen(0,'127.0.0.1');
   await once(server,'listening');
@@ -101,6 +109,12 @@ async function fixture(t,{key=encryptionKey,managedKey='',scheduleMisticpayConfi
  const verify=(transaction_id=sampleId,auth=true)=>api('/api/misticpay/config/verify',{transaction_id},{auth});
  const config=()=>api('/api/misticpay/config');
  const allowVerification=()=>db.prepare('UPDATE misticpay_connection SET last_check_started_at=0 WHERE id=1').run();
+ async function enableWhatsApp(){
+  const result=await api('/api/notifications/config',{
+   enabled:true,base_url:'https://evolution.example.com',api_key:'notification-test-token',arena_number:'(21) 98888-7777'
+  },{method:'PUT'});
+  assert.equal(result.status,200,JSON.stringify(result.data));
+ }
  async function activate(){
   assert.equal((await configure()).status,200);
   provider.payments.set(sampleId,{...samplePayment});
@@ -116,7 +130,8 @@ async function fixture(t,{key=encryptionKey,managedKey='',scheduleMisticpayConfi
   const login=await api('/api/login',{username:'admin',password:'fictitious-misticpay-password'});
   assert.equal(login.status,200);
  }
- return {api,provider,get db(){return db;},reserve,configure,verify,config,allowVerification,activate,restart,
+ return {api,provider,get db(){return db;},reserve,configure,verify,config,allowVerification,activate,restart,enableWhatsApp,whatsapp,
+  clientMessages:()=>whatsapp.filter(message=>message.body.number==='5511999999999'),
   runScheduledConfirmations:()=>retryMisticpayConfirmations()};
 }
 
@@ -352,7 +367,9 @@ test('MisticPay: primeiro QR Pix após salvar as chaves e baixa só após consul
  assert.equal(saved.data.last_verified_at,null);
  assert.deepEqual(f.provider.calls,[]);
  await f.api('/api/pix/settings',{key:'pix@arena.example',receiver:'Arena de teste'},{method:'PUT'});
+ await f.enableWhatsApp();
  const booking=await f.reserve('2026-12-03');
+ assert.deepEqual(f.whatsapp.map(message=>message.body.number),['5521988887777']);
  const statusPath=booking.path+'/misticpay';
  const readStatus=()=>f.api(statusPath,undefined,{auth:false});
  assert.equal((await readStatus()).status,404);
@@ -364,6 +381,7 @@ test('MisticPay: primeiro QR Pix após salvar as chaves e baixa só após consul
  assert.deepEqual(await readStatus(),{status:200,data:{status:'pending'}});
  assert.deepEqual(f.provider.calls.map(call=>call.action),['create']);
  assert.equal((await f.api(booking.path,undefined,{auth:false})).data.paid,0);
+ assert.equal(f.clientMessages().length,0);
  const request=f.provider.creates[0];
  assert.equal(request.amount,180);
  assert.equal(request.payerDocument,'52998224725');
@@ -389,12 +407,19 @@ test('MisticPay: primeiro QR Pix após salvar as chaves e baixa só após consul
  payment.transactionState='COMPLETO';payment.value=179.99;
  assert.equal((await f.api(webhook,paidEvent,{auth:false})).status,409);
  assert.equal((await listed()).paid,0);
+ assert.equal(f.clientMessages().length,0);
  payment.value=180;payment.updatedAt='2026-12-03T13:00:00.000Z';
  assert.equal((await f.api(webhook,paidEvent,{auth:false})).status,200);
  const paid=await listed();
  assert.equal(paid.paid,1);
  assert.equal(paid.method,'MisticPay');
  assert.equal(paid.misticpay_status,'approved');
+ const client=f.clientMessages();
+ assert.equal(client.length,1);
+ assert.equal(client[0].url,'https://evolution.example.com/send/text');
+ assert.deepEqual({...client[0].state},{role:'client',paid:1,state:'approved'});
+ assert.equal(client[0].inTransaction,false);
+ assert.ok(client[0].body.text.includes(`Reserva #${booking.id}`));
  const observed=await f.config();
  assert.equal(observed.data.verification_state,'verified');
  assert.ok(observed.data.last_verified_at);
@@ -403,6 +428,9 @@ test('MisticPay: primeiro QR Pix após salvar as chaves e baixa só após consul
  assert.equal(f.provider.checks.length,checksAfterApproval);
  assert.equal((await f.api(webhook,paidEvent,{auth:false})).status,200);
  assert.equal(f.provider.checks.length,checksAfterApproval,'Webhook repetido não precisa consultar um estado já confirmado');
+ assert.equal((await f.api(webhook,{...paidEvent,value:18000},{auth:false})).status,200);
+ assert.equal(f.provider.checks.length,checksAfterApproval+1);
+ assert.equal(f.clientMessages().length,1);
  assert.equal((await listed()).paid_at,paid.paid_at);
  const snapshot=JSON.stringify(captureSystem(f.db));
  assert.match(snapshot,/approved/);
@@ -411,6 +439,7 @@ test('MisticPay: primeiro QR Pix após salvar as chaves e baixa só após consul
  assert.equal((await f.api(webhook,{...paidEvent,status:'DEVOLVIDO'},{auth:false})).status,200);
  assert.equal((await listed()).misticpay_status,'refunded');
  assert.equal((await listed()).paid,0);
+ assert.equal(f.clientMessages().length,1);
  payment.transactionState='COMPLETO';payment.updatedAt='2026-12-03T13:00:00.000Z';
  assert.equal((await f.api(webhook,paidEvent,{auth:false})).status,200);
  assert.equal((await listed()).misticpay_status,'refunded');
@@ -482,6 +511,7 @@ test('MisticPay: confirmação pendente do webhook é retomada depois de reinici
  const alarms=[];
  const f=await fixture(t,{scheduleMisticpayConfirmation:async when=>{alarms.push(when);}});
  assert.equal((await f.configure()).status,200);
+ await f.enableWhatsApp();
  const booking=await f.reserve('2026-12-10');
  const created=await f.api(booking.path+'/misticpay',{cpf},{auth:false});
  assert.equal(created.data.status,'pending');
@@ -496,6 +526,7 @@ test('MisticPay: confirmação pendente do webhook é retomada depois de reinici
  assert.ok(job.next_at>Date.now());
  assert.deepEqual(alarms,[job.next_at]);
  assert.equal((await f.api(booking.path,undefined,{auth:false})).data.paid,0);
+ assert.equal(f.clientMessages().length,0);
  assert.deepEqual(f.provider.checks,[request.transactionId]);
 
  const due=Date.now()-1;
@@ -512,9 +543,13 @@ test('MisticPay: confirmação pendente do webhook é retomada depois de reinici
  assert.equal(paid.method,'MisticPay');
  assert.equal(paid.misticpay_status,'approved');
  assert.ok(paid.paid_at);
+ assert.deepEqual(f.clientMessages().map(message=>({...message.state,inTransaction:message.inTransaction})),[
+  {role:'client',paid:1,state:'approved',inTransaction:false}
+ ]);
  assert.equal(getJob(),undefined);
  await f.runScheduledConfirmations();
  assert.equal((await listed()).paid_at,paid.paid_at);
+ assert.equal(f.clientMessages().length,1);
  assert.deepEqual(f.provider.checks,[request.transactionId,request.transactionId]);
  assert.equal(f.provider.creates.length,1);
 });

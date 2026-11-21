@@ -36,6 +36,7 @@ export class Arena extends DurableObject {
    db,paymentConfig,paymentClient:new MercadoPago(paymentConfig),
    misticpayEncryptionKey:this.env.MISTICPAY_CREDENTIALS_KEY,
    misticpayManagedEncryptionKey:this.env.MISTICPAY_MANAGED_CREDENTIALS_KEY,
+   keepNotificationAlive:delivery=>this.ctx.waitUntil(delivery),
    scheduleMisticpayConfirmation:async when=>{
     const alarm=await this.ctx.storage.getAlarm();
     if(alarm===null||when<alarm)await this.ctx.storage.setAlarm(when);

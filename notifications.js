@@ -12,6 +12,12 @@ const WEBHOOK_EVENTS=['CONNECTION'];
 const reminderLeadMinutes=10;
 const alertBatchSize=6;
 const scheduledRoles=new Set(['arena_start','arena_reminder','reminder']);
+const customerRoles=new Set(['client','reminder']);
+const confirmedPayment=`b.status='confirmed' AND b.paid=1 AND (
+ b.method IS NOT 'Mercado Pago' OR EXISTS(
+  SELECT 1 FROM payment_orders p WHERE p.booking_id=b.id AND p.state='approved'
+ ))`;
+const eligiblePending=`n.status='pending' AND (n.role NOT IN ('client','reminder') OR (${confirmedPayment}))`;
 const arenaClock=new Intl.DateTimeFormat('en-CA',{
  timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit',
  hour:'2-digit',minute:'2-digit',hourCycle:'h23'
@@ -82,14 +88,21 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
  CREATE TABLE IF NOT EXISTS notification_webhook(id INTEGER PRIMARY KEY CHECK(id=1),url TEXT NOT NULL);`);
  initializeOutbox(db);
  db.exec(`CREATE INDEX IF NOT EXISTS bookings_confirmed_end ON bookings(date,end) WHERE status='confirmed';
- CREATE INDEX IF NOT EXISTS bookings_confirmed_start ON bookings(date,start) WHERE status='confirmed';`);
+ CREATE INDEX IF NOT EXISTS bookings_confirmed_start ON bookings(date,start) WHERE status='confirmed';
+ CREATE INDEX IF NOT EXISTS booking_notifications_pending_clients ON booking_notifications(created_at)
+  WHERE status='pending' AND role='client';`);
  const dueStarts=db.prepare(`SELECT b.id FROM bookings b
   WHERE b.status='confirmed' AND b.date=? AND b.start=? AND b.end>?
   AND NOT EXISTS(SELECT 1 FROM booking_notifications n WHERE n.booking_id=b.id AND n.role='arena_start')
   ORDER BY b.id`);
- const dueReminders=db.prepare(`SELECT b.id,b.phone FROM bookings b
+ const paidCustomer=db.prepare(`SELECT b.phone FROM bookings b WHERE b.id=? AND ${confirmedPayment}`);
+ const dueReminders=db.prepare(`SELECT b.id,b.phone,
+  NOT EXISTS(SELECT 1 FROM booking_notifications n WHERE n.booking_id=b.id AND n.role='arena_reminder') AS arena_due,
+  (${confirmedPayment}) AND NOT EXISTS(
+   SELECT 1 FROM booking_notifications n WHERE n.booking_id=b.id AND n.role='reminder'
+  ) AS client_due
+  FROM bookings b
   WHERE b.status='confirmed' AND b.date=? AND b.start<=? AND b.end>? AND b.end<=?
-  AND (SELECT COUNT(*) FROM booking_notifications n WHERE n.booking_id=b.id AND n.role IN ('reminder','arena_reminder'))<2
   ORDER BY b.end,b.id`);
  const insertEvent=db.prepare(`INSERT INTO booking_notifications(id,booking_id,recipient,role,status,created_at,updated_at,error,provider)
   VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(booking_id,role) DO NOTHING`);
@@ -179,11 +192,22 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
  function customerNumber(phone,country){
   try{return normalizeNumber(phone,country);}catch{return '';}
  }
- function enqueue(bookingId,phone){
+ function enqueue(bookingId){
   const provider=sendingProvider(),c=stored(provider);
   if(!c.enabled||!c.base_url||!c.api_key||!c.arena_number)return;
   recordEvent(bookingId,c.arena_number,'arena',provider,'pending');
-  recordEvent(bookingId,customerNumber(phone,c.country_code),'client',provider,'pending');
+ }
+ function enqueuePaidClient(bookingId){
+  const provider=sendingProvider(),c=stored(provider);
+  if(!c.enabled||!c.base_url||!c.api_key||!c.arena_number)return;
+  const booking=paidCustomer.get(bookingId);
+  if(!booking)return;
+  const recipient=customerNumber(booking.phone,c.country_code);
+  // A legacy pending row can be reused with the current WhatsApp connection.
+  const updated=db.prepare(`UPDATE booking_notifications SET recipient=?,provider=?,status=?,error=?,updated_at=?
+   WHERE booking_id=? AND role='client' AND status='pending'`)
+   .run(recipient,provider,recipient?'pending':'failed',recipient?'':'O telefone do cliente não é um número válido para envio pelo WhatsApp.',new Date().toISOString(),bookingId);
+  if(!updated.changes)recordEvent(bookingId,recipient,'client',provider,'pending');
  }
  function mark(id,status,error=''){
   db.prepare('UPDATE booking_notifications SET status=?,updated_at=?,error=? WHERE id=?').run(status,new Date().toISOString(),error,id);
@@ -251,6 +275,11 @@ ${arenaName} · Reserva #${bookingId}
  }
  async function deliver(event){
   try{
+   if(customerRoles.has(event.role)&&!paidCustomer.get(event.booking_id)){
+    if(event.role==='client')mark(event.id,'pending');
+    else mark(event.id,'failed','A confirmação do pagamento foi retirada antes do envio do lembrete.');
+    return;
+   }
    const provider=providerFor(event.provider),c=stored(event.provider),text=message(event.booking_id,event.role);
    if(!text||!c.enabled){
     const reason=scheduledRoles.has(event.role)
@@ -280,7 +309,9 @@ ${arenaName} · Reserva #${bookingId}
  async function dispatchEvent(event){
   // Claim each recipient independently after the booking transaction commits.
   try{
-   const claim=db.prepare("UPDATE booking_notifications SET status='sending',updated_at=? WHERE id=? AND status='pending'").run(new Date().toISOString(),event.id);
+   const claim=db.prepare(`UPDATE booking_notifications AS n SET status='sending',updated_at=? WHERE id=? AND EXISTS(
+    SELECT 1 FROM bookings b WHERE b.id=n.booking_id AND ${eligiblePending}
+   )`).run(new Date().toISOString(),event.id);
    if(claim.changes)await deliver(event);
   }catch{
    // Leave the event in the outbox if the claim could not be recorded.
@@ -293,29 +324,43 @@ ${arenaName} · Reserva #${bookingId}
   // Claim before calling the provider. An interrupted send might already have
   // reached WhatsApp and must not be repeated automatically.
   const claimed=transaction(db,()=>{
-   const starts=dueStarts.all(date,time,time).map(b=>
+   const events=dueStarts.all(date,time,time).map(b=>
     recordEvent(b.id,c.arena_number,'arena_start',provider,'sending')
    );
-   const endings=dueReminders.all(date,time,time,cutoff).flatMap(b=>[
-    recordEvent(b.id,c.arena_number,'arena_reminder',provider,'sending'),
-    recordEvent(b.id,customerNumber(b.phone,c.country_code),'reminder',provider,'sending')
-   ]);
-   return [...starts,...endings].filter(Boolean);
+   for(const b of dueReminders.all(date,time,time,cutoff)){
+    if(b.arena_due)events.push(recordEvent(b.id,c.arena_number,'arena_reminder',provider,'sending'));
+    if(b.client_due)events.push(recordEvent(b.id,customerNumber(b.phone,c.country_code),'reminder',provider,'sending'));
+   }
+   return events.filter(Boolean);
   });
   for(let index=0;index<claimed.length;index+=alertBatchSize){
    await Promise.all(claimed.slice(index,index+alertBatchSize).map(deliver));
   }
+  const confirmations=db.prepare(`SELECT n.* FROM booking_notifications n JOIN bookings b ON b.id=n.booking_id
+   WHERE n.role='client' AND ${eligiblePending} ORDER BY n.created_at LIMIT ?`).all(alertBatchSize);
+  await Promise.all(confirmations.map(dispatchEvent));
  }
  async function dispatch(bookingId){
   try{
-   const pending=db.prepare("SELECT * FROM booking_notifications WHERE booking_id=? AND status='pending'").all(bookingId);
+   const pending=db.prepare(`SELECT n.* FROM booking_notifications n JOIN bookings b ON b.id=n.booking_id
+    WHERE n.booking_id=? AND ${eligiblePending}`).all(bookingId);
    await Promise.all(pending.map(dispatchEvent));
   }catch{
    // A failure reading the notification queue must not fail a saved booking.
   }
  }
+ async function dispatchPaidClient(bookingId){
+  try{
+   const pending=db.prepare(`SELECT n.* FROM booking_notifications n JOIN bookings b ON b.id=n.booking_id
+    WHERE n.booking_id=? AND n.role='client' AND ${eligiblePending}`).get(bookingId);
+   if(pending)await dispatchEvent(pending);
+  }catch{
+   // The periodic job can recover a confirmed payment's pending message.
+  }
+ }
  async function recoverPending(){
-  const pending=db.prepare("SELECT * FROM booking_notifications WHERE status='pending' ORDER BY created_at LIMIT 3").all();
+  const pending=db.prepare(`SELECT n.* FROM booking_notifications n JOIN bookings b ON b.id=n.booking_id
+   WHERE ${eligiblePending} ORDER BY n.created_at LIMIT 3`).all();
   await Promise.all(pending.map(dispatchEvent));
   return events();
  }
@@ -455,5 +500,5 @@ ${arenaName} · Reserva #${bookingId}
   // not a guarantee of validity; the user may request a fresh code at any time.
   return {...session,qr_code:code,expires_at:new Date(Date.now()+20000).toISOString()};
  }
- return {summary,save,enqueue,dispatch,events,recoverPending,processBookingAlerts,check,connect,syncWebhook};
+ return {summary,save,enqueue,dispatch,enqueuePaidClient,dispatchPaidClient,events,recoverPending,processBookingAlerts,check,connect,syncWebhook};
 }

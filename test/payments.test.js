@@ -48,8 +48,46 @@ async function fixture(t,ready=true,{methodDelay=0}={}){
   const ts=String(Date.now()),requestId='request-fixture';const signature=createHmac('sha256',config.webhookSecret).update(`id:${paymentId.toLowerCase()};request-id:${requestId};ts:${ts};`).digest('hex');
   return request(`/api/payments/webhook?data.id=${paymentId}&type=payment`,{type:'payment',data:{id:paymentId}},{auth:false,headers:{'x-request-id':requestId,'x-signature':`ts=${ts},v1=${signature}`,...overrides}});
  }
- return{db,request,payment,webhook,id,stats:()=>({creates,reads,methodReads,payload}),setFailure:e=>creationFailure=e,setMethods:value=>methods=value};
+ return{db,client,request,payment,webhook,id,stats:()=>({creates,reads,methodReads,payload}),setFailure:e=>creationFailure=e,setMethods:value=>methods=value};
 }
+
+test('Mercado Pago: avisa após conciliação aprovada, inclusive ao sair de revisão',async t=>{
+ const f=await fixture(t);
+ assert.equal((await f.request(`/api/bookings/${f.id}/checkout`,{})).status,200);
+ const order=f.db.prepare('SELECT state FROM payment_orders WHERE booking_id=?');
+ const booking=f.db.prepare('SELECT paid FROM bookings WHERE id=?');
+ const notifications=[];
+ const payments=createPayments(f.db,config,f.client,{
+  enqueuePaidClient(id){
+   assert.equal(f.db.isTransaction,true);
+   assert.equal(booking.get(id).paid,1);
+   assert.equal(order.get(id).state,'approved');
+   notifications.push(['enqueue',id]);
+  },
+  async dispatchPaidClient(id){
+   assert.equal(f.db.isTransaction,false);
+   assert.equal(order.get(id).state,'approved');
+   await new Promise(resolve=>setImmediate(resolve));
+   notifications.push(['dispatch',id]);
+  }
+ });
+ f.payment('101',{status:'pending'});
+ assert.deepEqual(await payments.reconcile('101'),{ok:true,status:'pending'});
+ f.payment('102',{transaction_amount_refunded:1});
+ await payments.reconcile('102');
+ f.payment('101');
+ assert.deepEqual(await payments.reconcile('101'),{ok:true,status:'review'});
+ assert.equal(booking.get(f.id).paid,1);
+ assert.deepEqual(notifications,[]);
+
+ f.payment('102',{status:'refunded',transaction_amount_refunded:180});
+ assert.deepEqual(await payments.reconcile('102'),{ok:true,status:'approved'});
+ assert.deepEqual(notifications,[['enqueue',f.id],['dispatch',f.id]]);
+ f.payment('101',{status:'refunded',transaction_amount_refunded:180});
+ assert.deepEqual(await payments.reconcile('101'),{ok:true,status:'refunded'});
+ assert.equal(booking.get(f.id).paid,0);
+ assert.equal(notifications.length,2);
+});
 
 test('configuração e assinatura: não aceita URL insegura ou assinatura forjada',()=>{
  assert.equal(paymentConfiguration({}).ready,false);
