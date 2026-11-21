@@ -32,15 +32,21 @@ export class Arena extends DurableObject {
   }:null;
   // Children retain financial history but never inherit the mother's provider credentials.
   const paymentConfig=child?{ready:false,mode:'test'}:paymentConfiguration(this.env);
-  const {server}=createApplication({
+  const {server,retryMisticpayConfirmations}=createApplication({
    db,paymentConfig,paymentClient:new MercadoPago(paymentConfig),
    misticpayEncryptionKey:this.env.MISTICPAY_CREDENTIALS_KEY,
    misticpayManagedEncryptionKey:this.env.MISTICPAY_MANAGED_CREDENTIALS_KEY,
+   scheduleMisticpayConfirmation:async when=>{
+    const alarm=await this.ctx.storage.getAlarm();
+    if(alarm===null||when<alarm)await this.ctx.storage.setAlarm(when);
+   },
    sessionStore:new DurableMap(db,'session'),attemptStore:new DurableMap(db,'login-attempt'),cookieSecure:true,
    clientKey:req=>req.headers['cf-connecting-ip']||req.socket.remoteAddress
   });
   this.nodeHandler=httpServerHandler(server);
+  this.retryMisticpayConfirmations=retryMisticpayConfirmations;
  }
+ async alarm(){await this.retryMisticpayConfirmations();}
  async initializeChild(payload){
   installSystem(this.db,payload);
   this.configure();

@@ -11,7 +11,7 @@ import {financialSettings} from './financial-settings.js';
 import {createMisticPay} from './misticpay.js';
 import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
-export function createApplication({db,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch,misticpayFetch=fetch,misticpayEncryptionKey,misticpayManagedEncryptionKey}={}) {
+export function createApplication({db,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch,misticpayFetch=fetch,misticpayEncryptionKey,misticpayManagedEncryptionKey,scheduleMisticpayConfirmation}={}) {
 db.exec(`CREATE TABLE IF NOT EXISTS admin(id INTEGER PRIMARY KEY CHECK(id=1), salt TEXT NOT NULL, hash TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS courts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, price INTEGER NOT NULL CHECK(price>0), active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, court_id INTEGER NOT NULL REFERENCES courts(id), customer TEXT NOT NULL, phone TEXT NOT NULL, date TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, total INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'confirmed', paid INTEGER NOT NULL DEFAULT 0, method TEXT, paid_at TEXT, notes TEXT NOT NULL DEFAULT '');`);
@@ -21,7 +21,7 @@ const financial=financialSettings(db,paymentConfig);
 const arenaIdentity=setting(db,'identity');
 const misticpay=createMisticPay(db,{
  fetchImpl:misticpayFetch,encryptionKey:misticpayEncryptionKey,managedEncryptionKey:misticpayManagedEncryptionKey,
- scope:arenaIdentity?`child:${arenaIdentity.slug}`:'main'
+ scope:arenaIdentity?`child:${arenaIdentity.slug}`:'main',scheduleConfirmation:scheduleMisticpayConfirmation
 });
 const pix=createPix(db);
 const courtPhotos=createCourtPhotos(db);
@@ -216,7 +216,9 @@ const server=http.createServer(async(req,res)=>{
    if(!result.changes)fail('Quadra não encontrada.',404);
    return json(res,200,{ok:true});
   }
-  if(req.method==='GET' && url.pathname==='/api/bookings') return json(res,200,db.prepare(`SELECT b.*,c.name court_name,c.type court_type,o.state online_status,o.checkout_url,o.expires_at,o.checkout_method,
+  if(req.method==='GET' && url.pathname==='/api/bookings'){
+   await misticpay.resumeConfirmations().catch(()=>console.warn('MisticPay: não foi possível agendar a conciliação.'));
+   return json(res,200,db.prepare(`SELECT b.*,c.name court_name,c.type court_type,o.state online_status,o.checkout_url,o.expires_at,o.checkout_method,
    EXISTS(SELECT 1 FROM archived_payment_orders a WHERE a.order_id=o.id) online_archived,
    EXISTS(SELECT 1 FROM pix_links p WHERE p.booking_id=b.id) pix_link,
    r.status receipt_status,r.match_status receipt_match,r.amount_cents receipt_amount,
@@ -226,6 +228,7 @@ const server=http.createServer(async(req,res)=>{
    LEFT JOIN misticpay_orders m ON m.booking_id=b.id
    LEFT JOIN pix_receipts r ON r.id=(SELECT id FROM pix_receipts WHERE booking_id=b.id ORDER BY id DESC LIMIT 1)
    ORDER BY date,start,b.id`).all());
+  }
   if(req.method==='POST' && url.pathname==='/api/bookings'){
    const result=transaction(db,()=>booking(body));
    await notifications.dispatch(result.id);
@@ -248,5 +251,5 @@ const server=http.createServer(async(req,res)=>{
   return json(res,404,{error:'Não encontrado.'});
  } catch(error) { if(!error.status) console.error(error); return json(res,error.status||500,{error:error.status?error.message:'Erro interno do servidor.'}); }
 });
-return {server,db};
+return {server,db,retryMisticpayConfirmations:misticpay.retryConfirmations};
 }

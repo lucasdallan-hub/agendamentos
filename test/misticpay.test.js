@@ -20,7 +20,7 @@ const qr='data:image/png;base64,'+(await readFile(new URL('./fixtures/pix-receip
 const copyPaste='00020101021226820014br.gov.bcb.pix';
 const basicAuth=({client_id,client_secret})=>'Basic '+Buffer.from(client_id+':'+client_secret).toString('base64');
 
-async function fixture(t,{key=encryptionKey,managedKey=''}={}){
+async function fixture(t,{key=encryptionKey,managedKey='',scheduleMisticpayConfirmation}={}){
  const directory=await mkdtemp(join(tmpdir(),'arena-misticpay-'));
  const provider={calls:[],creates:[],checks:[],payments:new Map(),allowedCredentials:new Set([basicAuth(credentials)]),uncertain:false};
  const misticpayFetch=async(url,options)=>{
@@ -57,11 +57,11 @@ async function fixture(t,{key=encryptionKey,managedKey=''}={}){
   if(payment)return Response.json({transaction:payment});
   return provider.missing?provider.missing(body.transactionId):Response.json({code:'TRANSACTION_NOT_FOUND'},{status:404});
  };
- let server,db,base,cookie;
+ let server,db,base,cookie,retryMisticpayConfirmations;
  async function start(primary,managed){
-  ({server,db}=createApp({
+  ({server,db,retryMisticpayConfirmations}=createApp({
    dataDir:directory,misticpayEncryptionKey:primary,misticpayManagedEncryptionKey:managed,
-   paymentConfig:{ready:false,mode:'test'},misticpayFetch
+   paymentConfig:{ready:false,mode:'test'},misticpayFetch,scheduleMisticpayConfirmation
   }));
   server.listen(0,'127.0.0.1');
   await once(server,'listening');
@@ -116,7 +116,8 @@ async function fixture(t,{key=encryptionKey,managedKey=''}={}){
   const login=await api('/api/login',{username:'admin',password:'fictitious-misticpay-password'});
   assert.equal(login.status,200);
  }
- return {api,provider,get db(){return db;},reserve,configure,verify,config,allowVerification,activate,restart};
+ return {api,provider,get db(){return db;},reserve,configure,verify,config,allowVerification,activate,restart,
+  runScheduledConfirmations:()=>retryMisticpayConfirmations()};
 }
 
 test('MisticPay: guarda as chaves cifradas e verifica um Pix existente sem criar cobrança',async t=>{
@@ -377,7 +378,7 @@ test('MisticPay: primeiro QR Pix após salvar as chaves e baixa só após consul
  assert.equal((await f.api(booking.path,undefined,{auth:false})).data.paid,0);
  assert.equal((await f.config()).data.ready,true);
  delete f.provider.accessError;
- assert.equal((await f.api(webhook,{...paidEvent,value:18000},{auth:false})).status,200);
+ assert.equal((await f.api(webhook,{...paidEvent,value:18000},{auth:false})).status,503);
  const listed=async()=> (await f.api('/api/bookings')).data.find(row=>row.id===booking.id);
  assert.equal((await listed()).paid,0);
  payment.transactionState='COMPLETO';payment.value=179.99;
@@ -407,6 +408,104 @@ test('MisticPay: primeiro QR Pix após salvar as chaves e baixa só após consul
  assert.equal((await f.api(webhook,paidEvent,{auth:false})).status,200);
  assert.equal((await listed()).misticpay_status,'refunded');
  assert.equal((await listed()).paid,0);
+});
+
+test('MisticPay: concilia pelo ID vinculado quando a referência local não é encontrada',async t=>{
+ const f=await fixture(t);
+ assert.equal((await f.configure()).status,200);
+ const booking=await f.reserve('2026-12-09');
+ const created=await f.api(booking.path+'/misticpay',{cpf},{auth:false});
+ assert.equal(created.status,200);
+ assert.equal(created.data.status,'pending');
+ const reference=f.provider.creates[0].transactionId;
+ const linked=f.provider.payments.get(reference).transactionId;
+ assert.match(reference,/^[a-f0-9-]{36}$/);
+ assert.notEqual(reference,linked);
+ const completed={transactionId:linked,value:'180.00',transactionState:'COMPLETO',transactionType:'DEPOSITO',transactionMethod:'PIX'};
+ let primaryStatus=403,primaryCode='API_SCOPE_DENIED',payment=completed;
+ f.provider.respond=(action,{transactionId})=>{
+  assert.equal(action,'check');
+  if(transactionId===reference)return Response.json({code:primaryCode},{status:primaryStatus});
+  assert.equal(transactionId,linked);
+  return Response.json({transaction:payment});
+ };
+ const check=async()=>{
+  f.provider.checks.length=0;
+  f.db.prepare('UPDATE misticpay_orders SET checked_at=NULL WHERE booking_id=?').run(booking.id);
+  return f.api(booking.path+'/misticpay/check',{transaction_id:'id-nao-vinculado'},{auth:false});
+ };
+ const state=()=>f.db.prepare('SELECT paid,paid_at FROM bookings WHERE id=?').get(booking.id);
+
+ const denied=await check();
+ assert.equal(denied.status,502);
+ assert.match(denied.data.error,/TRANSACTION_READ/);
+ assert.deepEqual(f.provider.checks,[reference]);
+ assert.deepEqual({...state()},{paid:0,paid_at:null});
+
+ primaryStatus=404;
+ primaryCode='INTERNAL_ERROR';
+ for(const [override,status] of [
+  [{value:'179.99'},409],
+  [{transactionId:'98765432'},409],
+  [{transactionType:'SAQUE'},502],
+  [{transactionMethod:'BOLETO'},502]
+ ]){
+  payment={...completed,...override};
+  assert.equal((await check()).status,status,JSON.stringify(override));
+  assert.deepEqual(f.provider.checks,[reference,linked]);
+  assert.deepEqual({...state()},{paid:0,paid_at:null});
+ }
+
+ primaryCode='TRANSACTION_NOT_FOUND';
+ payment=completed;
+ const approved=await check();
+ assert.equal(approved.status,200);
+ assert.equal(approved.data.status,'approved');
+ assert.deepEqual(f.provider.checks,[reference,linked]);
+ assert.equal(state().paid,1);
+ assert.ok(state().paid_at);
+ assert.equal(f.provider.creates.length,1);
+});
+
+test('MisticPay: confirmação pendente do webhook é retomada depois de reiniciar',async t=>{
+ const alarms=[];
+ const f=await fixture(t,{scheduleMisticpayConfirmation:async when=>{alarms.push(when);}});
+ assert.equal((await f.configure()).status,200);
+ const booking=await f.reserve('2026-12-10');
+ const created=await f.api(booking.path+'/misticpay',{cpf},{auth:false});
+ assert.equal(created.data.status,'pending');
+ const request=f.provider.creates[0];
+ const payment=f.provider.payments.get(request.transactionId);
+ const event={transactionId:payment.transactionId,transactionType:'DEPOSITO',transactionMethod:'PIX',status:'COMPLETO'};
+ const webhook=new URL(request.projectWebhook).pathname;
+ assert.equal((await f.api(webhook,event,{auth:false})).status,200);
+ const getJob=()=>f.db.prepare('SELECT attempts,next_at FROM misticpay_retries WHERE booking_id=?').get(booking.id);
+ const job=getJob();
+ assert.equal(job.attempts,0);
+ assert.ok(job.next_at>Date.now());
+ assert.deepEqual(alarms,[job.next_at]);
+ assert.equal((await f.api(booking.path,undefined,{auth:false})).data.paid,0);
+ assert.deepEqual(f.provider.checks,[request.transactionId]);
+
+ const due=Date.now()-1;
+ f.db.prepare('UPDATE misticpay_retries SET next_at=? WHERE booking_id=?').run(due,booking.id);
+ await f.restart();
+ assert.equal(getJob().next_at,due);
+ payment.transactionState='COMPLETO';
+ payment.value='180.00';
+ await f.runScheduledConfirmations();
+
+ const listed=async()=> (await f.api('/api/bookings')).data.find(row=>row.id===booking.id);
+ const paid=await listed();
+ assert.equal(paid.paid,1);
+ assert.equal(paid.method,'MisticPay');
+ assert.equal(paid.misticpay_status,'approved');
+ assert.ok(paid.paid_at);
+ assert.equal(getJob(),undefined);
+ await f.runScheduledConfirmations();
+ assert.equal((await listed()).paid_at,paid.paid_at);
+ assert.deepEqual(f.provider.checks,[request.transactionId,request.transactionId]);
+ assert.equal(f.provider.creates.length,1);
 });
 
 test('MisticPay: criação simultânea e resultado incerto bloqueiam uma segunda cobrança',async t=>{

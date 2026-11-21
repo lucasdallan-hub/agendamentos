@@ -3,8 +3,20 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const money=n=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(n/100);
 const dateLabel=date=>new Date(date+'T12:00:00Z').toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'});
 const key=()=>Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,'0')).join('');
-let catalog,selection,requestKey,bookingConfirmation,misticpayBusy=false;
-async function api(path,body){const response=await fetch('/api/public/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const result=await response.json();if(!response.ok)throw Error(result.error||'Não foi possível concluir. Tente novamente.');return result;}
+let catalog,selection,requestKey,reservationView,misticpayBusy=false;
+let paymentCheck,paymentTimer,pageSuspended=false;
+async function api(path,body,signal){
+ const response=await fetch('/api/public/'+path,{
+  method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},
+  body:body?JSON.stringify(body):undefined,signal
+ });
+ const result=await response.json().catch(()=>null);
+ if(!response.ok||result===null){
+  const message=typeof result?.error==='string'?result.error:'Não foi possível concluir. Tente novamente.';
+  throw Object.assign(new Error(message),{status:response.status});
+ }
+ return result;
+}
 const courtArt='<div class="court-lines" aria-hidden="true"><div></div></div>';
 function courtPhotos(court){
  return (Array.isArray(court.photos)?court.photos:[]).filter(photo=>
@@ -64,7 +76,7 @@ $('#catalog-booking-form').onsubmit=async e=>{
  try{
   const fields=Object.fromEntries(new FormData(e.target));
   const result=await api('bookings',{court_id:selection.court_id,date:selection.date,start:selection.start,end:selection.end,...fields,request_key:requestKey});
-  $('#catalog-modal').close();location.hash=result.token;await showConfirmation(result.token);
+  $('#catalog-modal').close();location.hash=result.token;
  }catch(error){$('#catalog-booking-error').textContent=error.message;await search();}
  finally{$('#catalog-submit').disabled=false;}
 };
@@ -121,21 +133,73 @@ function paymentChoices(booking){
  const debitNote=methods.includes('debit_card')?'<p>A disponibilidade do cartão de débito depende das opções exibidas pelo Mercado Pago no checkout.</p>':'';
  return `<h3>Forma de pagamento</h3><div class="catalog-payment-actions">${buttons}${misticpayButton}</div>${debitNote}`;
 }
-function renderConfirmation(b){
- bookingConfirmation=b;
+function renderConfirmation(view,b){
+ view.booking=b;
  const summary=b.status==='cancelled'?'Esta reserva foi cancelada pela arena.':b.misticpay?'':b.paid?'Pagamento confirmado.':'Reserva confirmada. O pagamento ainda está pendente.';
  $('#catalog-confirmation').innerHTML=`<span class="eyebrow">${b.status==='cancelled'?'RESERVA CANCELADA':'HORÁRIO RESERVADO'}</span><h2>${b.status==='cancelled'?'Entre em contato com a arena.':`Tudo certo, ${esc(b.customer)}!`}</h2><p>${esc(b.court_name)} · ${dateLabel(b.date)} · ${b.start} – ${b.end}</p><p class="catalog-total">${money(b.total)}</p>${summary?`<p>${summary}</p>`:''}${paymentChoices(b)}<p>Guarde este link privado para consultar sua reserva. Não o compartilhe com terceiros.</p><button id="copy-reservation" class="outline">Copiar link da reserva</button> <a class="outline" href="/catalogo">Fazer outra reserva</a>`;
  $('#copy-reservation').onclick=async()=>{try{await navigator.clipboard.writeText(location.href);$('#copy-reservation').textContent='Link copiado';}catch{$('#catalog-error').textContent='Copie o endereço desta página para guardar seu link.';}};
+ schedulePaymentCheck();
 }
+const currentToken=()=>location.hash.slice(1);
+const isCurrentReservation=view=>view&&view===reservationView&&view.token===currentToken()&&!pageSuspended;
 async function showConfirmation(token){
+ const view={token};
+ reservationView=view;
  $('#catalog-error').textContent='';$('#catalog-search').hidden=true;$('#catalog-confirmation').hidden=false;
+ $('#catalog-confirmation').textContent='Carregando reserva…';
  try{
-  renderConfirmation(await api('bookings/'+token));
- }catch(error){$('#catalog-confirmation').textContent='Não foi possível consultar a reserva.';$('#catalog-error').textContent=error.message;}
+  if(!/^[a-f0-9]{64}$/.test(token))throw Error('Link de reserva inválido.');
+  const booking=await api('bookings/'+token);
+  if(isCurrentReservation(view))renderConfirmation(view,booking);
+ }catch(error){
+  if(!isCurrentReservation(view))return;
+  $('#catalog-confirmation').textContent='Não foi possível consultar a reserva.';
+  $('#catalog-error').textContent=error.message;
+ }
 }
-function updateMisticpay(payment){
+function updateMisticpay(view,payment){
+ const booking=view.booking;
  const reversed=['refunded','review','cancelled'].includes(payment.status);
- renderConfirmation({...bookingConfirmation,paid:!reversed&&(bookingConfirmation.paid||payment.status==='approved'),misticpay:payment});
+ const paid=!reversed&&(booking.paid||payment.status==='approved');
+ if(paid===booking.paid&&booking.misticpay?.status===payment.status&&
+    booking.misticpay?.qr_code===payment.qr_code&&booking.misticpay?.copy_paste===payment.copy_paste)return;
+ $('#catalog-error').textContent='';
+ renderConfirmation(view,{...booking,paid,misticpay:payment});
+}
+const automaticPaymentStates=['pending','creating','unknown'];
+function canCheckMisticpay(view,manual=false){
+ const booking=view?.booking;
+ const status=booking?.misticpay?.status;
+ const pending=automaticPaymentStates.includes(status);
+ const eligible=manual?pending||status==='review':pending&&!view?.stopPolling;
+ return eligible&&isCurrentReservation(view)&&!document.hidden&&booking?.status==='confirmed'&&!booking.paid;
+}
+function schedulePaymentCheck(){
+ clearTimeout(paymentTimer);
+ const view=reservationView;
+ if(!paymentCheck&&canCheckMisticpay(view))paymentTimer=setTimeout(()=>checkMisticpay(view),17_000);
+}
+async function checkMisticpay(view,manual=false){
+ if(paymentCheck||!canCheckMisticpay(view,manual))return;
+ clearTimeout(paymentTimer);
+ const check=new AbortController();
+ paymentCheck=check;
+ const button=$('#catalog-confirmation [data-payment="misticpay/check"]');
+ if(button)button.disabled=true;
+ if(manual)$('#catalog-error').textContent='';
+ try{
+  const payment=await api(`bookings/${view.token}/misticpay/check`,{},check.signal);
+  if(isCurrentReservation(view)&&!check.signal.aborted)updateMisticpay(view,payment);
+ }catch(error){
+  if(isCurrentReservation(view)&&!check.signal.aborted){
+   if([401,403,404,410].includes(error.status))view.stopPolling=true;
+   if(manual)$('#catalog-error').textContent=error.message;
+  }
+ }finally{
+  paymentCheck=null;
+  if(button)button.disabled=false;
+  schedulePaymentCheck();
+ }
 }
 const misticpayDialog=$('#catalog-misticpay-modal');
 const cpfField=$('#catalog-misticpay-cpf');
@@ -143,7 +207,9 @@ $('#catalog-misticpay-close').onclick=()=>misticpayDialog.close();
 misticpayDialog.addEventListener('cancel',e=>{if(misticpayBusy)e.preventDefault();});
 misticpayDialog.addEventListener('close',()=>{cpfField.value='';});
 $('#catalog-misticpay-form').onsubmit=async e=>{
- e.preventDefault();if(misticpayBusy)return;
+ e.preventDefault();
+ const view=reservationView;
+ if(misticpayBusy||!isCurrentReservation(view)||!view.booking)return;
  const cpf=cpfField.value.replace(/[.\s-]/g,'');
  const errorMessage=$('#catalog-misticpay-error');
  if(!/^\d{11}$/.test(cpf)){errorMessage.textContent='Informe os 11 dígitos do CPF.';return;}
@@ -151,10 +217,12 @@ $('#catalog-misticpay-form').onsubmit=async e=>{
  const submit=$('#catalog-misticpay-submit'),close=$('#catalog-misticpay-close');
  submit.disabled=true;close.disabled=true;
  try{
-  const payment=await api(`bookings/${location.hash.slice(1)}/misticpay`,{cpf});
-  misticpayDialog.close();
-  updateMisticpay(payment);
- }catch(error){errorMessage.textContent=error.message;}
+  const payment=await api(`bookings/${view.token}/misticpay`,{cpf});
+  if(isCurrentReservation(view)){
+   misticpayDialog.close();
+   updateMisticpay(view,payment);
+  }
+ }catch(error){if(isCurrentReservation(view))errorMessage.textContent=error.message;}
  finally{misticpayBusy=false;submit.disabled=false;close.disabled=false;}
 };
 $('#catalog-confirmation').onclick=async e=>{
@@ -166,8 +234,11 @@ $('#catalog-confirmation').onclick=async e=>{
   return;
  }
  const button=e.target.closest('[data-payment]');if(!button||button.disabled)return;
+ const view=reservationView;
+ if(!isCurrentReservation(view)||!view.booking)return;
  $('#catalog-error').textContent='';
  const {payment,method}=button.dataset;
+ if(payment==='misticpay/check'){await checkMisticpay(view,true);return;}
  if(payment==='misticpay'){
   $('#catalog-misticpay-error').textContent='';
   misticpayDialog.showModal();
@@ -177,15 +248,39 @@ $('#catalog-confirmation').onclick=async e=>{
  buttons.forEach(option=>{option.disabled=true;});
  const body=payment==='checkout'&&method?{payment_method:method}:{};
  try{
-  const result=await api(`bookings/${location.hash.slice(1)}/${payment}`,body);
-  if(payment==='misticpay/check')updateMisticpay(result);
-  else location.assign(result.path||result.checkout_url);
+  const result=await api(`bookings/${view.token}/${payment}`,body);
+  if(isCurrentReservation(view))location.assign(result.path||result.checkout_url);
  }catch(error){
-  $('#catalog-error').textContent=error.message;
+  if(isCurrentReservation(view))$('#catalog-error').textContent=error.message;
   buttons.forEach(option=>{option.disabled=false;});
  }
 };
 const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 $('#catalog-date').min=today;$('#catalog-date').value=today;
 const last=new Date(today+'T12:00:00Z');last.setUTCDate(last.getUTCDate()+180);$('#catalog-date').max=last.toISOString().slice(0,10);
-if(location.hash)showConfirmation(location.hash.slice(1));else search();
+function showCatalogView(){
+ clearTimeout(paymentTimer);
+ paymentCheck?.abort();
+ reservationView=null;
+ if(misticpayDialog.open)misticpayDialog.close();
+ const token=currentToken();
+ if(token)showConfirmation(token);
+ else{
+  $('#catalog-confirmation').hidden=true;
+  $('#catalog-search').hidden=false;
+  search();
+ }
+}
+document.addEventListener('visibilitychange',schedulePaymentCheck);
+window.addEventListener('hashchange',showCatalogView);
+window.addEventListener('pagehide',()=>{
+ pageSuspended=true;
+ clearTimeout(paymentTimer);
+ paymentCheck?.abort();
+});
+window.addEventListener('pageshow',event=>{
+ if(!event.persisted)return;
+ pageSuspended=false;
+ showCatalogView();
+});
+showCatalogView();

@@ -41,7 +41,7 @@ function configurationMatches(first,second){
   &&first?.active_auth_failed===second?.active_auth_failed;
 }
 
-export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey,scope,lookup}){
+export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey,scope,lookup,lookupOrder}){
  const originalVault=misticpayCredentials(encryptionKey,scope);
  const managedVault=misticpayCredentials(managedEncryptionKey,scope);
  const vaults=[originalVault,managedVault].filter(vault=>vault.ready);
@@ -178,10 +178,12 @@ export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey
   });
   let error;
   try{
-   const payment=await lookup(credentials,id,{requireExisting:true});
-   if(attempt.latest){
-    const order=attempt.latest;
-    const proof=[order.id,order.provider_id].includes(id)?payment:await lookup(credentials,order.id,{requireExisting:true});
+   const order=attempt.latest;
+   const options={requireExisting:true};
+   const usesKnownOrder=order&&[order.id,order.provider_id].includes(id);
+   const payment=usesKnownOrder?await lookupOrder(credentials,order,options):await lookup(credentials,id,options);
+   if(order){
+    const proof=usesKnownOrder?payment:await lookupOrder(credentials,order,options);
     if(proof.cents!==order.amount_cents||![order.id,order.provider_id].includes(proof.id)){
      const mismatch=new Error('As novas chaves precisam dar acesso às cobranças já criadas nesta arena.');
      throw Object.assign(mismatch,{diagnosticCode:'ORDER_MISMATCH'});

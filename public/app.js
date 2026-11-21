@@ -240,7 +240,11 @@ $('#booking-rows').onclick=async e=>{
  }
  if(misticpaySync){
   misticpaySync.disabled=true;
-  try{await api(`bookings/${misticpaySync.dataset.misticpaySync}/sync-misticpay`,{});await refresh();toast('Pagamento consultado na MisticPay.');}
+  try{
+   const payment=await api(`bookings/${misticpaySync.dataset.misticpaySync}/sync-misticpay`,{});
+   await refresh();
+   toast(misticpayLabels[payment.status]||'Pagamento consultado na MisticPay.');
+  }
   catch(error){toast(error.message);}
   finally{misticpaySync.disabled=false;}
   return;

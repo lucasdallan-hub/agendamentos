@@ -140,8 +140,9 @@ export function readTransaction(row) {
 
 function readPayment({transaction:row}) {
  const payment = readTransaction(row);
- const cents = Math.round(row.value*100);
- if(!Number.isSafeInteger(cents)||cents<=0||cents/100!==row.value)throw new Error();
+ const amount = typeof row.value==='string'&&/^\d+(?:\.\d{1,2})?$/.test(row.value)?Number(row.value):row.value;
+ const cents = Math.round(amount*100);
+ if(!Number.isSafeInteger(cents)||cents<=0||cents/100!==amount)throw new Error();
  const timestamp = typeof row.updatedAt==='string'?Date.parse(row.updatedAt):NaN;
  if(row.updatedAt!=null&&!Number.isFinite(timestamp))throw new Error();
  return {...payment,cents,updatedAt:Number.isFinite(timestamp)?new Date(timestamp).toISOString():null};
@@ -149,4 +150,22 @@ function readPayment({transaction:row}) {
 
 export function lookupMisticPay(fetchImpl, credentials, transactionId, {requireExisting=false}={}) {
  return requestMisticPay(fetchImpl,credentials,'check',{transactionId},{requireExisting,decode:readPayment});
+}
+
+export async function lookupMisticPayOrder(fetchImpl,credentials,order,options){
+ const alternative=order.provider_id&&order.provider_id!==order.id?order.provider_id:null;
+ if(!alternative)return lookupMisticPay(fetchImpl,credentials,order.id,options);
+ let firstError;
+ try{
+  const payment=await lookupMisticPay(fetchImpl,credentials,order.id);
+  if(payment)return payment;
+ }catch(error){
+  const notFound=error.providerStatus===404&&error.providerCode!=='ROUTE_NOT_FOUND';
+  const invalidId=error.providerStatus===400&&error.providerCode==='VALIDATION_ERROR';
+  if(!notFound&&!invalidId)throw error;
+  firstError=error;
+ }
+ const payment=await lookupMisticPay(fetchImpl,credentials,alternative,options);
+ if(!payment&&firstError)throw firstError;
+ return payment;
 }
