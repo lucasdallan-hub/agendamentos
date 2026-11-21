@@ -86,6 +86,7 @@ function courtCard(court){
    <h3>${esc(court.name)}</h3><p>${esc(court.type)}</p><div class="court-price">${money(court.price)} <small>/ hora</small></div>
    <span class="badge ${court.active?'paid':'cancelled'}">${court.active?'● Ativa':'Inativa'}</span>
    <div class="court-card-actions">
+    <button type="button" class="outline" data-edit-court="${court.id}">Editar quadra</button>
     <button type="button" class="outline" data-court-photos="${court.id}">Fotos da quadra</button>
     <button type="button" class="outline" data-toggle="${court.id}">${court.active?'Desativar quadra':'Ativar quadra'}</button>
    </div>
@@ -156,7 +157,19 @@ $('#today-label').textContent=new Date().toLocaleDateString('pt-BR',{timeZone:'A
 function openModal(title,fields,action,label='Salvar'){stopQrSession();$('#modal-fields').onclick=null;$('#modal-fields').onchange=null;$('#modal-title').textContent=title;$('#modal-fields').innerHTML=fields;$('#modal-error').textContent='';$('#save-modal').textContent=label;submitModal=action;$('#modal').showModal();}
 $('#close-modal').onclick=$('#cancel-modal').onclick=()=>$('#modal').close();
 $('#modal-form').onsubmit=async e=>{e.preventDefault();$('#save-modal').disabled=true;$('#modal-error').textContent='';try{const result=await submitModal(Object.fromEntries(new FormData(e.target)));if(result!==false){$('#modal').close();await refresh();toast('Tudo certo! Alteração salva.');}}catch(e){$('#modal-error').textContent=e.message;}finally{$('#save-modal').disabled=false;}};
-function newCourt(){openModal('Adicionar quadra','<label>Nome da quadra<input name="name" placeholder="Ex.: Quadra 01" maxlength="80" required></label><label>Tipo<select name="type"><option>Vôlei de areia</option><option>Vôlei de quadra</option><option>Quadra poliesportiva</option></select></label><label>Valor por hora (R$)<input name="price" type="number" min="1" max="100000" step="0.01" placeholder="120,00" required></label>',data=>api('courts',data),'Cadastrar quadra');}
+function courtFields(court){
+ const types=['Vôlei de areia','Vôlei de quadra','Quadra poliesportiva'];
+ if(court?.type&&!types.includes(court.type))types.unshift(court.type);
+ const options=types.map(type=>`<option${type===court?.type?' selected':''}>${esc(type)}</option>`).join('');
+ const price=court?(court.price/100).toFixed(2):'';
+ return `<label>Nome da quadra<input name="name" value="${esc(court?.name)}" placeholder="Ex.: Quadra 01" maxlength="80" required></label>
+ <label>Tipo<select name="type">${options}</select></label>
+ <label>Valor por hora (R$)<input name="price" type="number" value="${price}" min="1" max="100000" step="0.01" placeholder="120,00" required></label>`;
+}
+function newCourt(){openModal('Adicionar quadra',courtFields(),data=>api('courts',data),'Cadastrar quadra');}
+function editCourt(court){
+ openModal('Editar quadra',courtFields(court),({name,type,price})=>api(`courts/${court.id}`,{name,type,price:Number(price)},'PATCH'),'Salvar alterações');
+}
 $('#new-court').onclick=newCourt;
 const checkoutLabels={credit_card:'Cartão de crédito',debit_card:'Cartão de débito',pix:'Pix'};
 function checkoutOptions(methods,selected){
@@ -402,6 +415,12 @@ $('#court-list').addEventListener('error',event=>{
  if(event.target.matches('.court-cover-photo'))event.target.hidden=true;
 },true);
 $('#court-list').onclick=e=>{
+ const editButton=e.target.closest('[data-edit-court]');
+ if(editButton){
+  const court=courts.find(c=>c.id===Number(editButton.dataset.editCourt));
+  if(court)editCourt(court);
+  return;
+ }
  const photosButton=e.target.closest('[data-court-photos]');
  if(photosButton){
   const court=courts.find(c=>c.id===Number(photosButton.dataset.courtPhotos));

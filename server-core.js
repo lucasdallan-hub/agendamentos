@@ -31,6 +31,11 @@ const attempts = attemptStore;
 const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
 const fail = (message, status=400) => { throw Object.assign(new Error(message), { status }); };
 const str = (v, max=120) => typeof v === 'string' && v.trim().length && v.trim().length<=max ? v.trim() : fail('Preencha os campos obrigatórios corretamente.');
+function courtPrice(value){
+ const price=typeof value==='number'||typeof value==='string'?Number(value):NaN;
+ if(!Number.isFinite(price)||price<1||price>100000)fail('Informe um valor por hora entre R$ 1 e R$ 100.000.');
+ return Math.round(price*100);
+}
 const minutes = t => /^([01]\d|2[0-3]):[0-5]\d$/.test(t) ? Number(t.slice(0,2))*60+Number(t.slice(3)) : fail('Horário inválido.');
 function booking(body) {
  const court = db.prepare('SELECT * FROM courts WHERE id=? AND active=1').get(Number(body.court_id));
@@ -192,11 +197,25 @@ const server=http.createServer(async(req,res)=>{
    return json(res,200,courts.map(court=>({...court,photos:courtPhotos.list(court.id)})));
   }
   if(req.method==='POST' && url.pathname==='/api/courts') {
-   const price=Number(body.price); if(!Number.isFinite(price)||price<1||price>100000) fail('Informe um valor por hora entre R$ 1 e R$ 100.000.');
-   const result=db.prepare('INSERT INTO courts(name,type,price) VALUES(?,?,?)').run(str(body.name,80),str(body.type,40),Math.round(price*100)); return json(res,201,{id:Number(result.lastInsertRowid)});
+   const result=db.prepare('INSERT INTO courts(name,type,price) VALUES(?,?,?)').run(str(body.name,80),str(body.type,40),courtPrice(body.price));
+   return json(res,201,{id:Number(result.lastInsertRowid)});
   }
   const courtMatch=/^\/api\/courts\/(\d+)$/.exec(url.pathname);
-  if(req.method==='PATCH' && courtMatch) { if(typeof body.active!=='boolean') fail('Estado inválido.'); const r=db.prepare('UPDATE courts SET active=? WHERE id=?').run(body.active?1:0,Number(courtMatch[1])); if(!r.changes) fail('Quadra não encontrada.',404); return json(res,200,{ok:true}); }
+  if(req.method==='PATCH' && courtMatch){
+   const name=Object.hasOwn(body,'name')?str(body.name,80):null;
+   const type=Object.hasOwn(body,'type')?str(body.type,40):null;
+   const price=Object.hasOwn(body,'price')?courtPrice(body.price):null;
+   let active=null;
+   if(Object.hasOwn(body,'active')){
+    if(typeof body.active!=='boolean')fail('Estado inválido.');
+    active=Number(body.active);
+   }
+   if(name===null&&type===null&&price===null&&active===null)fail('Informe os dados da quadra para atualizar.');
+   const result=db.prepare(`UPDATE courts SET name=COALESCE(?,name),type=COALESCE(?,type),
+    price=COALESCE(?,price),active=COALESCE(?,active) WHERE id=?`).run(name,type,price,active,Number(courtMatch[1]));
+   if(!result.changes)fail('Quadra não encontrada.',404);
+   return json(res,200,{ok:true});
+  }
   if(req.method==='GET' && url.pathname==='/api/bookings') return json(res,200,db.prepare(`SELECT b.*,c.name court_name,c.type court_type,o.state online_status,o.checkout_url,o.expires_at,o.checkout_method,
    EXISTS(SELECT 1 FROM archived_payment_orders a WHERE a.order_id=o.id) online_archived,
    EXISTS(SELECT 1 FROM pix_links p WHERE p.booking_id=b.id) pix_link,

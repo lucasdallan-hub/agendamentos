@@ -55,6 +55,42 @@ test('catálogo: horários públicos sem dados pessoais, reserva automática, pr
  assert.equal((await f.api(`public/bookings/${created.data.token}/checkout`,{payment_method:'pix'},{auth:false})).status,409);
  assert.equal(f.preferences.length,0);
 });
+test('catálogo: edição da quadra atualiza novas reservas e mantém o valor das anteriores',async t=>{
+ const f=await fixture(t),date=future();
+ const route=`courts/${f.court}`;
+ const patch=(body,auth=true)=>f.api(route,body,{method:'PATCH',auth});
+ const publicRequest={auth:false};
+ const previous=await f.api('public/bookings',f.body({date}),publicRequest);
+ assert.equal(previous.status,201);
+ assert.equal(previous.data.reservation.total,12000);
+ const original=(await f.api('courts')).data.find(court=>court.id===f.court);
+ const update={name:'Quadra central',type:'Sintético',price:137.35};
+
+ assert.equal((await patch(update,false)).status,401);
+ assert.equal((await patch({...update,price:0,active:false})).status,400);
+ assert.deepEqual((await f.api('courts')).data.find(court=>court.id===f.court),original);
+
+ assert.equal((await patch(update)).status,200);
+ const edited={...original,name:update.name,type:update.type,price:13735};
+ assert.deepEqual((await f.api('courts')).data.find(court=>court.id===f.court),edited);
+ assert.equal((await patch({price:142.99})).status,200);
+ assert.deepEqual((await f.api('courts')).data.find(court=>court.id===f.court),{...edited,price:14299});
+
+ const catalog=await f.api(`public/catalog?date=${date}`,undefined,publicRequest);
+ assert.equal(catalog.status,200);
+ const court=catalog.data.courts.find(court=>court.id===f.court);
+ assert.equal(court.name,update.name);
+ assert.equal(court.type,update.type);
+ assert.equal(court.price,14299);
+ assert.deepEqual(court.slots.find(slot=>slot.start==='19:00'),{start:'19:00',end:'20:00',total:14299});
+
+ const next=await f.api('public/bookings',f.body({date,start:'19:00',end:'20:00'}),publicRequest);
+ assert.equal(next.status,201);
+ assert.equal(next.data.reservation.total,14299);
+ const confirmed=await f.api(`public/bookings/${previous.data.token}`,undefined,publicRequest);
+ assert.equal(confirmed.status,200);
+ assert.equal(confirmed.data.total,12000);
+});
 test('catálogo: concorrência, horários inválidos, autenticação das configurações e pausa do agendamento',async t=>{
  const f=await fixture(t);
  const results=await Promise.all([f.api('public/bookings',f.body(),{auth:false}),f.api('public/bookings',f.body(),{auth:false})]);
