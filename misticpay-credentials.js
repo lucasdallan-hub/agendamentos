@@ -1,4 +1,5 @@
 import {Buffer} from 'node:buffer';
+import {createHash} from 'node:crypto';
 
 const version = 'v1';
 const encoder = new TextEncoder();
@@ -27,14 +28,20 @@ function decodeBase64Url(value) {
 }
 
 export function misticpayCredentials(key, scope) {
- const ready = typeof key === 'string' && key.length === 64 && /^[a-fA-F0-9]{64}$/.test(key)
-  && typeof scope === 'string' && scopePattern.test(scope) && scope.trim() === scope;
+ const secret = typeof key === 'string' ? key.trim() : '';
+ let status = 'ready';
+ if (!secret) status = 'secret_missing';
+ else if (!/^[a-fA-F0-9]{64}$/.test(secret)) status = 'secret_invalid';
+ else if (typeof scope !== 'string' || !scopePattern.test(scope) || scope.trim() !== scope) status = 'arena_scope_invalid';
+ const ready = status === 'ready';
+ const keyBytes = ready ? Buffer.from(secret, 'hex') : null;
+ const keyId = keyBytes ? createHash('sha256').update(keyBytes).digest('hex').slice(0,32) : null;
  const additionalData = ready ? encoder.encode(`agendamentos:misticpay:${version}:${scope}`) : null;
  let cipherKey;
 
  function getCipherKey() {
   if (!ready) throw unavailable();
-  cipherKey ??= crypto.subtle.importKey('raw', Buffer.from(key, 'hex'), 'AES-GCM', false, ['encrypt', 'decrypt']);
+  cipherKey ??= crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt', 'decrypt']);
   return cipherKey;
  }
 
@@ -67,5 +74,5 @@ export function misticpayCredentials(key, scope) {
   }
  }
 
- return {ready, seal, open};
+ return {ready, status, keyId, seal, open};
 }

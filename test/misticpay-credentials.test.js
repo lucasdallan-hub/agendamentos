@@ -37,13 +37,26 @@ test('MisticPay: rejeita adulteração, chave errada e envelope de outra arena',
 test('MisticPay: exige chave hexadecimal de 32 bytes, escopo e credenciais válidas', async () => {
  const store = misticpayCredentials(key, 'main');
  const envelope = await store.seal(pair);
- for (const invalidKey of [undefined, '', 'a'.repeat(63), 'g'.repeat(64), key + '\n']) {
+ for (const invalidKey of ['a'.repeat(63), 'g'.repeat(64), `"${key}"`, key.slice(0,32)+' '+key.slice(32)]) {
   const invalid = misticpayCredentials(invalidKey, 'main');
   assert.equal(invalid.ready, false);
+  assert.equal(invalid.status, 'secret_invalid');
+  assert.equal(invalid.keyId, null);
   await assert.rejects(invalid.seal(pair), protectsCredentials);
   await assert.rejects(invalid.open(envelope), protectsCredentials);
  }
- assert.equal(misticpayCredentials(key, 'child:').ready, false);
+ assert.equal(misticpayCredentials(undefined, 'main').status, 'secret_missing');
+ assert.equal(misticpayCredentials(' \r\n', 'main').status, 'secret_missing');
+ assert.equal(misticpayCredentials(key, 'child:').status, 'arena_scope_invalid');
  await assert.rejects(store.seal({...pair, secret_key: pair.secret_key + '\n'}), protectsCredentials);
  await assert.rejects(store.open(JSON.stringify(pair)), protectsCredentials);
+});
+
+test('MisticPay: espaços externos no segredo preservam a chave de credenciais existentes', async () => {
+ const original = misticpayCredentials(key, 'main');
+ const pasted = misticpayCredentials(` \r\n${key.toUpperCase()}\r\n `, 'main');
+ assert.equal(pasted.status, 'ready');
+ assert.equal(pasted.keyId, original.keyId);
+ assert.deepEqual(await pasted.open(await original.seal(pair)), pair);
+ assert.deepEqual(await original.open(await pasted.seal(pair)), pair);
 });

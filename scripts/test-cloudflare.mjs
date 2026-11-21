@@ -12,7 +12,7 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const directory=await mkdtemp(path.join(os.tmpdir(),'arena-cloudflare-test-'));
 console.log('Cloudflare smoke: production Worker, SQLite and manual receipt review');
 const password='admin';
-const misticpayTestKey=randomBytes(32).toString('hex');
+const misticpayTestKey=` \r\n${randomBytes(32).toString('hex')}\n`;
 const configFile=path.join(directory,'wrangler.json');
 const persist=path.join(directory,'state');
 let worker,output='',cookie='',checks=0;
@@ -87,7 +87,7 @@ try{
  passed('bootstrap login, authorization and secure session cookie');
  const misticpayConfigPath='/api/misticpay/config';
  assert.equal((await api(misticpayConfigPath,undefined,{auth:false})).status,401);
- assert.equal((await api(misticpayConfigPath)).data.storage_ready,true);
+ assert.equal((await api(misticpayConfigPath)).data.storage_status,'ready');
  const misticpayDraft=await api(misticpayConfigPath,{
   client_id:'pk_local_fixture',client_secret:'sk_local_fixture',base_url:'https://arena.example'
  },{method:'PUT'});

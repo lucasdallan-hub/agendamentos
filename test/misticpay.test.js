@@ -87,7 +87,7 @@ async function fixture(t,{key=encryptionKey}={}){
 }
 
 test('MisticPay: guarda as chaves cifradas e verifica um Pix existente sem criar cobrança',async t=>{
- const f=await fixture(t);
+ const f=await fixture(t,{key:` \r\n${encryptionKey}\n`});
  assert.equal((await f.api('/api/misticpay/config',undefined,{auth:false})).status,401);
  assert.equal((await f.configure(credentials,false)).status,401);
  assert.equal((await f.verify(sampleId,false)).status,401);
@@ -95,6 +95,7 @@ test('MisticPay: guarda as chaves cifradas e verifica um Pix existente sem criar
 
  const initial=(await f.config()).data;
  assert.equal(initial.storage_ready,true);
+ assert.equal(initial.storage_status,'ready');
  assert.equal(initial.verification_state,'unconfigured');
  assert.equal(initial.ready,false);
  assert.equal(initial.public_key_configured,false);
@@ -147,9 +148,21 @@ test('MisticPay: a ausência do segredo de armazenamento impede salvar ou verifi
  const initial=await f.config();
  assert.equal(initial.status,200);
  assert.equal(initial.data.storage_ready,false);
+ assert.equal(initial.data.storage_status,'secret_missing');
  assert.equal(initial.data.ready,false);
  assert.equal((await f.configure()).status,503);
  assert.equal((await f.verify()).status,503);
+ assert.deepEqual(f.provider.calls,[]);
+});
+
+test('MisticPay: painel distingue formato inválido do segredo com segurança',async t=>{
+ const f=await fixture(t,{key:'invalid-encryption-value'});
+ const config=await f.config();
+ assert.equal(config.status,200);
+ assert.equal(config.data.storage_ready,false);
+ assert.equal(config.data.storage_status,'secret_invalid');
+ assert.doesNotMatch(JSON.stringify(config.data),/invalid-encryption-value|key_id/i);
+ assert.equal((await f.configure()).status,503);
  assert.deepEqual(f.provider.calls,[]);
 });
 
@@ -187,6 +200,8 @@ test('MisticPay: ambiente com segredo de armazenamento diferente não sobrescrev
  f.db.prepare('UPDATE misticpay_connection SET credentials_key_id=?').run(differentKeyId);
  const inaccessible=(await f.config()).data;
  assert.equal(inaccessible.storage_ready,false);
+ assert.equal(inaccessible.storage_status,'key_mismatch');
+ assert.doesNotMatch(JSON.stringify(inaccessible),new RegExp(differentKeyId));
  assert.equal(inaccessible.ready,false);
  const stored=f.db.prepare('SELECT * FROM misticpay_connection').get();
  assert.ok(stored.active_credentials);

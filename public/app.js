@@ -601,7 +601,6 @@ const misticpayVerifyButton=document.createElement('button');
 misticpayVerifyButton.type='button';
 misticpayVerifyButton.className='outline';
 misticpayVerifyButton.textContent='Verificar conexão';
-misticpayVerifyButton.disabled=true;
 const misticpayActions=document.createElement('div');
 misticpayActions.className='misticpay-config-actions';
 misticpayConfigureButton.replaceWith(misticpayActions);
@@ -628,8 +627,17 @@ function misticpayErrorMarkup(error){
  ].filter(Boolean);
  return `<p>${esc(error.message||'A verificação falhou.')}</p>${details.length?`<small>${details.map(esc).join(' · ')}</small>`:''}`;
 }
+function misticpayStorageMessage(status){
+ const messages={
+  secret_missing:'Na Cloudflare, abra agendamentos → Configurações → Variáveis e segredos e adicione MISTICPAY_CREDENTIALS_KEY como segredo de produção.',
+  secret_invalid:'Edite MISTICPAY_CREDENTIALS_KEY e cole os 64 caracteres hexadecimais da chave gerada. Se a arena já foi configurada, use a chave original.',
+  key_mismatch:'Restaure o segredo original MISTICPAY_CREDENTIALS_KEY no Worker agendamentos para recuperar o acesso às credenciais salvas.',
+  arena_scope_invalid:'Abra o painel pelo domínio cadastrado para a arena. Se a mensagem persistir, confira o cadastro em Meu sistema.'
+ };
+ return messages[status]||'O armazenamento das chaves está temporariamente indisponível.';
+}
 function renderMisticpayConfig(){
- const {ready,storage_ready,public_key_configured,secret_key_configured,verification_state,verification_error,last_checked_at,last_verified_at}=misticpayConfig;
+ const {ready,storage_ready,storage_status,verification_state,verification_error,last_checked_at,last_verified_at}=misticpayConfig;
  const messages={
   unconfigured:'Cadastre as chaves da conta que receberá os pagamentos Pix.',
   pending:'Configuração salva. Verificação pendente.',
@@ -639,18 +647,35 @@ function renderMisticpayConfig(){
  const state=verification_state??(ready?'verified':'unconfigured');
  const checkedAt=formatMisticpayDate(last_checked_at||verification_error?.checked_at);
  const verifiedAt=formatMisticpayDate(last_verified_at);
- const content=[storage_ready===false?'O armazenamento das chaves está temporariamente indisponível.':messages[state]];
+ const content=[storage_ready===false?misticpayStorageMessage(storage_status):messages[state]];
  if(ready&&state!=='verified')content.push('Os pagamentos usam a última configuração verificada.');
  if(checkedAt)content.push(`Última consulta em ${checkedAt}.`);
  if(verifiedAt&&verifiedAt!==checkedAt)content.push(`Última verificação bem-sucedida em ${verifiedAt}.`);
  misticpayDescription.textContent=content.filter(Boolean).join(' ');
  misticpayDiagnostic.innerHTML=misticpayErrorMarkup(verification_error);
- misticpayConfigureButton.disabled=storage_ready===false;
- misticpayVerifyButton.disabled=storage_ready===false||!public_key_configured||!secret_key_configured;
  misticpayVerifyButton.textContent=state==='failed'?'Verificar novamente':'Verificar conexão';
 }
+function showMisticpayStorageHelp(openNext){
+ const status=misticpayConfig.storage_status;
+ const cloudflareLink=status==='arena_scope_invalid'?'':'<p><a href="https://dash.cloudflare.com/?to=/:account/workers-and-pages" target="_blank" rel="noopener noreferrer">Abrir Cloudflare</a></p>';
+ openModal('Configuração MisticPay',`<p id="misticpay-storage-status" role="status">${esc(misticpayStorageMessage(status))}</p>${cloudflareLink}`,async ()=>{
+  const feedback=$('#misticpay-storage-status');
+  misticpayConfig=await api('misticpay/config');
+  renderMisticpayConfig();
+  if(!feedback.isConnected||!$('#modal').open)return false;
+  if(misticpayConfig.storage_ready){
+   $('#modal').close();
+   openNext();
+  }else{
+   feedback.textContent=misticpayStorageMessage(misticpayConfig.storage_status);
+  }
+  return false;
+ },'Conferir novamente');
+}
 
-misticpayConfigureButton.onclick=()=>openModal('Configurar MisticPay',`
+function openMisticpayConfiguration(){
+ if(misticpayConfig.storage_ready===false)return showMisticpayStorageHelp(openMisticpayConfiguration);
+ openModal('Configurar MisticPay',`
  <label>Endereço público HTTPS da arena<input name="base_url" type="url" value="${esc(misticpayConfig.base_url||location.origin)}" required></label>
  <label>Client ID<input name="client_id" type="password" autocomplete="new-password" maxlength="255" placeholder="${misticpayConfig.public_key_configured?'Deixe vazio para manter a chave pk_ salva':'pk_…'}" ${misticpayConfig.public_key_configured?'':'required'}></label>
  <label>Client Secret<input name="client_secret" type="password" autocomplete="new-password" maxlength="255" placeholder="${misticpayConfig.secret_key_configured?'Deixe vazio para manter a chave sk_ salva':'sk_…'}" ${misticpayConfig.secret_key_configured?'':'required'}></label>
@@ -664,8 +689,13 @@ misticpayConfigureButton.onclick=()=>openModal('Configurar MisticPay',`
  toast('Configuração MisticPay salva.');
  return false;
 },'Salvar configuração');
+}
+misticpayConfigureButton.onclick=openMisticpayConfiguration;
 
-misticpayVerifyButton.onclick=()=>openModal('Verificar conexão MisticPay',`
+function openMisticpayVerification(){
+ if(misticpayConfig.storage_ready===false)return showMisticpayStorageHelp(openMisticpayVerification);
+ if(!misticpayConfig.public_key_configured||!misticpayConfig.secret_key_configured)return openMisticpayConfiguration();
+ openModal('Verificar conexão MisticPay',`
  <p>A verificação consulta um Pix existente com as chaves já salvas. Salve qualquer alteração na configuração antes de verificar.</p>
  <label>Identificador da transação Pix<input id="misticpay-verification-id" name="transaction_id" maxlength="128" autocomplete="off" spellcheck="false" aria-describedby="misticpay-verification-help" required></label>
  <p id="misticpay-verification-help">Copie o ID de uma transação Pix no painel da MisticPay.</p>
@@ -687,6 +717,8 @@ misticpayVerifyButton.onclick=()=>openModal('Verificar conexão MisticPay',`
  }
  return false;
 },'Verificar conexão');
+}
+misticpayVerifyButton.onclick=openMisticpayVerification;
 $('#modal').addEventListener('close',()=>{
  $('#modal-fields').querySelectorAll('[name="client_id"],[name="client_secret"],#misticpay-verification-id').forEach(field=>{field.value='';});
 });

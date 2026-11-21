@@ -1,5 +1,3 @@
-import {Buffer} from 'node:buffer';
-import {createHash} from 'node:crypto';
 import {transaction} from './storage.js';
 import {misticpayCredentials} from './misticpay-credentials.js';
 import {misticpayDiagnostic,transactionIdPattern} from './misticpay-api.js';
@@ -45,7 +43,7 @@ function configurationMatches(first,second){
 
 export function createMisticPayConnection(db,{encryptionKey,scope,lookup}){
  const vault=misticpayCredentials(encryptionKey,scope);
- const keyId=vault.ready?createHash('sha256').update(Buffer.from(encryptionKey,'hex')).digest('hex').slice(0,32):null;
+ const keyId=vault.keyId;
  transaction(db,()=>{
   db.exec("CREATE TABLE IF NOT EXISTS misticpay_connection(id INTEGER PRIMARY KEY CHECK(id=1),public_key TEXT NOT NULL,secret_key TEXT NOT NULL,base_url TEXT NOT NULL)");
   const installed=new Set(db.prepare('PRAGMA table_info(misticpay_connection)').all().map(column=>column.name));
@@ -55,7 +53,11 @@ export function createMisticPayConnection(db,{encryptionKey,scope,lookup}){
  });
  const read=()=>db.prepare('SELECT * FROM misticpay_connection WHERE id=1').get();
  const latestOrder=()=>db.prepare('SELECT id,provider_id,amount_cents FROM misticpay_orders WHERE archived=0 ORDER BY created_at DESC,id DESC LIMIT 1').get();
- const storageReady=row=>vault.ready&&(!row?.credentials_key_id||row.credentials_key_id===keyId);
+ function storageStatus(row){
+  if(!vault.ready)return vault.status;
+  return row?.credentials_key_id&&row.credentials_key_id!==keyId?'key_mismatch':'ready';
+ }
+ const storageReady=row=>storageStatus(row)==='ready';
  const ready=row=>storageReady(row)&&!!(row?.active_credentials&&row.last_verified_at&&!row.active_auth_failed);
  const requireStorage=row=>{
   if(!storageReady(row))fail('O armazenamento de chaves da MisticPay está indisponível. Confira o segredo do Worker.',503);
@@ -65,7 +67,7 @@ export function createMisticPayConnection(db,{encryptionKey,scope,lookup}){
   const configured=!!(row?.pending_credentials||row?.active_credentials||row?.public_key&&row.secret_key);
   const error=row?.verification_error?JSON.parse(row.verification_error):null;
   return {
-   ready:ready(row),storage_ready:storageReady(row),
+   ready:ready(row),storage_ready:storageReady(row),storage_status:storageStatus(row),
    public_key_configured:configured,secret_key_configured:configured,
    base_url:row?.pending_base_url??row?.base_url??'',
    verification_state:!configured?'unconfigured':error?'failed':row?.pending_credentials||!row?.last_verified_at?'pending':'verified',
