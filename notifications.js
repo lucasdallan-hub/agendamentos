@@ -9,6 +9,23 @@ const PROVIDERS={
  wuzapi:{name:'WUZAPI',url:'https://api.dallanspace.com.br',table:'notification_wuzapi',header:'Token',status:'/session/status',send:'/chat/send/text'}
 };
 const WEBHOOK_EVENTS=['CONNECTION'];
+const reminderLeadMinutes=10;
+const alertBatchSize=6;
+const scheduledRoles=new Set(['arena_start','arena_reminder','reminder']);
+const arenaClock=new Intl.DateTimeFormat('en-CA',{
+ timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit',
+ hour:'2-digit',minute:'2-digit',hourCycle:'h23'
+});
+
+const minutesOfDay=time=>Number(time.slice(0,2))*60+Number(time.slice(3));
+function alertWindow(){
+ const parts=arenaClock.formatToParts(Date.now());
+ const {year,month,day,hour,minute}=Object.fromEntries(parts.map(({type,value})=>[type,value]));
+ const time=`${hour}:${minute}`;
+ const lastMinute=Math.min(minutesOfDay(time)+reminderLeadMinutes,23*60+59);
+ const cutoff=String(Math.floor(lastMinute/60)).padStart(2,'0')+':'+String(lastMinute%60).padStart(2,'0');
+ return {date:`${year}-${month}-${day}`,time,cutoff};
+}
 
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 function normalizeNumber(value,country='55'){
@@ -64,6 +81,18 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
  CREATE TABLE IF NOT EXISTS notification_wuzapi(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL,base_url TEXT NOT NULL,api_key TEXT NOT NULL,arena_number TEXT NOT NULL,country_code TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS notification_webhook(id INTEGER PRIMARY KEY CHECK(id=1),url TEXT NOT NULL);`);
  initializeOutbox(db);
+ db.exec(`CREATE INDEX IF NOT EXISTS bookings_confirmed_end ON bookings(date,end) WHERE status='confirmed';
+ CREATE INDEX IF NOT EXISTS bookings_confirmed_start ON bookings(date,start) WHERE status='confirmed';`);
+ const dueStarts=db.prepare(`SELECT b.id FROM bookings b
+  WHERE b.status='confirmed' AND b.date=? AND b.start=? AND b.end>?
+  AND NOT EXISTS(SELECT 1 FROM booking_notifications n WHERE n.booking_id=b.id AND n.role='arena_start')
+  ORDER BY b.id`);
+ const dueReminders=db.prepare(`SELECT b.id,b.phone FROM bookings b
+  WHERE b.status='confirmed' AND b.date=? AND b.start<=? AND b.end>? AND b.end<=?
+  AND (SELECT COUNT(*) FROM booking_notifications n WHERE n.booking_id=b.id AND n.role IN ('reminder','arena_reminder'))<2
+  ORDER BY b.end,b.id`);
+ const insertEvent=db.prepare(`INSERT INTO booking_notifications(id,booking_id,recipient,role,status,created_at,updated_at,error,provider)
+  VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(booking_id,role) DO NOTHING`);
  // Earlier versions accepted the Swagger page as a base URL. Repair only
  // that stored address; preserve the instance token and notification settings.
  const legacy=db.prepare('SELECT base_url FROM notification_connection WHERE id=1').get();
@@ -140,17 +169,21 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   });
   return summary(id);
  }
- function enqueue(bookingId,phone){
-  const id=sendingProvider(),c=stored(id);
-  if(!c.enabled||!c.base_url||!c.api_key||!c.arena_number)return;
+ function recordEvent(bookingId,recipient,role,provider,status){
+  const id=randomBytes(16).toString('hex');
   const now=new Date().toISOString();
-  const insert=db.prepare(`INSERT INTO booking_notifications(id,booking_id,recipient,role,status,created_at,updated_at,error,provider)
-   VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(booking_id,role) DO NOTHING`);
-  insert.run(randomBytes(16).toString('hex'),bookingId,c.arena_number,'arena','pending',now,now,'',id);
-  let customerNumber='';
-  try{customerNumber=normalizeNumber(phone,c.country_code);}catch{}
-  insert.run(randomBytes(16).toString('hex'),bookingId,customerNumber,'client',customerNumber?'pending':'failed',now,now,
-   customerNumber?'':'O telefone do cliente não é um número válido para envio pelo WhatsApp.',id);
+  const error=recipient?'':'O telefone do cliente não é um número válido para envio pelo WhatsApp.';
+  const result=insertEvent.run(id,bookingId,recipient,role,recipient?status:'failed',now,now,error,provider);
+  return recipient&&result.changes?{id,booking_id:bookingId,recipient,role,provider}:null;
+ }
+ function customerNumber(phone,country){
+  try{return normalizeNumber(phone,country);}catch{return '';}
+ }
+ function enqueue(bookingId,phone){
+  const provider=sendingProvider(),c=stored(provider);
+  if(!c.enabled||!c.base_url||!c.api_key||!c.arena_number)return;
+  recordEvent(bookingId,c.arena_number,'arena',provider,'pending');
+  recordEvent(bookingId,customerNumber(phone,c.country_code),'client',provider,'pending');
  }
  function mark(id,status,error=''){
   db.prepare('UPDATE booking_notifications SET status=?,updated_at=?,error=? WHERE id=?').run(status,new Date().toISOString(),error,id);
@@ -163,9 +196,32 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
  function message(bookingId,role){
   const b=db.prepare('SELECT b.customer,b.phone,b.date,b.start,b.end,b.total,b.status,c.name court_name FROM bookings b JOIN courts c ON c.id=b.court_id WHERE b.id=?').get(bookingId);
   if(!b||b.status!=='confirmed')return null;
+  const arenaName=branding(db).name;
+  if(scheduledRoles.has(role)){
+   const {date,time,cutoff}=alertWindow();
+   if(b.date!==date||b.start>time||b.end<=time)return null;
+   if(role==='arena_start'?b.start!==time:b.end>cutoff)return null;
+   if(role==='reminder')return `⏳ *Seu horário está acabando!*
+🏐 ${arenaName}
+
+Olá, ${b.customer}!
+
+🎟️ *Reserva #${bookingId}*
+📍 *Quadra:* ${b.court_name}
+🕒 *Término: ${b.end}*`;
+
+   const title=role==='arena_start'?'▶️ *Horário iniciado!*':'⏳ *Horário da quadra terminando!*';
+   const remaining=minutesOfDay(b.end)-minutesOfDay(time);
+   return `${title}
+🏐 ${arenaName} · Reserva #${bookingId}
+
+📍 *Quadra:* ${b.court_name}
+👤 *Cliente:* ${b.customer}
+🕒 *Início:* ${b.start} · *Término:* ${b.end}
+⏱️ *Tempo restante: ${remaining} ${remaining===1?'minuto':'minutos'}*`;
+  }
   const date=new Date(b.date+'T12:00:00Z').toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'});
   const amount=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(b.total/100);
-  const arenaName=branding(db).name;
   if(role==='client'){
    return `✅ *Reserva confirmada!*
 🏐 ${arenaName}
@@ -193,13 +249,16 @@ ${arenaName} · Reserva #${bookingId}
 
 📋 Acompanhe a reserva e o pagamento no painel.`;
  }
- async function dispatchEvent(event){
-  // Callers only send after commit. Claim each recipient independently.
+ async function deliver(event){
   try{
-   const claim=db.prepare("UPDATE booking_notifications SET status='sending',updated_at=? WHERE id=? AND status='pending'").run(new Date().toISOString(),event.id);
-   if(!claim.changes)return;
    const provider=providerFor(event.provider),c=stored(event.provider),text=message(event.booking_id,event.role);
-   if(!text||!c.enabled){mark(event.id,'failed','Envio não realizado: a reserva ou as notificações foram desativadas.');return;}
+   if(!text||!c.enabled){
+    const reason=scheduledRoles.has(event.role)
+     ? 'O horário deste aviso passou, a reserva foi cancelada ou as notificações foram desativadas.'
+     : 'Envio não realizado: a reserva ou as notificações foram desativadas.';
+    mark(event.id,'failed',reason);
+    return;
+   }
    let response;
    try{
     const body=event.provider==='wuzapi'
@@ -216,6 +275,35 @@ ${arenaName} · Reserva #${bookingId}
    mark(event.id,'accepted');
   }catch{
    // Do not fail a committed booking or expose provider errors/credentials.
+  }
+ }
+ async function dispatchEvent(event){
+  // Claim each recipient independently after the booking transaction commits.
+  try{
+   const claim=db.prepare("UPDATE booking_notifications SET status='sending',updated_at=? WHERE id=? AND status='pending'").run(new Date().toISOString(),event.id);
+   if(claim.changes)await deliver(event);
+  }catch{
+   // Leave the event in the outbox if the claim could not be recorded.
+  }
+ }
+ async function processBookingAlerts(){
+  const provider=sendingProvider(),c=stored(provider);
+  if(!c.enabled||!c.base_url||!c.api_key||!c.arena_number)return;
+  const {date,time,cutoff}=alertWindow();
+  // Claim before calling the provider. An interrupted send might already have
+  // reached WhatsApp and must not be repeated automatically.
+  const claimed=transaction(db,()=>{
+   const starts=dueStarts.all(date,time,time).map(b=>
+    recordEvent(b.id,c.arena_number,'arena_start',provider,'sending')
+   );
+   const endings=dueReminders.all(date,time,time,cutoff).flatMap(b=>[
+    recordEvent(b.id,c.arena_number,'arena_reminder',provider,'sending'),
+    recordEvent(b.id,customerNumber(b.phone,c.country_code),'reminder',provider,'sending')
+   ]);
+   return [...starts,...endings].filter(Boolean);
+  });
+  for(let index=0;index<claimed.length;index+=alertBatchSize){
+   await Promise.all(claimed.slice(index,index+alertBatchSize).map(deliver));
   }
  }
  async function dispatch(bookingId){
@@ -367,5 +455,5 @@ ${arenaName} · Reserva #${bookingId}
   // not a guarantee of validity; the user may request a fresh code at any time.
   return {...session,qr_code:code,expires_at:new Date(Date.now()+20000).toISOString()};
  }
- return {summary,save,enqueue,dispatch,events,recoverPending,check,connect,syncWebhook};
+ return {summary,save,enqueue,dispatch,events,recoverPending,processBookingAlerts,check,connect,syncWebhook};
 }

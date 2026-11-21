@@ -10,12 +10,12 @@ const dateAfter=days=>{const date=new Date();date.setUTCDate(date.getUTCDate()+d
 const configuration=(overrides={})=>({enabled:true,base_url:'https://evolution.example.com',api_key:'fake-instance-token',target:'arena',arena_number:'(21) 98888-7777',country_code:'55',...overrides});
 async function arena(t,{seed=true,send}={}){
  const db=new DatabaseSync(':memory:');db.exec('PRAGMA foreign_keys=ON');
- const requests=[];let cookie='',server,court;
+ const requests=[];let cookie='',server,court,processBookingAlerts;
  const notificationFetch=async(url,options)=>{
   requests.push({url:String(url),headers:new Headers(options.headers),body:options.body?JSON.parse(options.body):undefined,options});
   return send?send(url,options):Response.json({message:'success',data:{Info:{ID:'fake-message-id'}}});
  };
- async function start(){({server}=createApplication({db,notificationFetch,paymentConfig:{ready:false,mode:'test'}}));server.listen(0,'127.0.0.1');await once(server,'listening');cookie='';}
+ async function start(){({server,processBookingAlerts}=createApplication({db,notificationFetch,paymentConfig:{ready:false,mode:'test'}}));server.listen(0,'127.0.0.1');await once(server,'listening');cookie='';}
  async function api(path,body,{method='POST',auth=true}={}){
   const response=await fetch(`http://127.0.0.1:${server.address().port}/api/`+path,{method:body===undefined?'GET':method,headers:{'Content-Type':'application/json',...(auth?{Cookie:cookie}:{})},body:body===undefined?undefined:JSON.stringify(body)});
   if(auth&&response.headers.get('set-cookie'))cookie=response.headers.get('set-cookie').split(';')[0];
@@ -23,7 +23,7 @@ async function arena(t,{seed=true,send}={}){
  }
  await start();t.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();});
  if(seed){assert.equal((await api('setup',{password:'notification-test-password'})).status,200);court=(await api('courts',{name:'Quadra WhatsApp',type:'Areia',price:120})).data.id;}
- return {db,api,requests,get court(){return court;},booking:(overrides={})=>({court_id:court,customer:'Cliente Teste',phone:'(11) 99999-8888',date:dateAfter(2),start:'18:00',end:'19:00',notes:'NOTA PRIVADA',...overrides}),restart:async()=>{await new Promise(resolve=>server.close(resolve));await start();assert.equal((await api('login',{password:'notification-test-password'})).status,200);}};
+ return {db,api,requests,get court(){return court;},booking:(overrides={})=>({court_id:court,customer:'Cliente Teste',phone:'(11) 99999-8888',date:dateAfter(2),start:'18:00',end:'19:00',notes:'NOTA PRIVADA',...overrides}),restart:async()=>{await new Promise(resolve=>server.close(resolve));await start();assert.equal((await api('login',{password:'notification-test-password'})).status,200);},processBookingAlerts:()=>processBookingAlerts()};
 }
 
 test('Evolution Go: configuração autenticada, validação, segredo preservado e nenhuma mensagem ao salvar',async t=>{
@@ -87,6 +87,108 @@ test('Evolution Go: reserva pública e repetição idempotente não duplicam men
  const events=(await f.api('notifications/events')).data;
  assert.deepEqual(events.map(({role})=>role).sort(),['arena','client']);
  assert.ok(events.every(event=>event.booking_id===first.data.reservation.id));
+});
+
+test('WhatsApp: avisa o administrador no início e os dois destinatários perto do término em São Paulo',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-25T23:30:00Z')});
+ const f=await arena(t);
+ const booking=await f.api('bookings',f.booking({date:'2026-11-25',start:'21:00',end:'22:00'}));
+ assert.equal(booking.status,201);
+ assert.equal((await f.api(`bookings/${booking.data.id}/payment`,{method:'Pix'})).status,200);
+ assert.equal((await f.api('notifications/config',configuration(),{method:'PUT'})).status,200);
+ assert.equal(f.requests.length,0);
+
+ t.mock.timers.setTime(Date.parse('2026-11-25T23:59:59.999Z'));
+ await f.processBookingAlerts();
+ assert.equal((await f.api('notifications/events')).status,200);
+ assert.equal(f.requests.length,0);
+
+ t.mock.timers.setTime(Date.parse('2026-11-26T00:00:37Z'));
+ await Promise.all([f.processBookingAlerts(),f.processBookingAlerts()]);
+ assert.equal(f.requests.length,1);
+ const start=f.requests[0];
+ assert.equal(start.url,'https://evolution.example.com/send/text');
+ assert.equal(start.body.number,'5521988887777');
+ assert.match(start.body.text,/in[ií]ci|come[cç]/iu);
+ assert.match(start.body.text,/Quadra WhatsApp/);
+ assert.match(start.body.text,/21:00/);
+ assert.match(start.body.text,/22:00/);
+ assert.match(start.body.text,/\b60 minutos\b/iu);
+
+ await f.restart();
+ await f.processBookingAlerts();
+ assert.equal(f.requests.length,1);
+ t.mock.timers.setTime(Date.parse('2026-11-26T00:49:59.999Z'));
+ await f.processBookingAlerts();
+ assert.equal(f.requests.length,1);
+
+ t.mock.timers.setTime(Date.parse('2026-11-26T00:50:00Z'));
+ await Promise.all([f.processBookingAlerts(),f.processBookingAlerts()]);
+ assert.equal(f.requests.length,3);
+ const ending=f.requests.slice(1);
+ assert.deepEqual(ending.map(({body})=>body.number).sort(),['5511999998888','5521988887777']);
+ const client=ending.find(({body})=>body.number==='5511999998888').body.text;
+ assert.match(client,/^⏳ \*Seu horário está acabando!\*/u);
+ assert.match(client,/🕒 \*Término: 22:00\*/u);
+ assert.match(client,/Cliente Teste/);
+ assert.match(client,/Quadra WhatsApp/);
+ const administrator=ending.find(({body})=>body.number==='5521988887777').body.text;
+ assert.match(administrator,/Quadra WhatsApp/);
+ assert.match(administrator,/21:00/);
+ assert.match(administrator,/22:00/);
+ assert.match(administrator,/\b10 minutos\b/iu);
+ assert.ok(f.requests.every(({body})=>!body.text.includes('NOTA PRIVADA')));
+ assert.equal(new Set(f.requests.map(({body})=>body.id)).size,3);
+ const events=(await f.api('notifications/events')).data;
+ assert.ok(events.every(({booking_id,status})=>booking_id===booking.data.id&&status==='accepted'));
+ assert.deepEqual(events.map(({role})=>role).sort(),['arena_reminder','arena_start','reminder']);
+
+ await f.restart();
+ await f.processBookingAlerts();
+ assert.equal(f.requests.length,3);
+});
+
+test('WhatsApp: ignora reservas canceladas e encerradas e não recupera alertas de início após o prazo',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-25T23:30:00Z')});
+ const f=await arena(t);
+ const date='2026-11-25';
+ const expired=await f.api('bookings',f.booking({date,start:'20:00',end:'21:00'}));
+ const cancelled=await f.api('bookings',f.booking({date,start:'21:00',end:'21:30'}));
+ const upcoming=await f.api('bookings',f.booking({date,start:'21:30',end:'22:00'}));
+ assert.deepEqual([expired.status,cancelled.status,upcoming.status],[201,201,201]);
+ assert.equal((await f.api(`bookings/${cancelled.data.id}/cancel`,{})).status,200);
+ assert.equal((await f.api('notifications/config',configuration(),{method:'PUT'})).status,200);
+
+ for(const time of ['2026-11-26T00:00:00Z','2026-11-26T00:20:00Z']){
+  t.mock.timers.setTime(Date.parse(time));
+  await f.processBookingAlerts();
+  assert.equal(f.requests.length,0);
+ }
+
+ assert.equal((await f.api('notifications/config',configuration({enabled:false}),{method:'PUT'})).status,200);
+ t.mock.timers.setTime(Date.parse('2026-11-26T00:30:00Z'));
+ await f.processBookingAlerts();
+ assert.equal(f.requests.length,0);
+
+ t.mock.timers.setTime(Date.parse('2026-11-26T00:31:00Z'));
+ assert.equal((await f.api('notifications/config',configuration(),{method:'PUT'})).status,200);
+ await f.processBookingAlerts();
+ assert.equal(f.requests.length,0);
+
+ assert.equal((await f.api('notifications/config',configuration({enabled:false}),{method:'PUT'})).status,200);
+ t.mock.timers.setTime(Date.parse('2026-11-26T00:50:00Z'));
+ await f.processBookingAlerts();
+ assert.equal(f.requests.length,0);
+
+ t.mock.timers.setTime(Date.parse('2026-11-26T00:53:00Z'));
+ assert.equal((await f.api('notifications/config',configuration(),{method:'PUT'})).status,200);
+ await f.processBookingAlerts();
+ assert.deepEqual(f.requests.map(({body})=>body.number).sort(),['5511999998888','5521988887777']);
+ const administrator=f.requests.find(({body})=>body.number==='5521988887777');
+ assert.match(administrator.body.text,/\b7 minutos\b/iu);
+ const events=(await f.api('notifications/events')).data;
+ assert.ok(events.every(({booking_id,status})=>booking_id===upcoming.data.id&&status==='accepted'));
+ assert.deepEqual(events.map(({role})=>role).sort(),['arena_reminder','reminder']);
 });
 
 test('Evolution Go: número inválido do cliente não impede o aviso ao administrador',async t=>{

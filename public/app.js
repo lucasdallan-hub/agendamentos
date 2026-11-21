@@ -92,9 +92,55 @@ function courtCard(court){
    </div>
   </div></article>`;
 }
+const liveCourtClock=new Intl.DateTimeFormat('en-CA',{
+ timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit',
+ hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'
+});
+const liveCourtSeconds=value=>Number(value.slice(0,2))*3600+Number(value.slice(3,5))*60;
+let liveCourtMinute='',liveCourtCounters=[];
+
+function liveCourtCard(court,booking){
+ const badge=booking?'<span class="badge paid">Em andamento</span>':court.active?'<span class="badge">Livre agora</span>':'';
+ return `<article class="live-court-card">
+  <div class="live-court-heading"><div><h2>${esc(court.name)}</h2><p>${esc(court.type)}</p></div>
+   <div class="live-court-badges">${badge}${court.active?'':'<span class="badge cancelled">Inativa</span>'}</div>
+  </div>
+  ${booking?`<p class="live-court-booking">Reserva #${esc(booking.id)} · ${esc(booking.customer)}</p>
+   <dl class="live-court-timing">
+    <div><dt>Início</dt><dd>${esc(booking.start)}</dd></div>
+    <div><dt>Término</dt><dd>${esc(booking.end)}</dd></div>
+    <div class="live-court-timer"><dt>Tempo restante</dt><dd data-live-end="${liveCourtSeconds(booking.end)}"></dd></div>
+   </dl>`:''}
+ </article>`;
+}
+function renderLiveCourts(force=false,now=new Date()){
+ const time=Object.fromEntries(liveCourtClock.formatToParts(now).map(({type,value})=>[type,value]));
+ const date=`${time.year}-${time.month}-${time.day}`;
+ const seconds=Number(time.hour)*3600+Number(time.minute)*60+Number(time.second);
+ const minute=`${date}:${time.hour}:${time.minute}`;
+ if(force||minute!==liveCourtMinute){
+  liveCourtMinute=minute;
+  const active=new Map();
+  for(const booking of bookings){
+   if(booking.status==='confirmed'&&booking.date===date&&liveCourtSeconds(booking.start)<=seconds&&seconds<liveCourtSeconds(booking.end)){
+    active.set(booking.court_id,booking);
+   }
+  }
+  const list=$('#live-court-list');
+  list.innerHTML=courts.map(court=>liveCourtCard(court,active.get(court.id))).join('')||'<p>Nenhuma quadra cadastrada.</p>';
+  liveCourtCounters=list.querySelectorAll('[data-live-end]');
+  $('#today-label').textContent=now.toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo',weekday:'long',day:'numeric',month:'long'}).toUpperCase();
+ }
+ for(const counter of liveCourtCounters){
+  const remaining=Math.max(0,Number(counter.dataset.liveEnd)-seconds);
+  counter.textContent=[Math.floor(remaining/3600),Math.floor(remaining/60)%60,remaining%60]
+   .map(value=>String(value).padStart(2,'0')).join(':');
+ }
+}
 function render(){
  renderNotifications();
  if(view==='history')renderHistory();
+ if(view==='live')renderLiveCourts(true);
  const active=bookings.filter(b=>b.status==='confirmed'), daily=active.filter(b=>b.date===today()), paid=active.filter(b=>b.paid), pending=active.filter(b=>!b.paid&&!['refunded','charged_back','review'].includes(b.online_status)&&!misticpayHistorical.includes(b.misticpay_status)&&b.misticpay_status!=='review');
  document.querySelectorAll('[data-payment-banner]').forEach(el=>{el.classList.toggle('payment-ready',paymentConfig.ready);el.innerHTML=`<div><strong>Mercado Pago · ${paymentConfig.ready?(paymentConfig.mode==='test'?'Modo de teste':'Cobrança online ativa'):'Aguardando ativação'}</strong><p>${paymentConfig.ready?(paymentConfig.mode==='test'?'Links de teste: use contas de teste do Mercado Pago. Não representam recebimentos reais.':'Envie o link ao cliente. A confirmação é consultada diretamente no Mercado Pago.'):'Configure a conta Mercado Pago, a assinatura das notificações e o endereço público para gerar cobranças.'}</p></div><span class="badge ${paymentConfig.ready?'paid':''}">${paymentConfig.ready?'Checkout Pro':'Configuração pendente'}</span>`;});
  $('#financial-connection-description').textContent=paymentConfig.ready?`Conta ${paymentConfig.account_id||'configurada'} · ${paymentConfig.mode==='production'?'Produção':'Teste'} · conexão exclusiva desta arena.`:'Configure as credenciais da conta que receberá os pagamentos desta arena.';
@@ -150,8 +196,8 @@ for(const id of ['history-search','history-from','history-to','history-status'])
 $('#history-previous').onclick=()=>{historyPage--;renderHistory();};
 $('#history-next').onclick=()=>{historyPage++;renderHistory();};
 
-const titles={overview:['Tudo pronto para o próximo jogo.','Acompanhe sua arena e mantenha cada reserva em dia.','Visão geral'],bookings:['Cada jogo tem seu horário.','Organize as reservas e acompanhe os pagamentos.','Agendamentos'],history:['Histórico de agendamentos','Consulte as reservas registradas na arena.','Histórico'],courts:['A casa dos próximos jogos.','Gerencie os espaços e valores da sua arena.','Minhas quadras'],systems:['Seu sistema, sua identidade.','Personalize sua arena e gerencie as cópias do sistema mãe.','Meu sistema'],finance:['Suas contas em dia.','Acompanhe os valores recebidos e os pagamentos pendentes.','Financeiro']};
-function setView(next){view=next;$('#new-booking').hidden=['systems','history'].includes(view);document.querySelectorAll('nav button').forEach(b=>{const active=b.dataset.view===view;b.classList.toggle('selected',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});$('#page-title').textContent=titles[view][0];$('#page-subtitle').textContent=titles[view][1];$('#breadcrumb').textContent=titles[view][2];$('#overview-content').hidden=view!=='overview';$('#bookings-content').hidden=!['overview','bookings'].includes(view);$('#history-content').hidden=view!=='history';$('#courts-content').hidden=view!=='courts';$('#finance-content').hidden=view!=='finance';$('#systems-content').hidden=view!=='systems';$('#filter-date').value=view==='overview'?today():'';$('#list-title').firstChild.textContent=view==='overview'?'Agenda de hoje ':'Agendamentos ';$('#list-description').textContent=view==='overview'?'Confira os horários e prepare a quadra.':'Use os filtros para encontrar uma reserva.';render();}
+const titles={overview:['Tudo pronto para o próximo jogo.','Acompanhe sua arena e mantenha cada reserva em dia.','Visão geral'],bookings:['Cada jogo tem seu horário.','Organize as reservas e acompanhe os pagamentos.','Agendamentos'],history:['Histórico de agendamentos','Consulte as reservas registradas na arena.','Histórico'],courts:['A casa dos próximos jogos.','Gerencie os espaços e valores da sua arena.','Minhas quadras'],live:['Quadras ao vivo','Acompanhe o tempo restante de cada reserva pelo horário de São Paulo.','Quadras ao vivo'],systems:['Seu sistema, sua identidade.','Personalize sua arena e gerencie as cópias do sistema mãe.','Meu sistema'],finance:['Suas contas em dia.','Acompanhe os valores recebidos e os pagamentos pendentes.','Financeiro']};
+function setView(next){view=next;$('#new-booking').hidden=['systems','history','live'].includes(view);document.querySelectorAll('nav button').forEach(b=>{const active=b.dataset.view===view;b.classList.toggle('selected',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});$('#page-title').textContent=titles[view][0];$('#page-subtitle').textContent=titles[view][1];$('#breadcrumb').textContent=titles[view][2];$('#overview-content').hidden=view!=='overview';$('#bookings-content').hidden=!['overview','bookings'].includes(view);$('#history-content').hidden=view!=='history';$('#courts-content').hidden=view!=='courts';$('#live-courts-content').hidden=view!=='live';$('#finance-content').hidden=view!=='finance';$('#systems-content').hidden=view!=='systems';$('#filter-date').value=view==='overview'?today():'';$('#list-title').firstChild.textContent=view==='overview'?'Agenda de hoje ':'Agendamentos ';$('#list-description').textContent=view==='overview'?'Confira os horários e prepare a quadra.':'Use os filtros para encontrar uma reserva.';render();}
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>setView(b.dataset.view));
 $('#today-label').textContent=new Date().toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo',weekday:'long',day:'numeric',month:'long'}).toUpperCase();$('#filter-date').value=today();$('#filter-date').onchange=render;$('#filter-status').onchange=render;
 function openModal(title,fields,action,label='Salvar'){stopQrSession();$('#modal-fields').onclick=null;$('#modal-fields').onchange=null;$('#modal-title').textContent=title;$('#modal-fields').innerHTML=fields;$('#modal-error').textContent='';$('#save-modal').textContent=label;submitModal=action;$('#modal').showModal();}
@@ -455,15 +501,16 @@ async function loadSystems(){
  $('#children-list').innerHTML=childSystems.length?childSystems.map(system=>`<article class="court-card"><div class="court-info"><h3>${esc(system.name)}</h3><p>${esc(system.hostname)}</p><span class="badge">${system.status==='ready'?'Cópia criada':'Cópia pendente'}</span><p>Dados copiados em ${new Date(system.created_at).toLocaleString('pt-BR')}</p>${system.status==='ready'?`<a class="outline" href="https://${esc(system.hostname)}" target="_blank" rel="noopener noreferrer">Abrir sistema ↗</a>`:''}<p>O acesso depende do DNS e HTTPS configurados na Cloudflare.</p></div></article>`).join(''):'<p>Nenhum sistema filho criado.</p>';
 }
 function renderNotifications(){
- $('#notifications-description').textContent=notificationConfig.enabled?(notificationConfig.ready?`Confirmações de novos agendamentos habilitadas para o cliente e para o administrador (${notificationConfig.arena_number}).`:'Envio habilitado, mas a configuração ainda está incompleta.'):'Envio desativado para este provedor.';
+ $('#notifications-description').textContent=notificationConfig.enabled?(notificationConfig.ready?`Confirmações para clientes e para o administrador (${notificationConfig.arena_number}). O administrador recebe avisos no início e 10 minutos antes do término. O cliente recebe o lembrete de término.`:'Envio habilitado, mas a configuração ainda está incompleta.'):'Envio desativado para este provedor.';
  const canConnect=notificationConfig.connection_ready??(notificationConfig.token_configured&&!!notificationConfig.base_url);
  $('#check-notifications').disabled=!canConnect;$('#connect-notifications').disabled=!canConnect;
  $('#configure-evolution-webhook').hidden=whatsappProvider!=='evolution';
  $('#configure-evolution-webhook').disabled=!canConnect;
  $('#configure-evolution-webhook').textContent=notificationConfig.webhook_configured?'Atualizar webhook':'Sincronizar webhook';
  const labels={pending:'Aguardando envio',sending:'Envio em andamento',accepted:'Aceita pela API',failed:'Falha no envio',unknown:'Resultado incerto'};
+ const roles={client:'Cliente',arena:'Administrador da arena',reminder:'Lembrete ao cliente',arena_start:'Início da quadra',arena_reminder:'Fim próximo da quadra'};
  $('#notifications-rows').innerHTML=notificationEvents.map(event=>{
-  const role=event.role==='client'?'Cliente':'Administrador da arena';
+  const role=roles[event.role]||roles.arena;
   return `<tr><td>#${esc(event.booking_id)}</td><td>${role}<small>${esc(event.recipient||'Número indisponível')}</small></td><td><span class="badge ${event.status==='accepted'?'paid':event.status==='failed'?'cancelled':''}">${labels[event.status]||'Status desconhecido'}</span></td><td>${new Date(event.updated_at||event.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</td><td>${esc(event.error|| (event.status==='unknown'?'Confira o provedor antes de enviar novamente.':event.status==='accepted'?'A entrega no WhatsApp ainda não foi confirmada.':''))}</td></tr>`;
  }).join('');
  $('#notifications-empty').hidden=notificationEvents.length>0;
@@ -494,7 +541,7 @@ $('#configure-notifications').onclick=()=>{
  const wuzapi=selected==='wuzapi';
  const tokenLabel=wuzapi?'Token administrativo':'Token da instância';
  const tokenName=wuzapi?'admin_token':'api_key';
- openModal('Confirmações por WhatsApp',`<p>Conexão exclusiva desta arena. Use o servidor ${provider.url} e o ${tokenLabel.toLowerCase()}. Você poderá conectar o WhatsApp pelo QR Code após salvar. <a href="${provider.docs}" target="_blank" rel="noopener noreferrer">Documentação da API ↗</a></p><label class="check-label"><input id="notifications-enabled" name="enabled" type="checkbox" ${notificationConfig.enabled?'checked':''}> Usar ${provider.name} para confirmar novos agendamentos ao cliente e ao administrador</label><label>URL HTTPS de ${provider.name}<input id="notifications-url" name="base_url" type="url" value="${esc(notificationConfig.base_url||provider.url)}" maxlength="2000" placeholder="${provider.url}" ${selected==='wuzapi'?'readonly':''}></label><label>${tokenLabel}<input id="notifications-api-key" name="${tokenName}" type="password" autocomplete="new-password" maxlength="2000" placeholder="${notificationConfig.token_configured?'Já configurado; deixe vazio para manter':tokenLabel}"></label>${wuzapi?'<label>ID da sessão WUZAPI<input name="session_id" maxlength="200" autocomplete="off" placeholder="Obrigatório se houver mais de uma sessão"></label><p>O token administrativo é usado para localizar a sessão. O painel guarda apenas o token da sessão selecionada.</p>':''}<label>WhatsApp do administrador<input id="notifications-arena-number" name="arena_number" type="tel" maxlength="30" value="${esc(notificationConfig.arena_number||'')}" placeholder="55 11 99999-9999"></label><label>Código do país para números locais<input id="notifications-country-code" name="country_code" inputmode="numeric" maxlength="3" value="${esc(notificationConfig.country_code||'55')}"></label><p>Salvar a configuração não envia uma mensagem. Apenas novos agendamentos geram avisos; uma falha no WhatsApp não cancela a reserva. Ativar este provedor desativa o envio pelo outro. A credencial da sessão fica salva somente nesta arena.</p>`,async data=>{
+ openModal('Notificações por WhatsApp',`<p>Conexão exclusiva desta arena. Use o servidor ${provider.url} e o ${tokenLabel.toLowerCase()}. Você poderá conectar o WhatsApp pelo QR Code após salvar. <a href="${provider.docs}" target="_blank" rel="noopener noreferrer">Documentação da API ↗</a></p><label class="check-label"><input id="notifications-enabled" name="enabled" type="checkbox" ${notificationConfig.enabled?'checked':''}> Usar ${provider.name} para enviar confirmações e lembretes de reservas</label><label>URL HTTPS de ${provider.name}<input id="notifications-url" name="base_url" type="url" value="${esc(notificationConfig.base_url||provider.url)}" maxlength="2000" placeholder="${provider.url}" ${selected==='wuzapi'?'readonly':''}></label><label>${tokenLabel}<input id="notifications-api-key" name="${tokenName}" type="password" autocomplete="new-password" maxlength="2000" placeholder="${notificationConfig.token_configured?'Já configurado; deixe vazio para manter':tokenLabel}"></label>${wuzapi?'<label>ID da sessão WUZAPI<input name="session_id" maxlength="200" autocomplete="off" placeholder="Obrigatório se houver mais de uma sessão"></label><p>O token administrativo é usado para localizar a sessão. O painel guarda apenas o token da sessão selecionada.</p>':''}<label>WhatsApp do administrador<input id="notifications-arena-number" name="arena_number" type="tel" maxlength="30" value="${esc(notificationConfig.arena_number||'')}" placeholder="55 11 99999-9999"></label><label>Código do país para números locais<input id="notifications-country-code" name="country_code" inputmode="numeric" maxlength="3" value="${esc(notificationConfig.country_code||'55')}"></label><p>O administrador recebe um aviso no início. Cliente e administrador recebem outro 10 minutos antes do fim. Salvar a configuração não dispara uma mensagem. Ativar este provedor desativa o envio pelo outro. A credencial da sessão fica salva somente nesta arena.</p>`,async data=>{
   notificationConfig=await api(notificationRoute('config',selected),{...data,enabled:data.enabled==='on',target:'both'},'PUT');
   $('#notifications-connection').textContent='Configuração salva. Use Verificar conexão para consultar a sessão do WhatsApp.';
  });
@@ -724,4 +771,5 @@ $('#edit-branding').onclick=()=>{
 $('#edit-domain').onclick=()=>openModal('Alterar subdomínio',`<p>O endereço atual deixará de apontar para este filho. Configure o DNS e HTTPS do novo endereço na Cloudflare antes de salvar. Será necessário entrar novamente no novo endereço.</p><label>Novo subdomínio<input name="hostname" placeholder="unidade.seudominio.com.br" required></label>`,async data=>{const result=await api('system/domain',data,'PUT');location.assign(result.url);return false;});
 $('#new-system').onclick=()=>openModal('Criar sistema filho',`<p>Serão copiados quadras, reservas, configurações Pix, comprovantes e histórico financeiro. A cópia é independente; mudanças futuras não são sincronizadas. Sessões, senhas e credenciais Mercado Pago ou Evolution Go não são copiadas.</p><label>Nome do sistema<input name="name" maxlength="80" required></label><label>Identificador<input name="slug" pattern="[a-z0-9][a-z0-9-]{0,39}" maxlength="40" placeholder="arena-centro" required></label><label>Subdomínio completo<input name="hostname" placeholder="centro.seudominio.com.br" maxlength="253" required></label><label>Senha do administrador do filho<input name="password" type="password" minlength="10" maxlength="200" autocomplete="new-password" required></label><p>Usuário do filho: admin. Conecte o subdomínio ao mesmo Worker na Cloudflare após criar a cópia.</p>`,data=>api('systems',data),'Criar cópia completa');
 init();
+setInterval(()=>{if(view==='live'&&!$('#app').hidden&&!document.hidden)renderLiveCourts();},1000);
 setInterval(()=>{if(!$('#app').hidden&&!document.hidden)refresh().catch(e=>toast(e.message));},30000);

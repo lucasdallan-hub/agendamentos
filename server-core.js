@@ -256,5 +256,5 @@ const server=http.createServer(async(req,res)=>{
   return json(res,404,{error:'Não encontrado.'});
  } catch(error) { if(!error.status) console.error(error); return json(res,error.status||500,{error:error.status?error.message:'Erro interno do servidor.'}); }
 });
-return {server,db,retryMisticpayConfirmations:misticpay.retryConfirmations};
+return {server,db,retryMisticpayConfirmations:misticpay.retryConfirmations,processBookingAlerts:notifications.processBookingAlerts};
 }

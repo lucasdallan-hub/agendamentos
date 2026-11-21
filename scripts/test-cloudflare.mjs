@@ -49,7 +49,7 @@ async function stop(){
 }
 async function start(options){
  await makeConfig(options);output='';
- worker=spawn(process.execPath,[path.join(root,'node_modules/wrangler/bin/wrangler.js'),'dev','--local','--config',configFile,'--ip','127.0.0.1','--port',String(port),'--inspector-port','0','--persist-to',persist,'--log-level','warn','--show-interactive-dev-session','false'],{cwd:root,detached:true,stdio:['ignore','pipe','pipe'],env:{...process.env,XDG_CONFIG_HOME:path.join(directory,'config'),WRANGLER_SEND_METRICS:'false',WRANGLER_LOG_PATH:path.join(directory,'wrangler.log')}});
+ worker=spawn(process.execPath,[path.join(root,'node_modules/wrangler/bin/wrangler.js'),'dev','--local','--test-scheduled','--config',configFile,'--ip','127.0.0.1','--port',String(port),'--inspector-port','0','--persist-to',persist,'--log-level','warn','--show-interactive-dev-session','false'],{cwd:root,detached:true,stdio:['ignore','pipe','pipe'],env:{...process.env,XDG_CONFIG_HOME:path.join(directory,'config'),WRANGLER_SEND_METRICS:'false',WRANGLER_LOG_PATH:path.join(directory,'wrangler.log')}});
  for(const stream of [worker.stdout,worker.stderr])stream.on('data',chunk=>{output+=chunk.toString();if(output.length>100000)output=output.slice(-80000);});
  const deadline=Date.now()+60000;
  while(Date.now()<deadline){
@@ -189,6 +189,13 @@ try{
  assert.equal((await api('/api/courts')).data.some(c=>c.name==='Só no filho'),false);
  assert.equal((await api('/api/system/branding')).data.name,'Arena Mãe');
  passed('full child clone, receipts, independent credentials, branding and database isolation');
+ const scheduled=await fetch(base+'/__scheduled?cron='+encodeURIComponent('* * * * *'));
+ const scheduledBody=await scheduled.text();
+ assert.equal(scheduled.status,200,scheduledBody+'\n'+logs());
+ assert.equal(scheduledBody,'Ran scheduled event');
+ assert.deepEqual((await api('/api/notifications/events')).data,[]);
+ assert.deepEqual((await api('/api/notifications/events',undefined,{headers:{...childHeaders,Cookie:childCookie}})).data,[]);
+ passed('scheduled WhatsApp reminder handler runs with a ready child and respects disabled notifications');
  const session=cookie;
  await stop();
  // No bootstrap secret on restart: persisted admin and session must still work.

@@ -7,6 +7,9 @@
     "nodejs_compat"
   ],
   "workers_dev": true,
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",

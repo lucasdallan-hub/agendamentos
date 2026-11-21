@@ -32,7 +32,7 @@ export class Arena extends DurableObject {
   }:null;
   // Children retain financial history but never inherit the mother's provider credentials.
   const paymentConfig=child?{ready:false,mode:'test'}:paymentConfiguration(this.env);
-  const {server,retryMisticpayConfirmations}=createApplication({
+  const {server,retryMisticpayConfirmations,processBookingAlerts}=createApplication({
    db,paymentConfig,paymentClient:new MercadoPago(paymentConfig),
    misticpayEncryptionKey:this.env.MISTICPAY_CREDENTIALS_KEY,
    misticpayManagedEncryptionKey:this.env.MISTICPAY_MANAGED_CREDENTIALS_KEY,
@@ -45,8 +45,13 @@ export class Arena extends DurableObject {
   });
   this.nodeHandler=httpServerHandler(server);
   this.retryMisticpayConfirmations=retryMisticpayConfirmations;
+  this.processBookingAlerts=processBookingAlerts;
  }
  async alarm(){await this.retryMisticpayConfirmations();}
+ async sendBookingAlerts(){await this.processBookingAlerts();}
+ readyChildSystems(){
+  return this.db.prepare("SELECT slug FROM child_systems WHERE status='ready'").all().map(({slug})=>'child:'+slug);
+ }
  async initializeChild(payload){
   installSystem(this.db,payload);
   this.configure();
@@ -102,6 +107,13 @@ const publicFiles=new Map([
 ]);
 
 export default {
+ async scheduled(_controller,env){
+  const main=env.ARENA.getByName('main');
+  const children=await main.readyChildSystems();
+  const arenas=[main,...children.map(name=>env.ARENA.getByName(name))];
+  const results=await Promise.allSettled(arenas.map(arena=>arena.sendBookingAlerts()));
+  if(results.some(result=>result.status==='rejected'))throw new Error('Não foi possível processar os avisos de todas as arenas.');
+ },
  async fetch(request,env) {
   const url=new URL(request.url);
   if(url.pathname.startsWith('/api/')) {

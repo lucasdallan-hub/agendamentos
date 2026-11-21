@@ -96,7 +96,7 @@ A reserva já ocupa o horário antes do pagamento; não há liberação automát
 
 ## Notificações WhatsApp com Evolution Go
 
-A integração está disponível na mãe e em cada filho em **Meu sistema → Notificações WhatsApp**. Cada arena mantém sua própria URL, token e número de WhatsApp do administrador. Esses dados e os registros de envio não entram na cópia de um sistema filho. Reservas copiadas ou criadas antes de ativar o envio não geram disparos retroativos.
+A integração está disponível na mãe e em cada filho em **Meu sistema → Notificações WhatsApp**. Cada arena mantém sua própria URL, token e número de WhatsApp do administrador. Esses dados e os registros de envio não entram na cópia de um sistema filho. As confirmações são enviadas no momento da criação da reserva. Com o WhatsApp ativo na arena, o Worker verifica a cada minuto as reservas confirmadas, no horário de São Paulo. O administrador recebe a quadra, o início, o término e o tempo restante em dois avisos, ao começar a reserva e quando faltam 10 minutos. O cliente também recebe o lembrete de término.
 
 1. Use a URL `https://api.dallan.pro` e o **token da instância**, não a chave administrativa global. Consulte o [Swagger desta API](https://api.dallan.pro/swagger/index.html). O link completo do Swagger é uma página de documentação; as chamadas usam a base do servidor.
 2. Cadastre o WhatsApp do administrador que deve receber os avisos. O sistema também usa o telefone informado na reserva para confirmar o agendamento ao cliente. Configure o código do país para os números locais. O padrão é `55`.

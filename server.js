@@ -18,11 +18,19 @@ export function createApp({dataDir=process.env.DATA_DIR||path.join(root,'data'),
  mkdirSync(dataDir,{recursive:true});
  const db=new DatabaseSync(path.join(dataDir,'arena.sqlite'));
  db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;');
- return createApplication({
+ const app=createApplication({
   db,serveStatic,cookieSecure:process.env.COOKIE_SECURE==='1',
   misticpayEncryptionKey:process.env.MISTICPAY_CREDENTIALS_KEY,
   misticpayManagedEncryptionKey:process.env.MISTICPAY_MANAGED_CREDENTIALS_KEY,...options
  });
+ let alertTimer;
+ const checkBookingAlerts=()=>app.processBookingAlerts().catch(()=>console.warn('Não foi possível processar os avisos de reserva.'));
+ app.server.on('listening',()=>{
+  void checkBookingAlerts();
+  alertTimer=setInterval(checkBookingAlerts,60_000).unref();
+ });
+ app.server.on('close',()=>clearInterval(alertTimer));
+ return app;
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const {server}=createApp();
