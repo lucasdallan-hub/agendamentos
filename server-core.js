@@ -108,8 +108,13 @@ const server=http.createServer(async(req,res)=>{
    if(req.method==='POST'&&publicBooking[2])return json(res,200,await catalog.payment(publicBooking[1],publicBooking[2],body.payment_method));
   }
   const publicMistic=/^\/api\/public\/bookings\/([a-f0-9]{64})\/misticpay(\/check)?$/.exec(url.pathname);
+  if(req.method==='GET'&&publicMistic&&!publicMistic[2]){
+   const status=misticpay.status(catalog.reservationId(publicMistic[1]));
+   if(!status)fail('Cobrança MisticPay não encontrada.',404);
+   return json(res,200,{status});
+  }
   if(req.method==='POST'&&publicMistic){
-   const {id}=catalog.confirmation(publicMistic[1]);
+   const id=catalog.reservationId(publicMistic[1]);
    return json(res,200,publicMistic[2]?await misticpay.sync(id):await misticpay.create(id,body));
   }
   if(req.method==='GET'&&url.pathname==='/api/system/branding')return json(res,200,branding(db));

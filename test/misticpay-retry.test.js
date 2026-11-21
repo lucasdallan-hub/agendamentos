@@ -34,13 +34,13 @@ test('MisticPay: retries survive a restart and duplicate notices cannot extend t
  assert.equal(await retry.queue(2),false);
  assert.equal(await retry.queue(3),false);
  assert.equal(await retry.queue(4),false);
- t.mock.timers.tick(10_000);
+ t.mock.timers.tick(1_000);
  retry=createMisticPayRetry(db,{schedule,sync});
  assert.equal(await retry.queue(1),true);
- assert.deepEqual(scheduleTimes,[1_020_000,1_020_000]);
+ assert.deepEqual(scheduleTimes,[1_003_000,1_003_000]);
  await retry.drain();
  assert.deepEqual(checks,[]);
- t.mock.timers.tick(10_000);
+ t.mock.timers.tick(2_000);
  for(let attempt=0;attempt<4;attempt++){
   await retry.drain();
   assert.equal(checks.length,attempt+1);
@@ -63,10 +63,10 @@ test('MisticPay: claims at most three due retries and removes settled orders',as
   insert.run(id,'pending',0);
   assert.equal(await retry.queue(id),true);
  }
- t.mock.timers.tick(20_000);
+ t.mock.timers.tick(3_000);
  await retry.drain();
  assert.deepEqual(checks,[1,2,3]);
- assert.equal(scheduleTimes.at(-1),1_021_000);
+ assert.equal(scheduleTimes.at(-1),1_004_000);
  t.mock.timers.tick(1_000);
  await retry.drain();
  assert.deepEqual(checks,[1,2,3,4,5]);

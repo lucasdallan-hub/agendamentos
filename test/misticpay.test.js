@@ -353,10 +353,15 @@ test('MisticPay: primeiro QR Pix após salvar as chaves e baixa só após consul
  assert.deepEqual(f.provider.calls,[]);
  await f.api('/api/pix/settings',{key:'pix@arena.example',receiver:'Arena de teste'},{method:'PUT'});
  const booking=await f.reserve('2026-12-03');
+ const statusPath=booking.path+'/misticpay';
+ const readStatus=()=>f.api(statusPath,undefined,{auth:false});
+ assert.equal((await readStatus()).status,404);
+ assert.equal((await f.api(`/api/public/bookings/${'a'.repeat(64)}/misticpay`,undefined,{auth:false})).status,404);
  assert.equal((await f.api(booking.path,undefined,{auth:false})).data.misticpay_ready,true);
- assert.equal((await f.api(booking.path+'/misticpay',{cpf:'123.456.789-00'},{auth:false})).status,400);
- const created=await f.api(booking.path+'/misticpay',{cpf,total:1},{auth:false});
+ assert.equal((await f.api(statusPath,{cpf:'123.456.789-00'},{auth:false})).status,400);
+ const created=await f.api(statusPath,{cpf,total:1},{auth:false});
  assert.deepEqual(created,{status:200,data:{status:'pending',qr_code:qr,copy_paste:copyPaste}});
+ assert.deepEqual(await readStatus(),{status:200,data:{status:'pending'}});
  assert.deepEqual(f.provider.calls.map(call=>call.action),['create']);
  assert.equal((await f.api(booking.path,undefined,{auth:false})).data.paid,0);
  const request=f.provider.creates[0];
@@ -394,6 +399,8 @@ test('MisticPay: primeiro QR Pix após salvar as chaves e baixa só após consul
  assert.equal(observed.data.verification_state,'verified');
  assert.ok(observed.data.last_verified_at);
  const checksAfterApproval=f.provider.checks.length;
+ assert.deepEqual(await readStatus(),{status:200,data:{status:'approved'}});
+ assert.equal(f.provider.checks.length,checksAfterApproval);
  assert.equal((await f.api(webhook,paidEvent,{auth:false})).status,200);
  assert.equal(f.provider.checks.length,checksAfterApproval,'Webhook repetido não precisa consultar um estado já confirmado');
  assert.equal((await listed()).paid_at,paid.paid_at);
@@ -408,6 +415,10 @@ test('MisticPay: primeiro QR Pix após salvar as chaves e baixa só após consul
  assert.equal((await f.api(webhook,paidEvent,{auth:false})).status,200);
  assert.equal((await listed()).misticpay_status,'refunded');
  assert.equal((await listed()).paid,0);
+ const callsBeforeExpiry=f.provider.calls.length;
+ f.db.prepare('UPDATE public_booking_requests SET expires_at=0 WHERE booking_id=?').run(booking.id);
+ assert.equal((await readStatus()).status,410);
+ assert.equal(f.provider.calls.length,callsBeforeExpiry);
 });
 
 test('MisticPay: concilia pelo ID vinculado quando a referência local não é encontrada',async t=>{

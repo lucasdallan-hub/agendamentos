@@ -1,5 +1,6 @@
 import {transaction} from './storage.js';
 
+const firstRetryDelay=3_000;
 const retryInterval=20_000;
 const retryLimit=4;
 const batchLimit=3;
@@ -48,7 +49,7 @@ export function createMisticPayRetry(db,{schedule,sync}={}){
 
  async function queue(bookingId){
   const scheduled=transaction(db,()=>{
-   enqueue.run(Date.now()+retryInterval,bookingId);
+   enqueue.run(Date.now()+firstRetryDelay,bookingId);
    return queuedAt.get(bookingId)?.next_at!=null;
   });
   if(scheduled)await scheduleNext();

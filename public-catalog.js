@@ -40,13 +40,14 @@ export function publicCatalog(db,{book,pix,payments,misticpay,paymentConfig,atte
   }
   const identity=branding(db);return {name:identity.name,logo:identity.logo,date,duration,open:config.open,close:config.close,courts};
  }
- function confirmation(token){
+ function reservationId(token){
   if(!/^[a-f0-9]{64}$/.test(token||''))fail('Reserva não encontrada.',404);
-  const request=db.prepare('SELECT * FROM public_booking_requests WHERE token=?').get(token);
+  const request=db.prepare('SELECT booking_id,expires_at FROM public_booking_requests WHERE token=?').get(token);
   if(!request)fail('Reserva não encontrada.',404);
   if(request.expires_at<=Date.now())fail('O link desta reserva expirou. Entre em contato com a arena.',410);
-  return bookingDetails(request.booking_id);
+  return request.booking_id;
  }
+ const confirmation=token=>bookingDetails(reservationId(token));
  function bookingDetails(id){
   const b=db.prepare('SELECT b.id,b.customer,b.date,b.start,b.end,b.total,b.status,b.paid,c.name court_name FROM bookings b JOIN courts c ON c.id=b.court_id WHERE b.id=?').get(id);
   if(!b)fail('Reserva não encontrada.',404);
@@ -103,5 +104,5 @@ export function publicCatalog(db,{book,pix,payments,misticpay,paymentConfig,atte
   if(kind==='pix')return pix.createLink(b.id);
   return payments.checkout(b.id,method);
  }
- return {settings,saveSettings,catalog,reserve,confirmation,payment,misticpayLink};
+ return {settings,saveSettings,catalog,reserve,confirmation,reservationId,payment,misticpayLink};
 }

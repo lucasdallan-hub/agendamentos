@@ -43,6 +43,7 @@ export function createMisticPay(db,{fetchImpl=fetch,encryptionKey,managedEncrypt
   if(!columns.has('last_webhook_digest'))db.exec('ALTER TABLE misticpay_orders ADD COLUMN last_webhook_digest TEXT');
  });
  const getOrder=id=>db.prepare('SELECT * FROM misticpay_orders WHERE booking_id=?').get(id);
+ const getStatus=db.prepare("SELECT CASE WHEN archived=1 THEN 'archived' ELSE state END status FROM misticpay_orders WHERE booking_id=?");
  const getBooking=id=>db.prepare('SELECT id,customer,total,status,paid,method FROM bookings WHERE id=?').get(id);
  const activeChecks=new Map();
  const lookup=(credentials,id,options)=>lookupMisticPay(fetchImpl,credentials,id,options);
@@ -164,6 +165,7 @@ export function createMisticPay(db,{fetchImpl=fetch,encryptionKey,managedEncrypt
  return {
   settings:connectionSettings.settings,configuration:connectionSettings.configuration,
   saveSettings:connectionSettings.saveSettings,verify:connectionSettings.verify,
-  details,create,sync,webhook,retryConfirmations:confirmationRetry.drain,resumeConfirmations:confirmationRetry.resumeRecent
+  status:id=>getStatus.get(id)?.status??null,details,create,sync,webhook,
+  retryConfirmations:confirmationRetry.drain,resumeConfirmations:confirmationRetry.resumeRecent
  };
 }

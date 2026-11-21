@@ -8,7 +8,7 @@ let paymentCheck,paymentTimer,pageSuspended=false;
 async function api(path,body,signal){
  const response=await fetch('/api/public/'+path,{
   method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},
-  body:body?JSON.stringify(body):undefined,signal
+  body:body?JSON.stringify(body):undefined,cache:'no-store',signal
  });
  const result=await response.json().catch(()=>null);
  if(!response.ok||result===null){
@@ -159,6 +159,7 @@ async function showConfirmation(token){
 }
 function updateMisticpay(view,payment){
  const booking=view.booking;
+ if(booking.paid&&automaticPaymentStates.includes(payment.status))return;
  const reversed=['refunded','review','cancelled'].includes(payment.status);
  const paid=!reversed&&(booking.paid||payment.status==='approved');
  if(paid===booking.paid&&booking.misticpay?.status===payment.status&&
@@ -167,6 +168,7 @@ function updateMisticpay(view,payment){
  renderConfirmation(view,{...booking,paid,misticpay:payment});
 }
 const automaticPaymentStates=['pending','creating','unknown'];
+const paymentStatusInterval=2_000,providerCheckInterval=15_000;
 function canCheckMisticpay(view,manual=false){
  const booking=view?.booking;
  const status=booking?.misticpay?.status;
@@ -177,21 +179,40 @@ function canCheckMisticpay(view,manual=false){
 function schedulePaymentCheck(){
  clearTimeout(paymentTimer);
  const view=reservationView;
- if(!paymentCheck&&canCheckMisticpay(view))paymentTimer=setTimeout(()=>checkMisticpay(view),17_000);
+ if(paymentCheck||!canCheckMisticpay(view))return;
+ view.nextProviderCheck??=Date.now()+providerCheckInterval;
+ paymentTimer=setTimeout(()=>checkMisticpay(view),paymentStatusInterval);
 }
 async function checkMisticpay(view,manual=false){
  if(paymentCheck||!canCheckMisticpay(view,manual))return;
  clearTimeout(paymentTimer);
  const check=new AbortController();
  paymentCheck=check;
+ const active=()=>isCurrentReservation(view)&&!check.signal.aborted;
  const button=$('#catalog-confirmation [data-payment="misticpay/check"]');
  if(button)button.disabled=true;
  if(manual)$('#catalog-error').textContent='';
  try{
-  const payment=await api(`bookings/${view.token}/misticpay/check`,{},check.signal);
-  if(isCurrentReservation(view)&&!check.signal.aborted)updateMisticpay(view,payment);
+  const path=`bookings/${view.token}`;
+  if(!manual){
+   const {status}=await api(path+'/misticpay',undefined,check.signal);
+   if(!active())return;
+   const previousStatus=view.booking.misticpay.status;
+   if(status==='pending'&&previousStatus!=='pending'){
+    const booking=await api(path,undefined,check.signal);
+    if(active()&&!view.booking.paid)renderConfirmation(view,booking);
+   }else if(status!==previousStatus){
+    updateMisticpay(view,{status,qr_code:null,copy_paste:null});
+   }
+  }
+  const now=Date.now();
+  if(active()&&canCheckMisticpay(view,manual)&&(manual||now>=view.nextProviderCheck)){
+   view.nextProviderCheck=now+providerCheckInterval;
+   const payment=await api(path+'/misticpay/check',{},check.signal);
+   if(active())updateMisticpay(view,payment);
+  }
  }catch(error){
-  if(isCurrentReservation(view)&&!check.signal.aborted){
+  if(active()){
    if([401,403,404,410].includes(error.status))view.stopPolling=true;
    if(manual)$('#catalog-error').textContent=error.message;
   }
@@ -271,7 +292,10 @@ function showCatalogView(){
   search();
  }
 }
-document.addEventListener('visibilitychange',schedulePaymentCheck);
+document.addEventListener('visibilitychange',()=>{
+ clearTimeout(paymentTimer);
+ if(!document.hidden)checkMisticpay(reservationView);
+});
 window.addEventListener('hashchange',showCatalogView);
 window.addEventListener('pagehide',()=>{
  pageSuspended=true;
