@@ -631,7 +631,7 @@ function misticpayStorageMessage(status){
  const messages={
   secret_missing:'Na Cloudflare, abra agendamentos → Configurações → Variáveis e segredos e adicione MISTICPAY_CREDENTIALS_KEY como segredo de produção.',
   secret_invalid:'Edite MISTICPAY_CREDENTIALS_KEY e cole os 64 caracteres hexadecimais da chave gerada. Se a arena já foi configurada, use a chave original.',
-  key_mismatch:'Restaure o segredo original MISTICPAY_CREDENTIALS_KEY no Worker agendamentos para recuperar o acesso às credenciais salvas.',
+  key_mismatch:'Restaure no servidor a chave que protege as credenciais salvas desta arena.',
   arena_scope_invalid:'Abra o painel pelo domínio cadastrado para a arena. Se a mensagem persistir, confira o cadastro em Meu sistema.'
  };
  return messages[status]||'O armazenamento das chaves está temporariamente indisponível.';
@@ -675,15 +675,21 @@ function showMisticpayStorageHelp(openNext){
 
 function openMisticpayConfiguration(){
  if(misticpayConfig.storage_ready===false)return showMisticpayStorageHelp(openMisticpayConfiguration);
+ const localHttp=location.protocol==='http:';
+ const originField=localHttp
+  ?`<label>Endereço público HTTPS da arena<input name="base_url" type="url" value="${esc(misticpayConfig.base_url||'')}" placeholder="https://sua-arena.com.br" required></label>`
+  :'';
  openModal('Configurar MisticPay',`
- <label>Endereço público HTTPS da arena<input name="base_url" type="url" value="${esc(misticpayConfig.base_url||location.origin)}" required></label>
+ ${originField}
  <label>Client ID<input name="client_id" type="password" autocomplete="new-password" maxlength="255" placeholder="${misticpayConfig.public_key_configured?'Deixe vazio para manter a chave pk_ salva':'pk_…'}" ${misticpayConfig.public_key_configured?'':'required'}></label>
  <label>Client Secret<input name="client_secret" type="password" autocomplete="new-password" maxlength="255" placeholder="${misticpayConfig.secret_key_configured?'Deixe vazio para manter a chave sk_ salva':'sk_…'}" ${misticpayConfig.secret_key_configured?'':'required'}></label>
  <p>No <a href="https://app.misticpay.com/login" target="_blank" rel="noopener noreferrer">painel da MisticPay</a>, abra <strong>API → Chaves de Acesso</strong> e habilite <code>TRANSACTION_CREATE</code> e <code>TRANSACTION_READ</code>. <a href="https://docs.misticpay.com/#authentication" target="_blank" rel="noopener noreferrer">Guia de autenticação</a></p>
- <p>Salve as chaves e o endereço. O ID de uma transação Pix é necessário apenas ao escolher <strong>Verificar conexão</strong>.</p>
+ <p>Use <strong>Verificar conexão</strong> para consultar uma transação Pix existente.</p>
 `,async ({client_id,client_secret,base_url})=>{
  const field=$('#modal-fields [name="client_id"]');
- misticpayConfig=await api('misticpay/config',{client_id,client_secret,base_url},'PUT');
+ const settings={client_id,client_secret};
+ if(localHttp&&base_url)settings.base_url=base_url;
+ misticpayConfig=await api('misticpay/config',settings,'PUT');
  render();
  if(field?.isConnected&&$('#modal').open)$('#modal').close();
  toast('Configuração MisticPay salva.');

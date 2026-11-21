@@ -32,7 +32,10 @@ async function makeConfig({bootstrap=false}={}){
  config.assets.html_handling='none';
  config.dev={...config.dev,enable_containers:false};
  config.observability={enabled:false};
- config.vars={...config.vars,MISTICPAY_CREDENTIALS_KEY:misticpayTestKey,...(bootstrap?{ADMIN_INITIAL_PASSWORD:password}:{})};
+ config.vars={
+  ...config.vars,MISTICPAY_CREDENTIALS_KEY:'invalid-local-key',MISTICPAY_MANAGED_CREDENTIALS_KEY:misticpayTestKey,
+  ...(bootstrap?{ADMIN_INITIAL_PASSWORD:password}:{})
+ };
  await writeFile(configFile,JSON.stringify(config,null,2),{mode:0o600});
 }
 async function stop(){

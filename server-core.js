@@ -11,7 +11,7 @@ import {financialSettings} from './financial-settings.js';
 import {createMisticPay} from './misticpay.js';
 import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
-export function createApplication({db,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch,misticpayFetch=fetch,misticpayEncryptionKey}={}) {
+export function createApplication({db,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch,misticpayFetch=fetch,misticpayEncryptionKey,misticpayManagedEncryptionKey}={}) {
 db.exec(`CREATE TABLE IF NOT EXISTS admin(id INTEGER PRIMARY KEY CHECK(id=1), salt TEXT NOT NULL, hash TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS courts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, price INTEGER NOT NULL CHECK(price>0), active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, court_id INTEGER NOT NULL REFERENCES courts(id), customer TEXT NOT NULL, phone TEXT NOT NULL, date TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, total INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'confirmed', paid INTEGER NOT NULL DEFAULT 0, method TEXT, paid_at TEXT, notes TEXT NOT NULL DEFAULT '');`);
@@ -19,7 +19,10 @@ initializeSystems(db);
 const payments=createPayments(db,paymentConfig,paymentClient);
 const financial=financialSettings(db,paymentConfig);
 const arenaIdentity=setting(db,'identity');
-const misticpay=createMisticPay(db,{fetchImpl:misticpayFetch,encryptionKey:misticpayEncryptionKey,scope:arenaIdentity?`child:${arenaIdentity.slug}`:'main'});
+const misticpay=createMisticPay(db,{
+ fetchImpl:misticpayFetch,encryptionKey:misticpayEncryptionKey,managedEncryptionKey:misticpayManagedEncryptionKey,
+ scope:arenaIdentity?`child:${arenaIdentity.slug}`:'main'
+});
 const pix=createPix(db);
 const courtPhotos=createCourtPhotos(db);
 const notifications=bookingNotifications(db,{fetchImpl:notificationFetch});
@@ -61,7 +64,8 @@ const server=http.createServer(async(req,res)=>{
    return json(res,404,{error:'Não encontrado.'});
   }
   const misticWebhook=/^\/api\/misticpay\/webhook\/([a-f0-9]{64})$/.exec(url.pathname);
-  if(url.pathname!=='/api/payments/webhook' && !misticWebhook && req.headers.origin && req.headers.origin!==`${req.headers['x-forwarded-proto']==='https'?'https':'http'}://${req.headers.host}`) fail('Origem não permitida.',403);
+  const requestOrigin=`${req.headers['x-forwarded-proto']==='https'?'https':'http'}://${req.headers.host}`;
+  if(url.pathname!=='/api/payments/webhook' && !misticWebhook && req.headers.origin && req.headers.origin!==requestOrigin) fail('Origem não permitida.',403);
   const courtGallery=/^\/api\/courts\/(\d+)\/photos$/.exec(url.pathname);
   let body={};
   if(['POST','PATCH','PUT'].includes(req.method)) { let raw=''; const maxBody=courtGallery&&req.method==='PUT'?courtPhotoBodyLimit:url.pathname==='/api/system/branding'?400000:/^\/api\/pix\/payments\/[a-f0-9]{64}\/receipt$/.test(url.pathname)?7*1024*1024:16000;for await(const chunk of req) { raw+=chunk; if(Buffer.byteLength(raw)>maxBody) fail('Requisição muito grande.',413); } try { body=JSON.parse(raw||'{}'); } catch { fail('JSON inválido.'); } if(!body||typeof body!=='object'||Array.isArray(body)) fail('Corpo inválido.'); }
@@ -169,7 +173,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(url.pathname==='/api/misticpay/config'){
    if(req.method==='GET')return json(res,200,await misticpay.configuration());
-   if(req.method==='PUT')return json(res,200,await misticpay.saveSettings(body));
+   if(req.method==='PUT')return json(res,200,await misticpay.saveSettings(body,requestOrigin));
   }
   if(req.method==='POST'&&url.pathname==='/api/misticpay/config/verify')return json(res,200,await misticpay.verify(body));
   const misticBooking=/^\/api\/bookings\/(\d+)\/(misticpay-link|sync-misticpay)$/.exec(url.pathname);

@@ -29,7 +29,7 @@ function validateCpf(value){
  return cpf;
 }
 
-export function createMisticPay(db,{fetchImpl=fetch,encryptionKey,scope='main'}={}){
+export function createMisticPay(db,{fetchImpl=fetch,encryptionKey,managedEncryptionKey,scope='main'}={}){
  db.exec(`CREATE TABLE IF NOT EXISTS misticpay_orders(
   booking_id INTEGER PRIMARY KEY REFERENCES bookings(id),id TEXT NOT NULL UNIQUE,provider_id TEXT UNIQUE,
   amount_cents INTEGER NOT NULL,state TEXT NOT NULL,webhook_token TEXT UNIQUE,qr_code TEXT,copy_paste TEXT,
@@ -45,7 +45,7 @@ export function createMisticPay(db,{fetchImpl=fetch,encryptionKey,scope='main'}=
  const getBooking=id=>db.prepare('SELECT id,customer,total,status,paid,method FROM bookings WHERE id=?').get(id);
  const activeChecks=new Map();
  const lookup=(credentials,id,options)=>lookupMisticPay(fetchImpl,credentials,id,options);
- const connectionSettings=createMisticPayConnection(db,{encryptionKey,scope,lookup});
+ const connectionSettings=createMisticPayConnection(db,{encryptionKey,managedEncryptionKey,scope,lookup});
  function details(id){
   const order=getOrder(id);
   if(!order)return null;

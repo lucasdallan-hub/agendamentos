@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {once} from 'node:events';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
+import {request as httpRequest} from 'node:http';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
@@ -10,15 +12,17 @@ import {captureSystem} from '../systems.js';
 const cpf='529.982.247-25';
 const credentials={client_id:'pk_test',client_secret:'sk_test',base_url:'https://arena.example'};
 const encryptionKey='e2'.repeat(32);
+const managedEncryptionKey='b4'.repeat(32);
+const protectionId=key=>createHash('sha256').update(Buffer.from(key,'hex')).digest('hex').slice(0,32);
 const sampleId='31677842';
 const samplePayment={transactionId:sampleId,value:57.50,transactionState:'COMPLETO',transactionType:'DEPOSITO',transactionMethod:'PIX'};
 const qr='data:image/png;base64,'+(await readFile(new URL('./fixtures/pix-receipt.png',import.meta.url))).toString('base64');
 const copyPaste='00020101021226820014br.gov.bcb.pix';
 
-async function fixture(t,{key=encryptionKey}={}){
+async function fixture(t,{key=encryptionKey,managedKey=''}={}){
  const directory=await mkdtemp(join(tmpdir(),'arena-misticpay-'));
  const provider={calls:[],creates:[],checks:[],payments:new Map(),uncertain:false};
- const {server,db}=createApp({dataDir:directory,misticpayEncryptionKey:key,paymentConfig:{ready:false,mode:'test'},misticpayFetch:async(url,options)=>{
+ const misticpayFetch=async(url,options)=>{
   assert.match(url,/^https:\/\/api\.misticpay\.com\/api\/transactions\/(create|check)$/);
   assert.equal(options.method,'POST');
   assert.equal(options.redirect,'manual');
@@ -50,14 +54,34 @@ async function fixture(t,{key=encryptionKey}={}){
   const payment=provider.payments.get(body.transactionId);
   if(payment)return Response.json({transaction:payment});
   return provider.missing?provider.missing(body.transactionId):Response.json({code:'TRANSACTION_NOT_FOUND'},{status:404});
- }});
- server.listen(0,'127.0.0.1');
- await once(server,'listening');
- t.after(async()=>{const closed=once(server,'close');server.close();await closed;db.close();await rm(directory,{recursive:true,force:true});});
- const base='http://127.0.0.1:'+server.address().port;
- let cookie;
- async function api(route,body,{method=body===undefined?'GET':'POST',auth=true}={}){
-  const res=await fetch(base+route,{method,headers:{'Content-Type':'application/json',...(auth&&cookie?{Cookie:cookie}:{})},body:body===undefined?undefined:JSON.stringify(body)});
+ };
+ let server,db,base,cookie;
+ async function start(primary,managed){
+  ({server,db}=createApp({
+   dataDir:directory,misticpayEncryptionKey:primary,misticpayManagedEncryptionKey:managed,
+   paymentConfig:{ready:false,mode:'test'},misticpayFetch
+  }));
+  server.listen(0,'127.0.0.1');
+  await once(server,'listening');
+  base='http://127.0.0.1:'+server.address().port;
+ }
+ async function stop(){
+  const closed=once(server,'close');server.close();await closed;db.close();
+ }
+ await start(key,managedKey);
+ t.after(async()=>{await stop();await rm(directory,{recursive:true,force:true});});
+ async function api(route,body,{method=body===undefined?'GET':'POST',auth=true,headers={}}={}){
+  const options={method,headers:{'Content-Type':'application/json',...(auth&&cookie?{Cookie:cookie}:{}),...headers},body:body===undefined?undefined:JSON.stringify(body)};
+  const res=headers.Host?await new Promise((resolve,reject)=>{
+   const req=httpRequest(base+route,{method,headers:options.headers},response=>{
+    const chunks=[];
+    response.on('data',chunk=>chunks.push(chunk));
+    response.on('end',()=>resolve(new Response(Buffer.concat(chunks),{status:response.statusCode,headers:response.headers})));
+    response.on('error',reject);
+   });
+   req.on('error',reject);
+   req.end(options.body);
+  }):await fetch(base+route,options);
   const session=res.headers.get('set-cookie');if(session)cookie=session.split(';')[0];
   return {status:res.status,data:await res.json()};
  }
@@ -83,7 +107,14 @@ async function fixture(t,{key=encryptionKey}={}){
   assert.equal(activated.data.verification_state,'verified');
   assert.equal(activated.data.ready,true);
  }
- return {api,provider,db,reserve,configure,verify,config,allowVerification,activate};
+ async function restart({key:nextKey=encryptionKey,managedKey:nextManagedKey=''}={}){
+  await stop();
+  cookie=undefined;
+  await start(nextKey,nextManagedKey);
+  const login=await api('/api/login',{username:'admin',password:'fictitious-misticpay-password'});
+  assert.equal(login.status,200);
+ }
+ return {api,provider,get db(){return db;},reserve,configure,verify,config,allowVerification,activate,restart};
 }
 
 test('MisticPay: guarda as chaves cifradas e verifica um Pix existente sem criar cobrança',async t=>{
@@ -164,6 +195,75 @@ test('MisticPay: painel distingue formato inválido do segredo com segurança',a
  assert.doesNotMatch(JSON.stringify(config.data),/invalid-encryption-value|key_id/i);
  assert.equal((await f.configure()).status,503);
  assert.deepEqual(f.provider.calls,[]);
+});
+
+test('MisticPay: aceita só Client ID e Secret, inferindo a origem HTTPS e a chave disponível',async t=>{
+ const {client_id,client_secret}=credentials;
+ const body={client_id,client_secret};
+ for(const [key,expectedKey] of [
+  ['',managedEncryptionKey],
+  ['invalid-encryption-value',managedEncryptionKey],
+  [encryptionKey,encryptionKey]
+ ]){
+  const f=await fixture(t,{key,managedKey:managedEncryptionKey});
+  assert.equal((await f.config()).data.storage_status,'ready');
+  assert.equal((await f.api('/api/misticpay/config',body,{
+   method:'PUT',headers:{Host:'arena-managed.example','X-Forwarded-Proto':'http'}
+  })).status,400);
+  const saved=await f.api('/api/misticpay/config',body,{
+   method:'PUT',headers:{
+    Host:'arena-managed.example','X-Forwarded-Proto':'https','X-Forwarded-Host':'untrusted-alias.example',
+    Origin:'https://arena-managed.example'
+   }
+  });
+  assert.equal(saved.status,200);
+  assert.equal(saved.data.storage_ready,true);
+  assert.equal(saved.data.verification_state,'pending');
+  assert.equal(saved.data.base_url,'https://arena-managed.example');
+  const stored=f.db.prepare('SELECT credentials_key_id,pending_credentials,pending_base_url FROM misticpay_connection').get();
+  assert.equal(stored.credentials_key_id,protectionId(expectedKey));
+  assert.match(stored.pending_credentials,/^v1\./);
+  assert.equal(stored.pending_base_url,saved.data.base_url);
+  assert.doesNotMatch(JSON.stringify(saved.data),new RegExp([encryptionKey,managedEncryptionKey,stored.credentials_key_id,'pk_test','sk_test'].join('|')));
+  const savedAgain=await f.api('/api/misticpay/config',body,{
+   method:'PUT',headers:{Host:'temporary-alias.example','X-Forwarded-Proto':'https'}
+  });
+  assert.equal(savedAgain.status,200);
+  assert.equal(savedAgain.data.base_url,saved.data.base_url);
+  assert.deepEqual(f.db.prepare('SELECT credentials_key_id,pending_credentials,pending_base_url FROM misticpay_connection').get(),stored);
+  assert.deepEqual(f.provider.calls,[]);
+ }
+});
+
+test('MisticPay: dados cifrados pela chave gerenciada exigem essa chave durante a restauração',async t=>{
+ const f=await fixture(t,{key:'',managedKey:managedEncryptionKey});
+ await f.activate();
+ const row=()=>f.db.prepare('SELECT * FROM misticpay_connection').get();
+ const original=row();
+ assert.equal(original.credentials_key_id,protectionId(managedEncryptionKey));
+
+ await f.restart({key:encryptionKey});
+ const blocked=await f.config();
+ assert.equal(blocked.status,200);
+ assert.equal(blocked.data.storage_ready,false);
+ assert.equal(blocked.data.storage_status,'key_mismatch');
+ assert.equal(blocked.data.ready,false);
+ assert.equal((await f.configure()).status,503);
+ assert.equal((await f.verify()).status,503);
+ assert.deepEqual(row(),original);
+ assert.deepEqual(f.provider.checks,[sampleId]);
+ assert.doesNotMatch(JSON.stringify(blocked.data),new RegExp([encryptionKey,managedEncryptionKey,original.credentials_key_id].join('|')));
+
+ await f.restart({key:encryptionKey,managedKey:managedEncryptionKey});
+ assert.equal((await f.config()).data.ready,true);
+ f.allowVerification();
+ const restored=await f.verify();
+ assert.equal(restored.status,200);
+ assert.equal(restored.data.verification_state,'verified');
+ assert.equal(restored.data.ready,true);
+ assert.equal(row().active_credentials,original.active_credentials);
+ assert.equal(row().credentials_key_id,original.credentials_key_id);
+ assert.deepEqual(f.provider.checks,[sampleId,sampleId]);
 });
 
 test('MisticPay: migra as chaves antigas para a configuração cifrada pendente',async t=>{

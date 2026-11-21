@@ -16,7 +16,7 @@ function credential(input,stored){
  return value===undefined||value===''?stored:value;
 }
 
-function validatedConfiguration(body,stored){
+function validatedConfiguration(body,stored,baseUrl){
  const publicKey=credential(body.client_id??body.public_key,stored?.public_key);
  const secretKey=credential(body.client_secret??body.secret_key,stored?.secret_key);
  if((typeof publicKey==='string'&&publicKey.startsWith('ci_'))||(typeof secretKey==='string'&&secretKey.startsWith('cs_'))){
@@ -27,7 +27,7 @@ function validatedConfiguration(body,stored){
   fail('Informe o Client ID (pk_) e o Client Secret (sk_) da mesma chave de acesso da MisticPay.');
  }
  let url;
- try{url=new URL(body.base_url);}catch{fail('Informe o endereço HTTPS público da arena.');}
+ try{url=new URL(baseUrl);}catch{fail('Informe o endereço HTTPS público da arena.');}
  if(url.protocol!=='https:'||url.username||url.password||url.pathname!=='/'||url.search||url.hash||!url.hostname.includes('.')){
   fail('Informe somente a origem HTTPS pública da arena.');
  }
@@ -41,9 +41,10 @@ function configurationMatches(first,second){
   &&first?.active_auth_failed===second?.active_auth_failed;
 }
 
-export function createMisticPayConnection(db,{encryptionKey,scope,lookup}){
- const vault=misticpayCredentials(encryptionKey,scope);
- const keyId=vault.keyId;
+export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey,scope,lookup}){
+ const originalVault=misticpayCredentials(encryptionKey,scope);
+ const managedVault=misticpayCredentials(managedEncryptionKey,scope);
+ const vaults=[originalVault,managedVault].filter(vault=>vault.ready);
  transaction(db,()=>{
   db.exec("CREATE TABLE IF NOT EXISTS misticpay_connection(id INTEGER PRIMARY KEY CHECK(id=1),public_key TEXT NOT NULL,secret_key TEXT NOT NULL,base_url TEXT NOT NULL)");
   const installed=new Set(db.prepare('PRAGMA table_info(misticpay_connection)').all().map(column=>column.name));
@@ -53,14 +54,22 @@ export function createMisticPayConnection(db,{encryptionKey,scope,lookup}){
  });
  const read=()=>db.prepare('SELECT * FROM misticpay_connection WHERE id=1').get();
  const latestOrder=()=>db.prepare('SELECT id,provider_id,amount_cents FROM misticpay_orders WHERE archived=0 ORDER BY created_at DESC,id DESC LIMIT 1').get();
+ const hasCiphertext=row=>row?.active_credentials!=null||row?.pending_credentials!=null;
+ function vaultFor(row){
+  if(row?.credentials_key_id)return vaults.find(vault=>vault.keyId===row.credentials_key_id);
+  if(!hasCiphertext(row))return vaults[0];
+ }
  function storageStatus(row){
-  if(!vault.ready)return vault.status;
-  return row?.credentials_key_id&&row.credentials_key_id!==keyId?'key_mismatch':'ready';
+  if(vaultFor(row))return 'ready';
+  if(vaults.length)return 'key_mismatch';
+  return originalVault.status==='secret_missing'?managedVault.status:originalVault.status;
  }
  const storageReady=row=>storageStatus(row)==='ready';
  const ready=row=>storageReady(row)&&!!(row?.active_credentials&&row.last_verified_at&&!row.active_auth_failed);
  const requireStorage=row=>{
-  if(!storageReady(row))fail('O armazenamento de chaves da MisticPay está indisponível. Confira o segredo do Worker.',503);
+  const vault=vaultFor(row);
+  if(!vault)fail('O armazenamento de chaves da MisticPay está indisponível. Confira o segredo do Worker.',503);
+  return vault;
  };
  function settings(){
   const row=read();
@@ -76,28 +85,31 @@ export function createMisticPayConnection(db,{encryptionKey,scope,lookup}){
  }
  async function migrateLegacy(){
   const row=read();
-  if(!row?.public_key||!row?.secret_key||!storageReady(row))return;
+  if(!row?.public_key||!row?.secret_key||hasCiphertext(row))return;
+  const vault=vaultFor(row);
+  if(!vault)return;
   const envelope=await vault.seal({public_key:row.public_key,secret_key:row.secret_key});
   transaction(db,()=>{
    const current=read();
-   if(current?.public_key!==row.public_key||current?.secret_key!==row.secret_key||current?.base_url!==row.base_url)return;
+   if(current?.public_key!==row.public_key||current?.secret_key!==row.secret_key||!configurationMatches(row,current))return;
    // Preserve credentials for the reconciliation of old orders, pending a real verification for new ones.
    db.prepare(`UPDATE misticpay_connection SET public_key='',secret_key='',active_credentials=?,
     pending_credentials=?,pending_base_url=base_url,credentials_key_id=? WHERE id=1`)
-    .run(envelope,envelope,keyId);
+    .run(envelope,envelope,vault.keyId);
   });
  }
  async function configuration(){
   await migrateLegacy();
   return settings();
  }
- async function saveSettings(body){
+ async function saveSettings(body,requestOrigin){
   await migrateLegacy();
   const row=read();
-  requireStorage(row);
+  const vault=requireStorage(row);
   const currentEnvelope=row?.pending_credentials??row?.active_credentials;
-  const stored=currentEnvelope?await vault.open(currentEnvelope):null;
-  const next=validatedConfiguration(body,stored);
+  const stored=currentEnvelope==null?null:await vault.open(currentEnvelope);
+  const baseUrl=body.base_url===undefined?(row?.pending_base_url||row?.base_url||requestOrigin):body.base_url;
+  const next=validatedConfiguration(body,stored,baseUrl);
   const unchanged=stored?.public_key===next.public_key&&stored?.secret_key===next.secret_key&&
    (row.pending_base_url??row.base_url)===next.base_url;
   if(unchanged){
@@ -110,7 +122,7 @@ export function createMisticPayConnection(db,{encryptionKey,scope,lookup}){
    db.prepare(`INSERT INTO misticpay_connection(id,public_key,secret_key,base_url,pending_credentials,pending_base_url,credentials_key_id)
     VALUES(1,'','','',?,?,?) ON CONFLICT(id) DO UPDATE SET pending_credentials=excluded.pending_credentials,
     pending_base_url=excluded.pending_base_url,credentials_key_id=excluded.credentials_key_id,
-    last_checked_at=NULL,verification_error=NULL`).run(envelope,next.base_url,keyId);
+    last_checked_at=NULL,verification_error=NULL`).run(envelope,next.base_url,vault.keyId);
    return settings();
   });
  }
@@ -119,7 +131,7 @@ export function createMisticPayConnection(db,{encryptionKey,scope,lookup}){
   if(!transactionIdPattern.test(id))fail('Informe o ID de uma transação Pix existente na sua conta MisticPay.');
   await migrateLegacy();
   const original=read();
-  requireStorage(original);
+  const vault=requireStorage(original);
   const envelope=original?.pending_credentials??original?.active_credentials;
   if(!envelope)fail('Salve a configuração da MisticPay antes de verificar.',409);
   const credentials=await vault.open(envelope);
@@ -169,7 +181,7 @@ export function createMisticPayConnection(db,{encryptionKey,scope,lookup}){
  async function active({allowUnverified=false}={}){
   await migrateLegacy();
   const row=read();
-  requireStorage(row);
+  const vault=requireStorage(row);
   if(!row?.active_credentials||(!allowUnverified&&!ready(row))){
    fail('Verifique a conexão MisticPay no painel financeiro antes de usar este pagamento.',503);
   }
