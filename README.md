@@ -104,7 +104,7 @@ O link Pix vale por 7 dias. A chave e o favorecido são preservados ao gerar o l
 
 ## Pix via MisticPay
 
-Em **Financeiro → Configurar MisticPay**, informe as chaves de acesso da arena e a origem HTTPS pública do site. No catálogo, selecione **Pix via MisticPay** e informe o CPF do pagador para gerar o QR Code. O painel também pode compartilhar um link de pagamento para uma reserva existente. A confirmação depende da consulta autenticada da transação e do valor integral.
+Em **Financeiro → Configurar MisticPay**, salve o Client ID e o Client Secret para habilitar novos pagamentos. No catálogo, o cliente seleciona **Pix via MisticPay** e informa o CPF para gerar o QR Code. O painel também pode compartilhar um link de pagamento para uma reserva existente. A Arena confirma o recebimento automaticamente pela API da MisticPay.
 
 Cada reserva pode ter uma cobrança ativa por vez. As credenciais e os detalhes da configuração estão no [guia da Cloudflare](docs/cloudflare.md#pix-via-misticpay).
 

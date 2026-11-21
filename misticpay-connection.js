@@ -65,7 +65,9 @@ export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey
   return originalVault.status==='secret_missing'?managedVault.status:originalVault.status;
  }
  const storageReady=row=>storageStatus(row)==='ready';
- const ready=row=>storageReady(row)&&!!(row?.active_credentials&&row.last_verified_at&&!row.active_auth_failed);
+ const ready=row=>storageReady(row)&&!!(
+  (row?.active_credentials&&!row.active_auth_failed)||(row?.pending_credentials&&!latestOrder())
+ );
  const requireStorage=row=>{
   const vault=vaultFor(row);
   if(!vault)fail('O armazenamento de chaves da MisticPay está indisponível. Confira o segredo do Worker.',503);
@@ -75,11 +77,12 @@ export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey
   const row=read();
   const configured=!!(row?.pending_credentials||row?.active_credentials||row?.public_key&&row.secret_key);
   const error=row?.verification_error?JSON.parse(row.verification_error):null;
+  const pendingRotation=!!(row?.pending_credentials&&latestOrder());
   return {
    ready:ready(row),storage_ready:storageReady(row),storage_status:storageStatus(row),
    public_key_configured:configured,secret_key_configured:configured,
    base_url:row?.pending_base_url??row?.base_url??'',
-   verification_state:!configured?'unconfigured':error?'failed':row?.pending_credentials||!row?.last_verified_at?'pending':'verified',
+   verification_state:!configured?'unconfigured':error?'failed':pendingRotation?'pending':row.last_verified_at?'verified':'configured',
    last_checked_at:row?.last_checked_at??null,last_verified_at:row?.last_verified_at??null,verification_error:error
   };
  }
@@ -92,15 +95,36 @@ export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey
   transaction(db,()=>{
    const current=read();
    if(current?.public_key!==row.public_key||current?.secret_key!==row.secret_key||!configurationMatches(row,current))return;
-   // Preserve credentials for the reconciliation of old orders, pending a real verification for new ones.
    db.prepare(`UPDATE misticpay_connection SET public_key='',secret_key='',active_credentials=?,
-    pending_credentials=?,pending_base_url=base_url,credentials_key_id=? WHERE id=1`)
-    .run(envelope,envelope,vault.keyId);
+    credentials_key_id=? WHERE id=1`).run(envelope,vault.keyId);
+  });
+ }
+ async function prepareConfiguration(){
+  await migrateLegacy();
+  const row=read();
+  if(!row?.pending_credentials||!storageReady(row))return;
+  transaction(db,()=>{
+   if(!configurationMatches(row,read())||latestOrder())return;
+   // A draft can become active without proof when no reservation is tied to the previous keys.
+   db.prepare(`UPDATE misticpay_connection SET active_credentials=pending_credentials,base_url=pending_base_url,
+    pending_credentials=NULL,pending_base_url=NULL,last_verified_at=NULL,last_checked_at=NULL,
+    verification_error=NULL,active_auth_failed=0 WHERE id=1`).run();
   });
  }
  async function configuration(){
-  await migrateLegacy();
+  await prepareConfiguration();
   return settings();
+ }
+ async function verifySavedRotation(){
+  const row=read();
+  if(!row?.pending_credentials||Date.now()-row.last_check_started_at<verificationDelay)return settings();
+  const previous=latestOrder();
+  if(!previous?.provider_id)return settings();
+  try{return await verify({transaction_id:previous.id});}
+  catch(error){
+   if(error.status===409||error.status===429)return settings();
+   throw error;
+  }
  }
  async function saveSettings(body,requestOrigin){
   await migrateLegacy();
@@ -114,22 +138,31 @@ export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey
    (row.pending_base_url??row.base_url)===next.base_url;
   if(unchanged){
    if(!configurationMatches(row,read()))fail('A configuração mudou. Reabra a tela e tente novamente.',409);
-   return settings();
+   await prepareConfiguration();
+   return verifySavedRotation();
   }
   const envelope=await vault.seal({public_key:next.public_key,secret_key:next.secret_key});
-  return transaction(db,()=>{
+  transaction(db,()=>{
    if(!configurationMatches(row,read()))fail('A configuração mudou. Reabra a tela e tente novamente.',409);
-   db.prepare(`INSERT INTO misticpay_connection(id,public_key,secret_key,base_url,pending_credentials,pending_base_url,credentials_key_id)
-    VALUES(1,'','','',?,?,?) ON CONFLICT(id) DO UPDATE SET pending_credentials=excluded.pending_credentials,
-    pending_base_url=excluded.pending_base_url,credentials_key_id=excluded.credentials_key_id,
-    last_checked_at=NULL,verification_error=NULL`).run(envelope,next.base_url,vault.keyId);
-   return settings();
+   if(latestOrder()){
+    db.prepare(`INSERT INTO misticpay_connection(id,public_key,secret_key,base_url,pending_credentials,pending_base_url,credentials_key_id)
+     VALUES(1,'','','',?,?,?) ON CONFLICT(id) DO UPDATE SET pending_credentials=excluded.pending_credentials,
+     pending_base_url=excluded.pending_base_url,credentials_key_id=excluded.credentials_key_id,
+     last_checked_at=NULL,verification_error=NULL`).run(envelope,next.base_url,vault.keyId);
+   }else{
+    db.prepare(`INSERT INTO misticpay_connection(id,public_key,secret_key,base_url,active_credentials,credentials_key_id)
+     VALUES(1,'','',?,?,?) ON CONFLICT(id) DO UPDATE SET active_credentials=excluded.active_credentials,
+     base_url=excluded.base_url,credentials_key_id=excluded.credentials_key_id,pending_credentials=NULL,
+     pending_base_url=NULL,last_verified_at=NULL,last_checked_at=NULL,verification_error=NULL,active_auth_failed=0`)
+     .run(next.base_url,envelope,vault.keyId);
+   }
   });
+  return verifySavedRotation();
  }
  async function verify(body){
   const id=typeof body.transaction_id==='string'?body.transaction_id.trim():'';
   if(!transactionIdPattern.test(id))fail('Informe o ID de uma transação Pix existente na sua conta MisticPay.');
-  await migrateLegacy();
+  await prepareConfiguration();
   const original=read();
   const vault=requireStorage(original);
   const envelope=original?.pending_credentials??original?.active_credentials;
@@ -165,7 +198,7 @@ export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey
    }
    if(diagnostic){
     const activeAuthFailed=!current.pending_credentials&&(
-     diagnostic.http_status===401||diagnostic.http_status===403||diagnostic.code==='API_CREDENTIAL_REQUIRED'
+     diagnostic.http_status===401||diagnostic.code==='API_CREDENTIAL_REQUIRED'
     );
     db.prepare(`UPDATE misticpay_connection SET last_checked_at=?,verification_error=?,
      active_auth_failed=CASE WHEN ? THEN 1 ELSE active_auth_failed END WHERE id=1`)
@@ -179,11 +212,11 @@ export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey
   });
  }
  async function active({allowUnverified=false}={}){
-  await migrateLegacy();
+  await prepareConfiguration();
   const row=read();
   const vault=requireStorage(row);
   if(!row?.active_credentials||(!allowUnverified&&!ready(row))){
-   fail('Verifique a conexão MisticPay no painel financeiro antes de usar este pagamento.',503);
+   fail('A configuração MisticPay está indisponível. Confira as chaves no painel financeiro da arena.',503);
   }
   return {...await vault.open(row.active_credentials),base_url:row.base_url,version:row.active_credentials};
  }
@@ -191,5 +224,11 @@ export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey
   const row=read();
   return row?.active_credentials===connection.version&&row.base_url===connection.base_url;
  }
- return {settings,configuration,saveSettings,verify,active,isCurrent};
+ function recordVerified(){
+  db.prepare(`UPDATE misticpay_connection SET last_verified_at=COALESCE(last_verified_at,?),active_auth_failed=0,
+   verification_error=CASE WHEN pending_credentials IS NULL THEN NULL ELSE verification_error END
+   WHERE id=1 AND (last_verified_at IS NULL OR active_auth_failed=1 OR pending_credentials IS NULL AND verification_error IS NOT NULL)`)
+   .run(new Date().toISOString());
+ }
+ return {settings,configuration,saveSettings,verify,active,isCurrent,recordVerified};
 }

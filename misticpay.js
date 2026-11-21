@@ -102,6 +102,7 @@ export function createMisticPay(db,{fetchImpl=fetch,encryptionKey,managedEncrypt
    if(!current||current.id!==order.id||!booking||booking.total!==payment.cents||!connectionSettings.isCurrent(connection)){
     fail('A cobrança ou a configuração mudou durante a consulta.',409);
    }
+   connectionSettings.recordVerified();
    if(payment.updatedAt&&current.provider_updated_at&&payment.updatedAt<current.provider_updated_at)return details(id);
    const wasPaid=booking.paid&&booking.method==='MisticPay';
    let state=current.state;

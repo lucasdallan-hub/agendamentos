@@ -18,10 +18,11 @@ const sampleId='31677842';
 const samplePayment={transactionId:sampleId,value:57.50,transactionState:'COMPLETO',transactionType:'DEPOSITO',transactionMethod:'PIX'};
 const qr='data:image/png;base64,'+(await readFile(new URL('./fixtures/pix-receipt.png',import.meta.url))).toString('base64');
 const copyPaste='00020101021226820014br.gov.bcb.pix';
+const basicAuth=({client_id,client_secret})=>'Basic '+Buffer.from(client_id+':'+client_secret).toString('base64');
 
 async function fixture(t,{key=encryptionKey,managedKey=''}={}){
  const directory=await mkdtemp(join(tmpdir(),'arena-misticpay-'));
- const provider={calls:[],creates:[],checks:[],payments:new Map(),uncertain:false};
+ const provider={calls:[],creates:[],checks:[],payments:new Map(),allowedCredentials:new Set([basicAuth(credentials)]),uncertain:false};
  const misticpayFetch=async(url,options)=>{
   assert.match(url,/^https:\/\/api\.misticpay\.com\/api\/transactions\/(create|check)$/);
   assert.equal(options.method,'POST');
@@ -40,13 +41,14 @@ async function fixture(t,{key=encryptionKey,managedKey=''}={}){
    const {code,status}=provider.accessError;
    return Response.json({code,message:'provider-private-details'},{status});
   }
-  if(options.headers.Authorization!=='Basic '+Buffer.from('pk_test:sk_test').toString('base64')){
+  if(!provider.allowedCredentials.has(options.headers.Authorization)){
    return Response.json({code:'INVALID_API_CREDENTIAL',message:'provider-private-details'},{status:401});
   }
   if(action==='create'){
    provider.creates.push(body);
    const payment={transactionId:String(1000+provider.creates.length),value:body.amount,transactionState:'PENDENTE',transactionType:'DEPOSITO',transactionMethod:'PIX'};
    provider.payments.set(body.transactionId,payment);
+   provider.payments.set(payment.transactionId,payment);
    if(provider.uncertain)throw new Error('provider-private-details');
    if(provider.waitForCreate)await provider.waitForCreate();
    return Response.json({data:{...payment,payer:{document:body.payerDocument},qrCodeBase64:qr,copyPaste,qrcodeUrl:'https://example.invalid/qr'}});
@@ -139,15 +141,16 @@ test('MisticPay: guarda as chaves cifradas e verifica um Pix existente sem criar
  assert.match(legacy.data.error,/desativou/);
  const saved=await f.configure({client_id:' pk_test ',client_secret:'sk_test\n',base_url:credentials.base_url});
  assert.equal(saved.status,200);
- assert.equal(saved.data.ready,false);
- assert.equal(saved.data.verification_state,'pending');
+ assert.equal(saved.data.ready,true);
+ assert.equal(saved.data.verification_state,'configured');
  assert.equal(saved.data.base_url,credentials.base_url);
  assert.equal(saved.data.public_key_configured,true);assert.equal(saved.data.secret_key_configured,true);
  assert.equal(saved.data.last_verified_at,null);assert.equal(saved.data.last_checked_at,null);
  assert.deepEqual(f.provider.calls,[]);
  assert.doesNotMatch(JSON.stringify(saved.data),/pk_test|sk_test/);
  const storedBefore=f.db.prepare('SELECT * FROM misticpay_connection').get();
- assert.ok(storedBefore.pending_credentials);
+ assert.ok(storedBefore.active_credentials);
+ assert.equal(storedBefore.pending_credentials,null);
  assert.doesNotMatch(JSON.stringify(storedBefore),/pk_test|sk_test/);
 
  for(const invalid of ['',null,'https://example.invalid']){
@@ -218,19 +221,19 @@ test('MisticPay: aceita só Client ID e Secret, inferindo a origem HTTPS e a cha
   });
   assert.equal(saved.status,200);
   assert.equal(saved.data.storage_ready,true);
-  assert.equal(saved.data.verification_state,'pending');
+  assert.equal(saved.data.verification_state,'configured');
   assert.equal(saved.data.base_url,'https://arena-managed.example');
-  const stored=f.db.prepare('SELECT credentials_key_id,pending_credentials,pending_base_url FROM misticpay_connection').get();
+  const stored=f.db.prepare('SELECT credentials_key_id,active_credentials,base_url FROM misticpay_connection').get();
   assert.equal(stored.credentials_key_id,protectionId(expectedKey));
-  assert.match(stored.pending_credentials,/^v1\./);
-  assert.equal(stored.pending_base_url,saved.data.base_url);
+  assert.match(stored.active_credentials,/^v1\./);
+  assert.equal(stored.base_url,saved.data.base_url);
   assert.doesNotMatch(JSON.stringify(saved.data),new RegExp([encryptionKey,managedEncryptionKey,stored.credentials_key_id,'pk_test','sk_test'].join('|')));
   const savedAgain=await f.api('/api/misticpay/config',body,{
    method:'PUT',headers:{Host:'temporary-alias.example','X-Forwarded-Proto':'https'}
   });
   assert.equal(savedAgain.status,200);
   assert.equal(savedAgain.data.base_url,saved.data.base_url);
-  assert.deepEqual(f.db.prepare('SELECT credentials_key_id,pending_credentials,pending_base_url FROM misticpay_connection').get(),stored);
+  assert.deepEqual(f.db.prepare('SELECT credentials_key_id,active_credentials,base_url FROM misticpay_connection').get(),stored);
   assert.deepEqual(f.provider.calls,[]);
  }
 });
@@ -266,15 +269,15 @@ test('MisticPay: dados cifrados pela chave gerenciada exigem essa chave durante 
  assert.deepEqual(f.provider.checks,[sampleId,sampleId]);
 });
 
-test('MisticPay: migra as chaves antigas para a configuração cifrada pendente',async t=>{
+test('MisticPay: migra as chaves antigas para a configuração cifrada pronta para receber',async t=>{
  const f=await fixture(t);
  f.db.prepare('INSERT INTO misticpay_connection(id,public_key,secret_key,base_url) VALUES (1,?,?,?)')
   .run(credentials.client_id,credentials.client_secret,credentials.base_url);
  assert.equal((await f.api('/api/misticpay/config',undefined,{auth:false})).status,401);
  const migrated=await f.config();
  assert.equal(migrated.status,200);
- assert.equal(migrated.data.verification_state,'pending');
- assert.equal(migrated.data.ready,false);
+ assert.equal(migrated.data.verification_state,'configured');
+ assert.equal(migrated.data.ready,true);
  assert.equal(migrated.data.storage_ready,true);
  assert.equal(migrated.data.last_verified_at,null);
  assert.equal(migrated.data.public_key_configured,true);
@@ -282,7 +285,8 @@ test('MisticPay: migra as chaves antigas para a configuração cifrada pendente'
  const stored=f.db.prepare('SELECT * FROM misticpay_connection').get();
  assert.equal(stored.public_key,'');
  assert.equal(stored.secret_key,'');
- assert.ok(stored.pending_credentials);
+ assert.ok(stored.active_credentials);
+ assert.equal(stored.pending_credentials,null);
  assert.doesNotMatch(JSON.stringify(stored),/pk_test|sk_test/);
  assert.deepEqual(f.provider.calls,[]);
  f.provider.payments.set(sampleId,{...samplePayment});
@@ -291,6 +295,33 @@ test('MisticPay: migra as chaves antigas para a configuração cifrada pendente'
  assert.equal(verified.data.verification_state,'verified');
  assert.equal(verified.data.ready,true);
  assert.deepEqual(f.provider.checks,[sampleId]);
+});
+
+test('MisticPay: promove rascunhos antigos sem cobranças na abertura do painel ou na primeira cobrança',async t=>{
+ for(const access of ['painel','checkout']){
+  const f=await fixture(t);
+  assert.equal((await f.configure()).status,200);
+  const booking=await f.reserve('2026-12-07');
+  const envelope=f.db.prepare('SELECT active_credentials FROM misticpay_connection').get().active_credentials;
+  f.db.prepare(`UPDATE misticpay_connection SET pending_credentials=active_credentials,
+   pending_base_url=base_url,active_credentials=NULL,base_url='',last_verified_at=NULL WHERE id=1`).run();
+  assert.deepEqual(f.provider.calls,[]);
+  if(access==='painel'){
+   const promoted=await f.config();
+   assert.equal(promoted.data.ready,true);
+   assert.equal(promoted.data.verification_state,'configured');
+   assert.equal(promoted.data.last_verified_at,null);
+   assert.deepEqual(f.provider.calls,[]);
+  }else{
+   const created=await f.api(booking.path+'/misticpay',{cpf},{auth:false});
+   assert.equal(created.status,200,JSON.stringify(created.data));
+   assert.equal(created.data.status,'pending');
+   assert.equal(created.data.qr_code,qr);
+   assert.deepEqual(f.provider.calls.map(call=>call.action),['create']);
+  }
+  const current=f.db.prepare('SELECT active_credentials,pending_credentials,base_url FROM misticpay_connection').get();
+  assert.deepEqual({...current},{active_credentials:envelope,pending_credentials:null,base_url:credentials.base_url});
+ }
 });
 
 test('MisticPay: ambiente com segredo de armazenamento diferente não sobrescreve as chaves',async t=>{
@@ -311,15 +342,22 @@ test('MisticPay: ambiente com segredo de armazenamento diferente não sobrescrev
  assert.deepEqual(f.provider.checks,[sampleId]);
 });
 
-test('MisticPay: QR Pix e baixa só após consulta autenticada do valor integral',async t=>{
+test('MisticPay: primeiro QR Pix após salvar as chaves e baixa só após consulta autenticada',async t=>{
  const f=await fixture(t);
- await f.activate();
+ const saved=await f.configure();
+ assert.equal(saved.status,200);
+ assert.equal(saved.data.verification_state,'configured');
+ assert.equal(saved.data.ready,true);
+ assert.equal(saved.data.last_verified_at,null);
+ assert.deepEqual(f.provider.calls,[]);
  await f.api('/api/pix/settings',{key:'pix@arena.example',receiver:'Arena de teste'},{method:'PUT'});
  const booking=await f.reserve('2026-12-03');
  assert.equal((await f.api(booking.path,undefined,{auth:false})).data.misticpay_ready,true);
  assert.equal((await f.api(booking.path+'/misticpay',{cpf:'123.456.789-00'},{auth:false})).status,400);
  const created=await f.api(booking.path+'/misticpay',{cpf,total:1},{auth:false});
  assert.deepEqual(created,{status:200,data:{status:'pending',qr_code:qr,copy_paste:copyPaste}});
+ assert.deepEqual(f.provider.calls.map(call=>call.action),['create']);
+ assert.equal((await f.api(booking.path,undefined,{auth:false})).data.paid,0);
  const request=f.provider.creates[0];
  assert.equal(request.amount,180);
  assert.equal(request.payerDocument,'52998224725');
@@ -334,6 +372,11 @@ test('MisticPay: QR Pix e baixa só após consulta autenticada do valor integral
  const payment=f.provider.payments.get(request.transactionId);
  assert.equal((await f.api('/api/misticpay/webhook/'+'a'.repeat(64),{status:'COMPLETO'},{auth:false})).status,404);
  const paidEvent={transactionId:payment.transactionId,transactionType:'DEPOSITO',transactionMethod:'PIX',status:'COMPLETO'};
+ f.provider.accessError={code:'API_SCOPE_DENIED',status:403};
+ assert.equal((await f.api(webhook,paidEvent,{auth:false})).status,502);
+ assert.equal((await f.api(booking.path,undefined,{auth:false})).data.paid,0);
+ assert.equal((await f.config()).data.ready,true);
+ delete f.provider.accessError;
  assert.equal((await f.api(webhook,{...paidEvent,value:18000},{auth:false})).status,200);
  const listed=async()=> (await f.api('/api/bookings')).data.find(row=>row.id===booking.id);
  assert.equal((await listed()).paid,0);
@@ -346,6 +389,9 @@ test('MisticPay: QR Pix e baixa só após consulta autenticada do valor integral
  assert.equal(paid.paid,1);
  assert.equal(paid.method,'MisticPay');
  assert.equal(paid.misticpay_status,'approved');
+ const observed=await f.config();
+ assert.equal(observed.data.verification_state,'verified');
+ assert.ok(observed.data.last_verified_at);
  const checksAfterApproval=f.provider.checks.length;
  assert.equal((await f.api(webhook,paidEvent,{auth:false})).status,200);
  assert.equal(f.provider.checks.length,checksAfterApproval,'Webhook repetido não precisa consultar um estado já confirmado');
@@ -424,7 +470,7 @@ test('MisticPay: falhas de verificação são diagnosticadas e mantêm as chaves
   const result=await f.verify();
   assert.equal(result.status,200,code);
   assert.equal(result.data.verification_state,'failed',code);
-  assert.equal(result.data.ready,false);
+  if(httpStatus===401||code==='API_CREDENTIAL_REQUIRED')assert.equal(result.data.ready,false);
   assert.equal(result.data.public_key_configured,true);
   assert.equal(result.data.secret_key_configured,true);
   assert.equal(result.data.last_verified_at,null);
@@ -440,7 +486,7 @@ test('MisticPay: falhas de verificação são diagnosticadas e mantêm as chaves
   assert.doesNotMatch(JSON.stringify(result.data),/provider-private-details|pk_test|sk_test|31677842/);
   assert.deepEqual((await f.config()).data.verification_error,diagnostic);
   const stored=f.db.prepare('SELECT * FROM misticpay_connection').get();
-  assert.ok(stored.pending_credentials);
+  assert.ok(stored.active_credentials);
   assert.doesNotMatch(JSON.stringify(stored),/pk_test|sk_test|provider-private-details/);
  }
  const attempts=f.provider.checks.length;
@@ -457,34 +503,63 @@ test('MisticPay: falhas de verificação são diagnosticadas e mantêm as chaves
  assert.equal(f.provider.creates.length,0);
 });
 
-test('MisticPay: falha na troca de chaves mantém a conexão verificada anterior',async t=>{
+test('MisticPay: troca de chaves confere uma cobrança conhecida sem pedir ID ao administrador',async t=>{
  const f=await fixture(t);
  await f.activate();
+ const first=await f.reserve('2026-12-06');
+ assert.equal((await f.api(first.path+'/misticpay',{cpf},{auth:false})).data.status,'pending');
+ const firstOrder=f.db.prepare('SELECT id,provider_id FROM misticpay_orders WHERE booking_id=?').get(first.id);
  const initial=(await f.config()).data;
  const encrypted=f.db.prepare('SELECT active_credentials FROM misticpay_connection').get().active_credentials;
  const replacement={client_id:'pk_replacement',client_secret:'sk_replacement',base_url:'https://arena-new.example'};
- const saved=await f.configure(replacement);
- assert.equal(saved.status,200);
- assert.equal(saved.data.verification_state,'pending');
- assert.equal(saved.data.ready,true);
- assert.equal(f.provider.checks.length,1);
  f.allowVerification();
- const failed=await f.verify();
+ const failed=await f.configure(replacement);
  assert.equal(failed.status,200);
  assert.equal(failed.data.verification_state,'failed');
  assert.equal(failed.data.ready,true);
  assert.equal(failed.data.last_verified_at,initial.last_verified_at);
  assert.equal(failed.data.verification_error.http_status,401);
+ assert.deepEqual(f.provider.checks,[sampleId,firstOrder.id]);
  const stored=f.db.prepare('SELECT * FROM misticpay_connection').get();
  assert.equal(stored.active_credentials,encrypted);
  assert.ok(stored.pending_credentials);
  assert.doesNotMatch(JSON.stringify(stored),/pk_replacement|sk_replacement|pk_test|sk_test/);
- const booking=await f.reserve('2026-12-06');
+ f.provider.allowedCredentials.add(basicAuth(replacement));
+ f.provider.respond=(action,{transactionId})=>{
+  assert.equal(action,'check');assert.equal(transactionId,firstOrder.id);
+  return Response.json({transaction:{...f.provider.payments.get(transactionId),value:179.99}});
+ };
+ f.allowVerification();
+ const mismatch=await f.configure(replacement);
+ assert.equal(mismatch.data.verification_state,'failed');
+ assert.equal(mismatch.data.verification_error.code,'ORDER_MISMATCH');
+ assert.equal(mismatch.data.ready,true);
+ assert.equal(f.db.prepare('SELECT active_credentials FROM misticpay_connection').get().active_credentials,encrypted);
+ delete f.provider.respond;
+ const booking=await f.reserve('2026-12-07');
  const created=await f.api(booking.path+'/misticpay',{cpf},{auth:false});
  assert.equal(created.status,200);
  assert.equal(created.data.status,'pending');
- assert.equal(f.provider.creates.length,1);
- assert.match(f.provider.creates[0].projectWebhook,/^https:\/\/arena\.example\//);
+ assert.equal(f.provider.creates.length,2);
+ assert.match(f.provider.creates.at(-1).projectWebhook,/^https:\/\/arena\.example\//);
+
+ f.allowVerification();
+ const activated=await f.configure(replacement);
+ assert.equal(activated.status,200);
+ assert.equal(activated.data.verification_state,'verified');
+ assert.equal(activated.data.verification_error,null);
+ assert.equal(activated.data.ready,true);
+ const latest=f.db.prepare('SELECT id FROM misticpay_orders WHERE archived=0 ORDER BY created_at DESC,id DESC LIMIT 1').get();
+ assert.equal(f.provider.checks.at(-1),latest.id);
+ assert.equal(f.provider.creates.length,2);
+ const rotated=f.db.prepare('SELECT active_credentials,pending_credentials,base_url FROM misticpay_connection').get();
+ assert.notEqual(rotated.active_credentials,encrypted);
+ assert.equal(rotated.pending_credentials,null);
+ assert.equal(rotated.base_url,replacement.base_url);
+ f.provider.allowedCredentials.delete(basicAuth(credentials));
+ const third=await f.reserve('2026-12-08');
+ assert.equal((await f.api(third.path+'/misticpay',{cpf},{auth:false})).data.status,'pending');
+ assert.match(f.provider.creates.at(-1).projectWebhook,/^https:\/\/arena-new\.example\//);
 });
 
 test('MisticPay: indisponibilidade preserva a configuração e acesso revogado suspende novas cobranças',async t=>{

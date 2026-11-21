@@ -597,14 +597,6 @@ $('#configure-catalog').onclick=async()=>{
 };
 $('#configure-financial').onclick=()=>openModal('Conectar Mercado Pago desta arena',`<p>Use as credenciais da aplicação Mercado Pago desta arena. Elas não serão compartilhadas com a mãe ou com outros filhos.</p><label>Ambiente<select name="mode"><option value="test" ${paymentConfig.mode==='test'?'selected':''}>Teste</option><option value="production" ${paymentConfig.mode==='production'?'selected':''}>Produção</option></select></label><label>Endereço público HTTPS<input name="base_url" type="url" value="${esc(paymentConfig.base_url||location.origin)}" required></label><label>Access Token<input name="token" type="password" autocomplete="new-password" maxlength="2000" placeholder="${paymentConfig.token_configured?'Já configurado; deixe vazio para manter':'Token da aplicação desta arena'}" ${paymentConfig.token_configured?'':'required'}></label><label>Segredo de assinatura do webhook<input name="webhook_secret" type="password" autocomplete="new-password" maxlength="2000" placeholder="${paymentConfig.webhook_configured?'Já configurado; deixe vazio para manter':'Segredo do webhook desta aplicação'}" ${paymentConfig.webhook_configured?'':'required'}></label><p>Configure no Mercado Pago notificações de Pagamentos para <strong>${esc(paymentConfig.base_url||location.origin)}/api/payments/webhook</strong>. O sistema verificará a conta antes de salvar. Os campos secretos nunca são devolvidos ao navegador.</p>`,data=>api('payments/config',data,'PUT'),'Salvar e verificar conta');
 const misticpayConfigureButton=$('#configure-misticpay');
-const misticpayVerifyButton=document.createElement('button');
-misticpayVerifyButton.type='button';
-misticpayVerifyButton.className='outline';
-misticpayVerifyButton.textContent='Verificar conexão';
-const misticpayActions=document.createElement('div');
-misticpayActions.className='misticpay-config-actions';
-misticpayConfigureButton.replaceWith(misticpayActions);
-misticpayActions.append(misticpayConfigureButton,misticpayVerifyButton);
 const misticpayDescription=$('#misticpay-connection-description');
 misticpayDescription.setAttribute('role','status');
 const misticpayDiagnostic=document.createElement('div');
@@ -637,23 +629,22 @@ function misticpayStorageMessage(status){
  return messages[status]||'O armazenamento das chaves está temporariamente indisponível.';
 }
 function renderMisticpayConfig(){
- const {ready,storage_ready,storage_status,verification_state,verification_error,last_checked_at,last_verified_at}=misticpayConfig;
+ const {ready,storage_ready,storage_status,verification_state,verification_error,last_checked_at}=misticpayConfig;
  const messages={
-  unconfigured:'Cadastre as chaves da conta que receberá os pagamentos Pix.',
-  pending:'Configuração salva. Verificação pendente.',
-  verified:'Conexão verificada.',
-  failed:'A verificação falhou.'
+  unconfigured:'Cadastre o Client ID e o Client Secret para receber por Pix.',
+  pending:'Abra Configurar MisticPay e salve as chaves para ativar o Pix.',
+  configured:'Confira as chaves da MisticPay para ativar o Pix.',
+  verified:'Confira as chaves da MisticPay para ativar o Pix.',
+  failed:'Confira as chaves e as permissões da MisticPay. Depois, salve a configuração.'
  };
  const state=verification_state??(ready?'verified':'unconfigured');
  const checkedAt=formatMisticpayDate(last_checked_at||verification_error?.checked_at);
- const verifiedAt=formatMisticpayDate(last_verified_at);
- const content=[storage_ready===false?misticpayStorageMessage(storage_status):messages[state]];
- if(ready&&state!=='verified')content.push('Os pagamentos usam a última configuração verificada.');
+ const status=ready?'Configuração salva. Pix disponível para novas reservas.':messages[state];
+ const content=[storage_ready===false?misticpayStorageMessage(storage_status):status];
+ if(ready&&['pending','failed'].includes(state))content.push('As cobranças continuam usando as chaves ativas.');
  if(checkedAt)content.push(`Última consulta em ${checkedAt}.`);
- if(verifiedAt&&verifiedAt!==checkedAt)content.push(`Última verificação bem-sucedida em ${verifiedAt}.`);
  misticpayDescription.textContent=content.filter(Boolean).join(' ');
  misticpayDiagnostic.innerHTML=misticpayErrorMarkup(verification_error);
- misticpayVerifyButton.textContent=state==='failed'?'Verificar novamente':'Verificar conexão';
 }
 function showMisticpayStorageHelp(openNext){
  const status=misticpayConfig.storage_status;
@@ -683,8 +674,7 @@ function openMisticpayConfiguration(){
  ${originField}
  <label>Client ID<input name="client_id" type="password" autocomplete="new-password" maxlength="255" placeholder="${misticpayConfig.public_key_configured?'Deixe vazio para manter a chave pk_ salva':'pk_…'}" ${misticpayConfig.public_key_configured?'':'required'}></label>
  <label>Client Secret<input name="client_secret" type="password" autocomplete="new-password" maxlength="255" placeholder="${misticpayConfig.secret_key_configured?'Deixe vazio para manter a chave sk_ salva':'sk_…'}" ${misticpayConfig.secret_key_configured?'':'required'}></label>
- <p>No <a href="https://app.misticpay.com/login" target="_blank" rel="noopener noreferrer">painel da MisticPay</a>, abra <strong>API → Chaves de Acesso</strong> e habilite <code>TRANSACTION_CREATE</code> e <code>TRANSACTION_READ</code>. <a href="https://docs.misticpay.com/#authentication" target="_blank" rel="noopener noreferrer">Guia de autenticação</a></p>
- <p>Use <strong>Verificar conexão</strong> para consultar uma transação Pix existente.</p>
+ <p>Use uma chave com <code>TRANSACTION_CREATE</code> para gerar Pix. A permissão <code>TRANSACTION_READ</code> permite confirmar o recebimento automaticamente. <a href="https://docs.misticpay.com/#authentication" target="_blank" rel="noopener noreferrer">Permissões na MisticPay</a></p>
 `,async ({client_id,client_secret,base_url})=>{
  const field=$('#modal-fields [name="client_id"]');
  const settings={client_id,client_secret};
@@ -692,41 +682,14 @@ function openMisticpayConfiguration(){
  misticpayConfig=await api('misticpay/config',settings,'PUT');
  render();
  if(field?.isConnected&&$('#modal').open)$('#modal').close();
- toast('Configuração MisticPay salva.');
+ toast(misticpayConfig.ready?'Configuração salva. Pix disponível para novas reservas.':'Configuração MisticPay salva.');
  return false;
 },'Salvar configuração');
 }
 misticpayConfigureButton.onclick=openMisticpayConfiguration;
 
-function openMisticpayVerification(){
- if(misticpayConfig.storage_ready===false)return showMisticpayStorageHelp(openMisticpayVerification);
- if(!misticpayConfig.public_key_configured||!misticpayConfig.secret_key_configured)return openMisticpayConfiguration();
- openModal('Verificar conexão MisticPay',`
- <p>A verificação consulta um Pix existente com as chaves já salvas. Salve qualquer alteração na configuração antes de verificar.</p>
- <label>Identificador da transação Pix<input id="misticpay-verification-id" name="transaction_id" maxlength="128" autocomplete="off" spellcheck="false" aria-describedby="misticpay-verification-help" required></label>
- <p id="misticpay-verification-help">Copie o ID de uma transação Pix no painel da MisticPay.</p>
- <div id="misticpay-verification-feedback" class="misticpay-config-diagnostic" role="status"></div>
-`,async ({transaction_id})=>{
- const id=transaction_id.trim();
- if(!id)throw Error('Informe o identificador de uma transação Pix.');
- const field=$('#misticpay-verification-id');
- $('#misticpay-verification-feedback').replaceChildren();
- field.value='';
- misticpayConfig=await api('misticpay/config/verify',{transaction_id:id});
- render();
- if(misticpayConfig.verification_state==='verified'){
-  if(field.isConnected&&$('#modal').open)$('#modal').close();
-  toast('Conexão MisticPay verificada.');
- }else if(field.isConnected&&$('#modal').open){
-  $('#misticpay-verification-feedback').innerHTML=misticpayErrorMarkup(misticpayConfig.verification_error)||'<p>A conexão ainda aguarda verificação.</p>';
-  $('#save-modal').textContent='Verificar novamente';
- }
- return false;
-},'Verificar conexão');
-}
-misticpayVerifyButton.onclick=openMisticpayVerification;
 $('#modal').addEventListener('close',()=>{
- $('#modal-fields').querySelectorAll('[name="client_id"],[name="client_secret"],#misticpay-verification-id').forEach(field=>{field.value='';});
+ $('#modal-fields').querySelectorAll('[name="client_id"],[name="client_secret"]').forEach(field=>{field.value='';});
 });
 $('#edit-branding').onclick=()=>{
  openModal('Nome e logo do sistema',`<label>Nome<input name="name" value="${esc(systemBranding.name)}" maxlength="80" required></label><label>Logo PNG ou JPEG (até 250 KB)<input id="system-logo-file" type="file" accept="image/png,image/jpeg"></label><label class="check-label"><input name="remove_logo" type="checkbox"> Remover logo atual</label>`,async data=>{

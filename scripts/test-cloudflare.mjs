@@ -95,11 +95,12 @@ try{
   client_id:'pk_local_fixture',client_secret:'sk_local_fixture',base_url:'https://arena.example'
  },{method:'PUT'});
  assert.equal(misticpayDraft.status,200,JSON.stringify(misticpayDraft.data));
- assert.equal(misticpayDraft.data.verification_state,'pending');
- assert.equal(misticpayDraft.data.ready,false);
+ assert.equal(misticpayDraft.data.verification_state,'configured');
+ assert.equal(misticpayDraft.data.ready,true);
+ assert.equal(misticpayDraft.data.last_verified_at,null);
  assert.doesNotMatch(JSON.stringify(misticpayDraft.data),/local_fixture/);
  assert.equal((await api(misticpayConfigPath+'/verify',{})).status,400);
- passed('MisticPay credentials save inside Durable SQLite with verification pending');
+ passed('MisticPay credentials save inside Durable SQLite and enable Pix without a preliminary lookup');
  const cross=await api('/api/courts',{name:'Nope',type:'Areia',price:120},{headers:{Origin:'https://attacker.example'}});assert.equal(cross.status,403);
  const sameOrigin=await api('/api/courts',{name:'Areia CF',type:'Vôlei de areia',price:120},{headers:{Origin:base}});assert.equal(sameOrigin.status,201,JSON.stringify(sameOrigin.data));
  const court=sameOrigin.data.id;

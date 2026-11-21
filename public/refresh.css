@@ -239,18 +239,9 @@ dialog::backdrop, :root[data-theme="dark"] dialog::backdrop { background: #0a102
   border-radius: 16px;
   box-shadow: var(--shadow);
 }
-.misticpay-config-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
 .misticpay-config-diagnostic small {
   color: var(--muted);
   overflow-wrap: anywhere;
-}
-@media (max-width: 760px) {
-  .misticpay-config-actions { justify-content: flex-start; }
 }
 .stat { padding: 16px; }
 .stat-top, .stat small, :root[data-theme="dark"] .stat-top, :root[data-theme="dark"] .stat small { color: var(--muted); font-size: 12px; }
