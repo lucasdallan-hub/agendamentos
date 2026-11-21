@@ -46,7 +46,8 @@ test('Evolution Go: novo agendamento administrativo avisa cliente e administrado
  const f=await arena(t);
  assert.equal((await f.api('bookings',f.booking())).status,201);assert.equal(f.requests.length,0,'disabled by default');
  assert.equal((await f.api('notifications/config',configuration(),{method:'PUT'})).status,200);
- const booking=await f.api('bookings',f.booking({date:dateAfter(3)}));assert.equal(booking.status,201);
+ const date=dateAfter(3);
+ const booking=await f.api('bookings',f.booking({date}));assert.equal(booking.status,201);
  const recipients=Object.fromEntries(f.requests.map(request=>[request.body.number,request]));
  assert.deepEqual(f.requests.map(request=>request.body.number).sort(),['5511999998888','5521988887777']);
  for(const request of f.requests){
@@ -60,13 +61,22 @@ test('Evolution Go: novo agendamento administrativo avisa cliente e administrado
  assert.match(recipients['5521988887777'].body.text,/^🏐 \*Novo agendamento\*/u);
  assert.match(recipients['5521988887777'].body.text,/👤 \*Cliente:\* Cliente Teste/u);
  assert.match(recipients['5521988887777'].body.text,/\n\n💰 \*Valor da reserva:\*/u);
- assert.match(recipients['5511999998888'].body.text,/confirmad/i);
- assert.doesNotMatch(recipients['5511999998888'].body.text,/consulte o painel|98888-7777|5521988887777/i);
+ assert.equal(recipients['5511999998888'].body.text,`✅ *Reserva confirmada!*
+🏐 Arena Vôlei
+
+Olá, Cliente Teste! 👋
+
+🎟️ *Reserva #${booking.data.id}*
+📍 *Quadra:* Quadra WhatsApp
+📅 *Data:* ${date.split('-').reverse().join('/')}
+🕒 *Horário: 18:00 às 19:00*
+
+💰 *Valor da reserva: R$\u00a0120,00*`);
  const events=await f.api('notifications/events');assert.equal(events.status,200);
  assert.deepEqual(events.data.map(({role})=>role).sort(),['arena','client']);
  assert.ok(events.data.every(event=>event.status==='accepted'&&event.booking_id===booking.data.id));
  assert.equal(JSON.stringify(events.data).includes('fake-instance-token'),false);
- assert.equal((await f.api('bookings',f.booking({date:dateAfter(3)}))).status,409);assert.equal(f.requests.length,2,'booking conflict must not send notification');
+ assert.equal((await f.api('bookings',f.booking({date}))).status,409);assert.equal(f.requests.length,2,'booking conflict must not send notification');
 });
 
 test('Evolution Go: reserva pública e repetição idempotente não duplicam mensagens',async t=>{
@@ -282,7 +292,7 @@ test('WUZAPI: mantém uma sessão separada, pareia por QR e assume os novos envi
  const messages=Object.fromEntries(f.requests.slice(3).map(({body})=>[body.Phone,body]));
  assert.deepEqual(Object.keys(messages).sort(),['5511999998888','5521988887777']);
  assert.match(messages['5521988887777'].Body,/Cliente Teste/);
- assert.match(messages['5511999998888'].Body,/confirmad/i);
+ assert.match(messages['5511999998888'].Body,/^✅ \*Reserva confirmada!\*\n🏐 Arena Vôlei/u);
  assert.deepEqual(Object.fromEntries((await f.api('notifications/events')).data.map(({role,status})=>[role,status])),{arena:'accepted',client:'accepted'});
  assert.equal(JSON.stringify(captureSystem(f.db)).includes('fake-wuzapi-token'),false);
 });

@@ -167,7 +167,17 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   const amount=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(b.total/100);
   const arenaName=branding(db).name;
   if(role==='client'){
-   return `Reserva confirmada · ${arenaName}\nOlá, ${b.customer}! Sua reserva foi confirmada.\nReserva #${bookingId}\nQuadra: ${b.court_name}\nData: ${date}\nHorário: ${b.start} às ${b.end}\nValor: ${amount}`;
+   return `✅ *Reserva confirmada!*
+🏐 ${arenaName}
+
+Olá, ${b.customer}! 👋
+
+🎟️ *Reserva #${bookingId}*
+📍 *Quadra:* ${b.court_name}
+📅 *Data:* ${date}
+🕒 *Horário: ${b.start} às ${b.end}*
+
+💰 *Valor da reserva: ${amount}*`;
   }
   return `🏐 *Novo agendamento*
 ${arenaName} · Reserva #${bookingId}
