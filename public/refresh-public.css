@@ -1,75 +1,22 @@
+/* Public components use the shared theme, including payment status colors. */
 :is(.catalog-body,.pix-public-body,body:has(.payment-return)) {
-  --public-ink: #172345;
-  --public-muted: #525e7a;
-  --public-line: #dce1f0;
-  --public-surface: #fff;
-  --public-soft: #eef0ff;
-  --public-accent: #443ed2;
-  --public-accent-border: #c9c5ff;
-  --public-mint: #187554;
-  --public-mint-bg: #e3fbf1;
-  --public-warning: #91501c;
-  --public-warning-bg: #fff3e1;
-  --public-danger: #ad392a;
-  --public-shadow: 0 20px 55px -35px #29366e55;
-  min-height: 100vh;
-  background:
-    radial-gradient(ellipse 46rem 32rem at 100% 0%, #e5e4ff 0%, transparent 76%),
-    linear-gradient(155deg, #fbfcff 0%, #f2f4ff 75%);
-  color: var(--public-ink);
+  --public-ink: var(--ink);
+  --public-muted: var(--muted);
+  --public-line: var(--line);
+  --public-surface: var(--surface);
+  --public-soft: var(--surface-soft);
+  --public-accent: var(--accent-text);
+  --public-accent-border: var(--accent-line);
+  --public-mint: var(--success-text);
+  --public-mint-bg: var(--success-bg);
+  --public-warning: var(--warning-text);
+  --public-warning-bg: var(--warning-bg);
+  --public-danger: var(--danger-text);
+  --public-shadow: var(--public-card-shadow);
 }
-
-[data-theme="dark"] :is(.catalog-body,.pix-public-body,body:has(.payment-return)) {
-  --public-ink: #f2f4ff;
-  --public-muted: #b8c1db;
-  --public-line: #33426a;
-  --public-surface: #182442;
-  --public-soft: #222d56;
-  --public-accent: #bebaff;
-  --public-accent-border: #615a9b;
-  --public-mint: #72eac2;
-  --public-mint-bg: #193d3e;
-  --public-warning: #ffcf9c;
-  --public-warning-bg: #3c2e30;
-  --public-danger: #ffb9a8;
-  --public-shadow: 0 20px 55px -35px #030712a6;
-  background:
-    radial-gradient(ellipse 46rem 32rem at 100% 0%, #242553 0%, transparent 76%),
-    linear-gradient(155deg, #0e162d 0%, #111a32 75%);
-  color: var(--public-ink);
-}
-
-body.catalog-body {
-  --public-ink: #261b37;
-  --public-muted: #665a74;
-  --public-line: #e9ddeb;
-  --public-surface: #fffdfb;
-  --public-soft: #f3edff;
-  --public-accent: #5834b5;
-  --public-accent-border: #d7c8f6;
-  --public-shadow: 0 22px 46px -34px #522a7166;
-  --ink: var(--public-ink);
-  --muted: var(--public-muted);
-  --surface: var(--public-surface);
-  --surface-soft: var(--public-soft);
-  --line: var(--public-line);
-  --field: #fff;
-  --theme-focus: #774adb;
-  --accent-text: var(--public-accent);
-  background: radial-gradient(ellipse at 88% 0%, #ffe4d6, transparent 38rem), #fbf7f4;
-}
-
-[data-theme="dark"] body.catalog-body {
-  --public-ink: #f8f1ff;
-  --public-muted: #c5b7d0;
-  --public-line: #443654;
-  --public-surface: #261d34;
-  --public-soft: #37294c;
-  --public-accent: #d2bcff;
-  --public-accent-border: #5d467d;
-  --field: #1b1427;
-  --theme-focus: #d8bcff;
-  background: radial-gradient(ellipse at 90% 0%, #4b293f, transparent 44rem), #181221;
+body.catalog-body, body.pix-public-body {
+  background: var(--page-background);
+  color: var(--ink);
 }
 
 .catalog-body .catalog-header,
@@ -106,8 +53,8 @@ body.catalog-body {
   overflow: hidden;
   padding: 0;
   border-radius: 30px;
-  color: #fff8f4;
-  background: #251934;
+  color: var(--hero-ink);
+  background: var(--plum);
   box-shadow: 0 24px 46px -30px #47223191;
 }
 
@@ -120,11 +67,11 @@ body.catalog-body {
   align-items: flex-start;
   justify-content: center;
   padding: clamp(30px, 5vw, 70px);
-  background: radial-gradient(ellipse at -8% 100%, #623350 0%, transparent 75%), #251934;
+  background: radial-gradient(ellipse at -8% 100%, var(--plum-glow) 0%, transparent 75%), var(--plum);
 }
 
 .catalog-hero-kicker {
-  color: #ffb48d;
+  color: var(--hero-highlight);
   font-size: 11px;
   font-weight: 800;
   letter-spacing: .13em;
@@ -132,7 +79,7 @@ body.catalog-body {
 
 .catalog-body .catalog-hero h1 {
   margin: 15px 0;
-  color: #fff8f4;
+  color: var(--hero-ink);
   font-size: clamp(42px, 5vw, 70px);
   font-weight: 850;
   line-height: .99;
@@ -148,7 +95,7 @@ body.catalog-body {
 .catalog-body .catalog-hero p {
   max-width: 32ch;
   margin: 0;
-  color: #ead7eb;
+  color: var(--hero-muted);
   font-size: clamp(15px, 1.65vw, 18px);
   line-height: 1.55;
 }
@@ -158,13 +105,6 @@ body.catalog-body {
   background: linear-gradient(100deg, #28183130, transparent 58%), url('/catalogo-hero.webp') 55% 55% / cover, #a85344;
 }
 
-.catalog-body .primary, [data-theme="dark"] .catalog-body .primary {
-  border-color: transparent;
-  background: #ff8757;
-  color: #291628;
-  box-shadow: 0 8px 16px #a83d3c24;
-}
-.catalog-body .primary:hover:not(:disabled) { background: #ffa077; box-shadow: 0 9px 22px #a83d3c44; }
 #catalog-hero-cta { margin-top: 26px; min-height: 48px; }
 #catalog-hero-cta span, .catalog-filters button span { margin-inline-start: 10px; font-size: 17px; }
 
@@ -215,10 +155,10 @@ body:has(.payment-return) .payment-return {
   height: auto;
   min-height: 142px;
   aspect-ratio: 16 / 7;
-  background: radial-gradient(ellipse at 20% 80%, #9863ff, transparent 68%), linear-gradient(140deg, #5430ab, #391f7e);
+  background: var(--court-violet);
 }
 .catalog-body .catalog-court:nth-child(2n) .court-visual {
-  background: radial-gradient(ellipse at 20% 80%, #ffaf70, transparent 72%), linear-gradient(140deg, #ec6948, #ab3d64);
+  background: var(--court-orange);
 }
 .catalog-body .catalog-court .catalog-photo-gallery {
   position: relative;
@@ -243,7 +183,7 @@ body:has(.payment-return) .payment-return {
   gap: 6px;
   padding: 3px;
   border-radius: 999px;
-  background: #101a35eb;
+  background: #251934eb;
   color: #fff;
 }
 
@@ -267,7 +207,7 @@ body:has(.payment-return) .payment-return {
 }
 
 .catalog-body .catalog-photo-controls button:focus-visible {
-  outline: 2px solid #72eac2;
+  outline: 2px solid var(--hero-highlight);
   outline-offset: 1px;
 }
 
@@ -489,7 +429,7 @@ body:has(.payment-return) .payment-return {
 
 .pix-public-body .pix-intro {
   background:
-    radial-gradient(ellipse at top right, #7665ff20, transparent 62%),
+    radial-gradient(ellipse at top right, #ff875725, transparent 62%),
     var(--public-surface);
 }
 
@@ -550,7 +490,7 @@ body:has(.payment-return) .payment-return {
 }
 
 .pix-public-body #pix-toast {
-  background: #101a35;
+  background: var(--plum);
   color: #fff;
 }
 
@@ -558,7 +498,7 @@ body:has(.payment-return) .payment-return {
   width: min(630px, calc(100% - 32px));
   margin: clamp(26px, 10vh, 110px) auto;
   padding: clamp(23px, 6vw, 57px);
-  border-top: 4px solid #ff8757;
+  border-top: 4px solid var(--accent);
 }
 
 .payment-return > .eyebrow { display: block; margin-bottom: 10px; }
