@@ -384,12 +384,14 @@ dialog::backdrop, :root[data-theme="dark"] dialog::backdrop { background: #0a102
 .pdv-subcommand-total { text-align: right; }
 .pdv-subcommand-status { display: block; margin-top: 3px; color: var(--muted); font-size: 0.8rem; font-weight: 650; }
 .pdv-subcommand-status.closed { color: var(--success-text); }
+.pdv-subcommand-status.pix-awaiting { color: var(--accent-text); }
 .pdv-subcommand-items { min-width: 0; }
 .pdv-subcommand-items h5 { margin: 0 0 6px; font-size: 0.85rem; }
 .pdv-subcommand-items .pdv-muted { margin: 0; }
 .pdv-participant-breakdown { margin: 0; color: var(--muted); font-size: 0.85rem; }
 .pdv-participant-actions { justify-content: flex-start; align-items: center; }
 .pdv-participant-actions a { text-decoration: none; }
+.pdv-pix-actions a { max-width: 100%; white-space: normal; }
 .pdv-participants summary { cursor: pointer; font-weight: 650; }
 .pdv-subcommand-close summary { width: fit-content; padding: 8px 10px; border-radius: 8px; background: var(--surface-soft); color: var(--accent-text); }
 .pdv-participant-form { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)) auto; align-items: end; gap: 8px; margin-top: 10px; }

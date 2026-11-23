@@ -7,6 +7,8 @@ const dateFormatter=new Intl.DateTimeFormat('en-CA',{
 });
 const requestKeyPattern=/^(?:[a-f0-9]{32,64}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i;
 const dayMilliseconds=86_400_000;
+const activePix="(state IN ('creating','pending','unknown','review') OR (state='ready' AND expires_at>?))";
+const pixMethod='MisticPay';
 
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 function selectedDay(value){
@@ -118,6 +120,14 @@ export function createPdv(db){
  const listParticipants=db.prepare('SELECT id,name,whatsapp,paid_cents,paid_at,method FROM pdv_participants WHERE booking_id=? AND removed=0 ORDER BY id');
  const lookupParticipant=db.prepare('SELECT id,name,whatsapp,removed,paid_at FROM pdv_participants WHERE id=? AND booking_id=?');
  const requestParticipant=db.prepare('SELECT requested_name,requested_whatsapp FROM pdv_participants WHERE booking_id=? AND request_key=?');
+ const tabPixOrders=db.prepare(`SELECT participant_id,token,amount_cents,shared_cents,state,${activePix} active_link
+  FROM pdv_pix_orders WHERE booking_id=? AND rowid IN (
+   SELECT MAX(rowid) FROM pdv_pix_orders WHERE booking_id=? GROUP BY participant_id
+  )`);
+ const participantPixLock=db.prepare(`SELECT 1 FROM pdv_pix_orders WHERE booking_id=? AND participant_id=? AND ${activePix}`);
+ const lookupPixOrder=db.prepare(`SELECT booking_id,participant_id,amount_cents,shared_cents,state,paid_at
+  FROM pdv_pix_orders o WHERE id=? AND rowid=(SELECT MAX(rowid) FROM pdv_pix_orders
+   WHERE booking_id=o.booking_id AND participant_id=o.participant_id)`);
  const courtPayments=db.prepare(`SELECT b.total cents,b.paid_at FROM bookings b
   WHERE b.paid=1 AND b.paid_at>=? AND b.paid_at<? AND NOT EXISTS(
    SELECT 1 FROM misticpay_split_plans p WHERE p.booking_id=b.id AND p.mode='deposit' AND p.archived=0
@@ -143,22 +153,31 @@ export function createPdv(db){
    else individualTotals.set(item.participant_id,(individualTotals.get(item.participant_id)||0)+item.total_cents);
   }
   const participants=listParticipants.all(bookingId);
-  let shared_paid_cents=0,openCount=0;
+  const latestPix=new Map(tabPixOrders.all(Date.now(),bookingId,bookingId).map(order=>[order.participant_id,order]));
+  const currentPix=new Map([...latestPix].filter(([,order])=>order.active_link||order.state==='approved'));
+  let shared_paid_cents=0,shared_reserved_cents=0,openCount=0;
   for(const participant of participants){
+   const order=currentPix.get(participant.id);
    if(participant.paid_at)shared_paid_cents+=participant.paid_cents-(individualTotals.get(participant.id)||0);
+   else if(order)shared_reserved_cents+=order.shared_cents;
    else openCount++;
   }
-  const remainingShared=shared_consumption_cents-shared_paid_cents;
+  const remainingShared=shared_consumption_cents-shared_paid_cents-shared_reserved_cents;
   const count=openCount||1;
   const base=Math.floor(remainingShared/count),remainder=remainingShared%count;
   let index=0;
-  return {...tabSummary(row),items,shared_consumption_cents,shared_paid_cents,
+  return {...tabSummary(row),items,shared_consumption_cents,shared_paid_cents,shared_reserved_cents,
    general_balance_cents:row.closed_at||openCount?0:remainingShared,
    participants:participants.map(participant=>{
     const individual_cents=individualTotals.get(participant.id)||0;
-    const shared_cents=participant.paid_at?participant.paid_cents-individual_cents:base+Number(index++<remainder);
+    const order=currentPix.get(participant.id),lastOrder=latestPix.get(participant.id);
+    const shared_cents=participant.paid_at?participant.paid_cents-individual_cents:
+     order?order.shared_cents:base+Number(index++<remainder);
     const status=participant.paid_at||row.closed_at?'closed':'open';
-    return {...participant,individual_cents,shared_cents,amount_cents:individual_cents+shared_cents,status};
+    const payment_link=order?{path:'/pagar-comanda#'+order.token,status:order.state,amount_cents:order.amount_cents}:null;
+    const pix_status=lastOrder?.state==='ready'&&!lastOrder.active_link?'expired':lastOrder?.state??null;
+    return {...participant,individual_cents,shared_cents,amount_cents:order&&!participant.paid_at?order.amount_cents:individual_cents+shared_cents,status,
+     payment_link,pix_status,pix_pending:!!order?.active_link};
    })};
  }
 
@@ -211,15 +230,19 @@ export function createPdv(db){
  function requireOpen(current){
   if(current.status!=='open')fail('Esta comanda não está aberta.',409);
  }
+ function requireNoPix(bookingId,participantId){
+  if(participantPixLock.get(bookingId,participantId,Date.now()))fail('Esta subcomanda tem uma cobrança Pix ativa.',409);
+ }
  function verifyOpenAssignee(bookingId,id){
   if(id===null)return;
   const participant=lookupParticipant.get(id,bookingId);
   if(!participant||participant.removed)fail('Participante não encontrado nesta comanda.',404);
   if(participant.paid_at)fail('A subcomanda deste participante já foi fechada.',409);
+  requireNoPix(bookingId,id);
  }
  function verifySharedAmount(current,change){
-  if(current.shared_consumption_cents+change<current.shared_paid_cents){
-   fail('O consumo compartilhado não pode ficar abaixo do valor já recebido.',409);
+  if(current.shared_consumption_cents+change<current.shared_paid_cents+current.shared_reserved_cents){
+   fail('O consumo compartilhado não pode ficar abaixo do valor recebido ou reservado em cobranças Pix.',409);
   }
  }
  const assigneeId=value=>value===null?null:positiveInteger(value,'Selecione um participante ou marque o item como compartilhado.');
@@ -308,6 +331,7 @@ export function createPdv(db){
    if(!participant||participant.removed)fail('Participante não encontrado nesta comanda.',404);
    requireOpen(current);
    if(participant.paid_at)fail('Este participante já tem um recebimento registrado.',409);
+   requireNoPix(bookingId,participantId);
    const name=Object.hasOwn(body,'name')?participantName(body.name):participant.name;
    const whatsapp=Object.hasOwn(body,'whatsapp')?participantWhatsApp(body.whatsapp):participant.whatsapp;
    db.prepare('UPDATE pdv_participants SET name=?,whatsapp=? WHERE id=? AND booking_id=?').run(name,whatsapp,participantId,bookingId);
@@ -321,6 +345,7 @@ export function createPdv(db){
    if(participant.removed)return current;
    requireOpen(current);
    if(participant.paid_at)fail('A subcomanda deste participante já foi fechada.',409);
+   requireNoPix(bookingId,participantId);
    db.prepare('UPDATE pdv_items SET participant_id=NULL WHERE booking_id=? AND participant_id=? AND removed=0')
     .run(bookingId,participantId);
    db.prepare('UPDATE pdv_participants SET removed=1 WHERE id=? AND booking_id=?').run(participantId,bookingId);
@@ -338,12 +363,62 @@ export function createPdv(db){
     return current;
    }
    requireOpen(current);
+   requireNoPix(bookingId,participantId);
    if(participant.amount_cents!==expected)fail('O valor da parte mudou. Confira a divisão e tente novamente.',409);
    const now=new Date().toISOString();
    db.prepare('UPDATE pdv_participants SET paid_cents=?,paid_at=?,method=? WHERE id=? AND booking_id=?')
     .run(expected,now,body.method,participantId,bookingId);
    return tab(bookingId);
   });
+ }
+
+ function preparePix(bookingId,participantId,expectedCents){
+  const expected=positiveInteger(expectedCents,'Informe um valor de consumo a receber.');
+  const current=tab(bookingId),participant=current.participants.find(row=>row.id===participantId);
+  if(!participant)fail('Participante não encontrado nesta comanda.',404);
+  requireOpen(current);
+  verifyOpenAssignee(bookingId,participantId);
+  if(participant.amount_cents!==expected)fail('O valor da parte mudou. Confira a divisão e tente novamente.',409);
+  return {amount_cents:expected,shared_cents:participant.shared_cents,payer_name:participant.name,whatsapp:participant.whatsapp};
+ }
+
+ function matchingPixOrder(order){
+  const stored=lookupPixOrder.get(order.id);
+  if(stored&&stored.booking_id===order.booking_id&&stored.participant_id===order.participant_id&&
+     stored.amount_cents===order.amount_cents&&stored.shared_cents===order.shared_cents)return stored;
+ }
+
+ // The Pix service calls these methods inside the same transaction as the provider state update.
+ function settlePix(order,paidAt){
+  const stored=matchingPixOrder(order);
+  if(!stored||!['creating','pending','unknown','review','approved'].includes(stored.state)){
+   fail('A cobrança Pix não corresponde a esta subcomanda.',409);
+  }
+  const {booking_id,participant_id,amount_cents,shared_cents}=stored;
+  const current=tab(booking_id),participant=current.participants.find(row=>row.id===participant_id);
+  if(!participant)fail('Participante não encontrado nesta comanda.',409);
+  if(participant.paid_at){
+   if(participant.method===pixMethod&&participant.paid_cents===amount_cents&&participant.paid_at===stored.paid_at)return true;
+   fail('Este recebimento já foi registrado.',409);
+  }
+  requireOpen(current);
+  if(participant.individual_cents+shared_cents!==amount_cents||participant.amount_cents!==amount_cents){
+   fail('O valor Pix não corresponde ao valor reservado para esta subcomanda.',409);
+  }
+  db.prepare('UPDATE pdv_participants SET paid_cents=?,paid_at=?,method=? WHERE id=? AND booking_id=?')
+   .run(amount_cents,paidAt,pixMethod,participant_id,booking_id);
+  return true;
+ }
+
+ function reversePix(order){
+  const stored=matchingPixOrder(order);
+  if(!stored||!['approved','review'].includes(stored.state)||!stored.paid_at)return false;
+  const {booking_id,participant_id,amount_cents,paid_at}=stored;
+  const current=tab(booking_id),participant=current.participants.find(row=>row.id===participant_id);
+  if(current.status!=='open'||participant?.method!==pixMethod||participant.paid_cents!==amount_cents||participant.paid_at!==paid_at)return false;
+  db.prepare('UPDATE pdv_participants SET paid_cents=0,paid_at=NULL,method=NULL WHERE id=? AND booking_id=?')
+   .run(participant_id,booking_id);
+  return true;
  }
  function close(bookingId,body){
   const {expected_total_cents:total,expected_balance_cents:balance}=body;
@@ -354,6 +429,9 @@ export function createPdv(db){
   return transaction(db,()=>{
    const current=tab(bookingId);
    if(total!==undefined&&current.consumption_cents!==total)fail('O total da comanda mudou. Confira os itens e tente novamente.',409);
+   if(current.status==='open'&&current.participants.some(person=>person.pix_pending)){
+    fail('Aguarde a confirmação das cobranças Pix para fechar a comanda geral.',409);
+   }
    if(current.participants.some(person=>person.status==='open'&&person.amount_cents>0)){
     fail('Feche as subcomandas com saldo para fechar a comanda geral.',409);
    }
@@ -375,5 +453,5 @@ export function createPdv(db){
  }
 
  return {open,daily,tab,createProduct,updateProduct,addItem,updateItem,removeItem,close,
-  addParticipant,updateParticipant,removeParticipant,payParticipant};
+  addParticipant,updateParticipant,removeParticipant,payParticipant,preparePix,settlePix,reversePix};
 }

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Pagamento da comanda · Arena Vôlei</title>
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/refresh.css">
+  <link rel="stylesheet" href="/refresh-public.css">
+  <link rel="stylesheet" href="/pagar-comanda.css">
+  <script src="/branding.js" defer></script>
+  <script src="/pagar-comanda.js" defer></script>
+</head>
+<body class="pix-public-body">
+  <div class="pix-public-shell">
+    <div class="pix-public-brand">
+      <span data-public-brand>◉ Arena Vôlei</span>
+      <div class="public-header-actions">
+        <button type="button" class="theme-toggle" data-theme-toggle aria-label="Ativar tema escuro" aria-pressed="false">
+          <span data-theme-icon aria-hidden="true">☾</span>
+          <span data-theme-label>Tema escuro</span>
+        </button>
+      </div>
+    </div>
+    <main class="pix-public-main">
+      <section id="pdv-payment-card" class="pix-public-card pix-intro" aria-labelledby="pdv-payment-heading">
+        <h1 id="pdv-payment-heading">Pagamento da comanda</h1>
+        <div id="pdv-payment-total" class="pix-total" hidden>
+          <span>Valor do consumo</span>
+          <strong id="pdv-payment-amount"></strong>
+        </div>
+        <p id="pdv-payment-status" role="status">Carregando cobrança…</p>
+        <noscript><p>Ative o JavaScript no navegador para abrir o pagamento.</p></noscript>
+        <form id="pdv-payment-form" hidden>
+          <label>CPF do pagador
+            <input id="pdv-payment-cpf" name="cpf" type="text" inputmode="numeric" autocomplete="off"
+                   maxlength="14" placeholder="000.000.000-00" aria-describedby="pdv-payment-cpf-help" required>
+          </label>
+          <p id="pdv-payment-cpf-help">A MisticPay usa o CPF para emitir a cobrança Pix.</p>
+          <button type="submit" class="primary">Gerar Pix</button>
+        </form>
+        <div id="pdv-payment-pix" hidden>
+          <img id="pdv-payment-qr" alt="QR Code do Pix da comanda" width="220" height="220" hidden>
+          <div id="pdv-payment-copy" hidden>
+            <label>Pix copia e cola <input id="pdv-payment-code" readonly></label>
+            <button type="button" id="pdv-payment-copy-button" class="primary">Copiar código Pix</button>
+            <p id="pdv-payment-copy-feedback" role="status"></p>
+          </div>
+        </div>
+        <div class="pdv-payment-actions">
+          <button type="button" id="pdv-payment-check" class="outline" hidden>Verificar pagamento</button>
+          <button type="button" id="pdv-payment-retry" class="outline" hidden>Tentar novamente</button>
+        </div>
+        <p id="pdv-payment-error" role="alert"></p>
+      </section>
+      <section id="pdv-payment-receipt" class="pix-public-card pix-confirmed" aria-labelledby="pdv-receipt-heading" hidden>
+        <h2 id="pdv-receipt-heading">Comprovante de pagamento Pix</h2>
+        <dl class="pdv-receipt-data">
+          <div><dt>Valor recebido</dt><dd id="pdv-receipt-amount"></dd></div>
+          <div><dt>Data e hora de Brasília</dt><dd id="pdv-receipt-date"></dd></div>
+          <div id="pdv-receipt-payer-row"><dt>Pagador</dt><dd id="pdv-receipt-payer"></dd></div>
+          <div><dt>Comanda</dt><dd id="pdv-receipt-booking"></dd></div>
+          <div><dt>Referência do pagamento</dt><dd id="pdv-receipt-reference"></dd></div>
+        </dl>
+        <button type="button" id="pdv-receipt-print" class="outline">Imprimir ou salvar PDF</button>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import {Buffer} from 'node:buffer';
 import {createHash,createHmac,randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import {lookupMisticPayOrder,requestMisticPay,transactionIdPattern} from './misticpay-api.js';
+import {hasPdvPixTransaction} from './pdv-pix.js';
 import {transaction} from './storage.js';
 
 export const splitShareTokenPattern=/^[a-f0-9]{32}\.[1-9]\d{0,15}\.[a-f0-9]{64}$/;
@@ -208,7 +209,7 @@ export function createMisticPaySplit(db,{
 
  const fullTransaction=db.prepare('SELECT 1 FROM misticpay_orders WHERE id=? OR provider_id=?');
  function assertUniqueTransaction(providerId,shareId){
-  if(hasTransaction(providerId,shareId)||fullTransaction.get(providerId,providerId)){
+  if(hasTransaction(providerId,shareId)||fullTransaction.get(providerId,providerId)||hasPdvPixTransaction(db,providerId)){
    fail('A transação consultada pertence a outra cobrança.',409);
   }
  }

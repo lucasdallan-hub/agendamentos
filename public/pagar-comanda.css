@@ -1,0 +1,37 @@
+#pdv-payment-card input[name="cpf"] { max-width: 18rem; }
+#pdv-payment-card #pdv-payment-qr {
+  display: block;
+  width: min(100%, 220px);
+  height: auto;
+  aspect-ratio: 1;
+  padding: 10px;
+  margin: 16px auto;
+  border-radius: 8px;
+  background: #fff;
+  object-fit: contain;
+}
+#pdv-payment-card #pdv-payment-qr[hidden] { display: none; }
+#pdv-payment-card .pdv-payment-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+#pdv-payment-card .pdv-payment-actions button:not([hidden]) { margin-top: 12px; }
+#pdv-payment-card #pdv-payment-error { color: var(--public-danger); }
+#pdv-payment-card :is(#pdv-payment-error,#pdv-payment-copy-feedback):empty { margin: 0; }
+#pdv-payment-receipt h2 { margin: 0; }
+.pdv-receipt-data { margin: 16px 0 20px; }
+.pdv-receipt-data > div {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--public-line);
+}
+.pdv-receipt-data dt { color: var(--public-muted); font-size: 0.85rem; }
+.pdv-receipt-data dd { margin: 3px 0 0; font-weight: 650; overflow-wrap: anywhere; }
+@media print {
+  @page { margin: 16mm; }
+  body.pix-public-body:has(#pdv-payment-receipt:not([hidden])) { min-height: 0; background: #fff; color: #111; }
+  .pix-public-shell:has(#pdv-payment-receipt:not([hidden])) { max-width: none; padding: 0; }
+  .pix-public-shell:has(#pdv-payment-receipt:not([hidden])) .pix-public-brand { color: #111; }
+  .pix-public-shell:has(#pdv-payment-receipt:not([hidden])) .public-header-actions,
+  #pdv-payment-card:has(+ #pdv-payment-receipt:not([hidden])),
+  #pdv-receipt-print { display: none; }
+  .pix-public-body #pdv-payment-receipt { padding: 0; border: 0; box-shadow: none; background: #fff; color: #111; }
+  .pdv-receipt-data > div { break-inside: avoid; border-color: #ccc; }
+  .pdv-receipt-data dt { color: #333; }
+}

@@ -87,7 +87,7 @@ try{
  passed('default admin login works without a bootstrap secret and rejects other usernames');
  await stop();
  await start({bootstrap:true});
- for(const route of ['/','/catalogo','/pix','/pagamento','/theme.js','/sidebar.js','/app.js','/pdv.js','/pix.js','/style.css','/refresh.css','/refresh-public.css','/arena-hero.webp']){
+ for(const route of ['/','/catalogo','/pix','/pagamento','/pagar-comanda','/pagar-comanda.js','/pagar-comanda.css','/theme.js','/sidebar.js','/app.js','/pdv.js','/pix.js','/style.css','/refresh.css','/refresh-public.css','/arena-hero.webp']){
   const response=await api(route);assert.equal(response.status,200,`Asset ${route}: ${response.status}`);assert.equal(response.headers.get('x-content-type-options'),'nosniff');
  }
  assert.equal((await api('/missing')).status,404);
@@ -219,6 +219,19 @@ try{
  assert.equal(assigned.status,201,JSON.stringify(assigned.data));
  assert.equal(assigned.data.items.at(-1).participant_name,'Ana');
  assert.deepEqual(assigned.data.participants.map(p=>[p.individual_cents,p.shared_cents,p.amount_cents]),[[800,501,1301],[0,500,500]]);
+ const pdvLinkRoute=`${participants}/${ana.id}/payment-link`;
+ assert.equal((await api(pdvLinkRoute,{expected_cents:1301},{auth:false})).status,401);
+ const pdvLink=await api(pdvLinkRoute,{expected_cents:1301});
+ assert.equal(pdvLink.status,200,JSON.stringify(pdvLink.data));
+ const pdvLinkPath=pdvLink.data.participants[0].payment_link.path;
+ assert.match(pdvLinkPath,/^\/pagar-comanda#[a-f0-9]{64}$/);
+ const publicPdvLink='/api/public/pdv/payments/'+pdvLinkPath.split('#')[1];
+ const forPayer=await api(publicPdvLink,undefined,{auth:false});
+ assert.deepEqual([forPayer.status,forPayer.data.status,forPayer.data.amount_cents,forPayer.data.receipt],[200,'ready',1301,null]);
+ assert.doesNotMatch(JSON.stringify(forPayer.data),/5562999990101|Bruno|Notas privadas/);
+ assert.equal((await api(`${participants}/${ana.id}/payment`,{method:'Pix',expected_cents:1301})).status,409);
+ assert.equal((await api(pdvLinkRoute,undefined,{method:'DELETE'})).status,200);
+ passed('private subcommand payment links reserve the exact cents with no preliminary provider charge');
  const firstPart=await api(`${participants}/${ana.id}/payment`,{method:'Pix',expected_cents:1301});
  assert.equal(firstPart.status,200,JSON.stringify(firstPart.data));
  assert.deepEqual([firstPart.data.status,firstPart.data.consumption_balance_cents,firstPart.data.booking_paid],['open',500,false]);
@@ -276,7 +289,10 @@ try{
  assert.deepEqual(childTab.data,tabClose.data);
  const childDividedTab=await api(dividedTabRoute,undefined,{headers:childHeaders});
  assert.equal(childDividedTab.status,200,JSON.stringify(childDividedTab.data));
- assert.deepEqual(childDividedTab.data,dividedClose.data);
+ assert.deepEqual(childDividedTab.data,{
+  ...dividedClose.data,participants:dividedClose.data.participants.map(person=>({...person,pix_status:null}))
+ });
+ assert.equal((await api(publicPdvLink,undefined,{auth:false,headers:childHeaders})).status,404);
  assert.equal((await api('/api/courts',{name:'Só no filho',type:'Vôlei',price:50},{headers:childHeaders})).status,201);
  assert.equal((await api('/api/system/branding',{name:'Logo do filho',logo:''},{headers:childHeaders,method:'PUT'})).status,200);
  assert.equal((await api('/api/system/domain',{hostname:'mae.example.com'},{auth:false,headers:childHeaders,method:'PUT'})).status,401);

@@ -113,6 +113,7 @@ const publicFiles=new Map([
  ['/theme.js','/theme.js'],
  ['/catalogo','/catalog.html'],['/catalog.js','/catalog.js'],['/','/index.html'],['/pix','/pix.html'],['/pagamento','/payment.html'],
  ['/branding.js','/branding.js'],['/app.js','/app.js'],['/pdv.js','/pdv.js'],['/pix.js','/pix.js'],['/style.css','/style.css'],
+ ['/pagar-comanda','/pagar-comanda.html'],['/pagar-comanda.js','/pagar-comanda.js'],['/pagar-comanda.css','/pagar-comanda.css'],
  ['/refresh.css','/refresh.css'],['/refresh-public.css','/refresh-public.css'],['/arena-hero.webp','/arena-hero.webp']
 ]);
 
@@ -142,6 +143,7 @@ export default {
   const headers=new Headers(response.headers);
   for(const [name,value]of Object.entries(securityHeaders))headers.set(name,value);
   if(filename.endsWith('.html'))headers.set('Cache-Control','no-store');
+  if(filename==='/pagar-comanda.html')headers.set('Referrer-Policy','no-referrer');
   return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
  }
 };

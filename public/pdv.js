@@ -4,6 +4,19 @@ const pdv=(()=>{
  const detail=$('#pdv-tab-detail');
  const tabError=$('#pdv-tab-error');
  const paymentMethods=['Pix','Dinheiro','Cartão de crédito','Cartão de débito','Transferência'];
+ const activePixStatuses=new Set(['ready','creating','pending','unknown','review']);
+ const pixLabels={
+  ready:'Link Pix pronto',
+  creating:'Gerando Pix',
+  pending:'Aguardando pagamento Pix',
+  unknown:'Verificando pagamento Pix',
+  review:'Pix em análise',
+  approved:'Pix confirmado',
+  refunded:'Pix estornado',
+  failed:'Falha na cobrança Pix',
+  cancelled:'Pix cancelado',
+  expired:'Link Pix expirado'
+ };
  const dateTime=new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo',dateStyle:'short',timeStyle:'short'});
  const sectionTabs=[$('#pdv-comandas-tab'),$('#pdv-products-tab')];
  let dashboard,loadRequest,activeTab,activeBookingId,tabRequest=0,tabBusy=false,addAttempt,participantAttempt;
@@ -137,11 +150,20 @@ const pdv=(()=>{
    <label>WhatsApp com DDD <input name="whatsapp" type="tel" value="${esc(person?.whatsapp)}" placeholder="(62) 99999-9999" maxlength="30" required></label>`;
  }
 
- function participantWhatsApp(person,tab){
+ function pixPaymentUrl(person){
+  const path=person.payment_link?.path;
+  if(typeof path!=='string'||!/^\/pagar-comanda#[a-f0-9]{64}$/.test(path))return '';
+  return new URL(path,location.origin).href;
+ }
+
+ function participantWhatsApp(person,tab,pixUrl=''){
   const phone=String(person.whatsapp||'').replace(/\D/g,'');
   if(!/^[1-9]\d{7,14}$/.test(phone))return '';
-  const text=`Olá, ${person.name}! Sua parte do consumo na comanda #${tab.booking_id} da quadra ${tab.court_name} é de ${money(person.amount_cents)}.`;
-  return `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
+  const amount=pixUrl?person.payment_link.amount_cents:person.amount_cents;
+  if(!Number.isSafeInteger(amount)||amount<=0)return '';
+  let text=`Olá, ${person.name}! Sua parte do consumo na comanda #${tab.booking_id} da quadra ${tab.court_name} é de ${money(amount)}.`;
+  if(pixUrl)text+=`\n\nPague por Pix pelo link abaixo. O recibo fica disponível na mesma página após a confirmação.\n${pixUrl}`;
+  return `https://wa.me/${phone}?${new URLSearchParams({text})}`;
  }
 
  function paymentSelect(){
@@ -149,8 +171,27 @@ const pdv=(()=>{
  }
 
  const participantClosed=person=>person.status==='closed'||Boolean(person.paid_at);
+ const pixStatus=person=>person.payment_link?.status||person.pix_status;
+ const pixLocked=person=>person.pix_pending===true||activePixStatuses.has(pixStatus(person));
 
- function renderParticipants(tab,openParticipants,bookingCancelled){
+ function pixActions(person,tab,id,canSettle){
+  const status=pixStatus(person),url=pixPaymentUrl(person);
+  if(status==='approved'&&url){
+   return `<div class="pdv-participant-actions pdv-pix-actions"><a class="outline" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Ver comprovante Pix ↗</a></div>`;
+  }
+  if(pixLocked(person)){
+   if(!url&&status!=='ready')return '';
+   const whatsapp=url&&status!=='review'?participantWhatsApp(person,tab,url):'';
+   return `<div class="pdv-participant-actions pdv-pix-actions">
+    ${whatsapp?`<a class="outline" href="${esc(whatsapp)}" target="_blank" rel="noopener noreferrer">Enviar link pelo WhatsApp ↗</a>`:''}
+    ${url?`<a class="outline" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Abrir link Pix ↗</a>`:''}
+    ${status==='ready'?`<button type="button" class="table-button cancel" data-pdv-cancel-pix="${id}">Cancelar link Pix</button>`:''}
+   </div>`;
+  }
+  return canSettle?`<button type="button" class="outline" data-pdv-create-pix="${id}">Gerar link Pix</button>`:'';
+ }
+
+ function renderParticipants(tab,assignableParticipants,bookingCancelled){
   const participants=tab.participants||[];
   if(!participants.length)return '';
   const open=tab.status==='open';
@@ -163,32 +204,37 @@ const pdv=(()=>{
   }
   const rows=participants.map(person=>{
    const closed=participantClosed(person);
-   const canEdit=open&&!closed;
+   const locked=pixLocked(person);
+   const canEdit=open&&!closed&&!locked;
    const canSettle=canEdit&&person.amount_cents>0;
    const whatsapp=canSettle?participantWhatsApp(person,tab):'';
    const id=esc(person.id);
-   const status=closed?'Fechada':person.amount_cents>0?'Em aberto':'Sem saldo';
+   const pix=pixStatus(person);
+   const currentPixLabel=!closed||locked||pix==='approved'?pixLabels[pix]:'';
+   const status=currentPixLabel||(closed?'Fechada':person.amount_cents>0?'Em aberto':'Sem saldo');
+   const actions=pixActions(person,tab,id,canSettle);
    return `<li data-pdv-subcommand="${id}">
     <div class="pdv-participant-heading">
      <div><h4>${esc(person.name)}</h4><small>${esc(person.whatsapp)}</small></div>
      <div class="pdv-subcommand-total">
       <strong>${money(person.amount_cents)}</strong>
-      <span class="pdv-subcommand-status${closed?' closed':''}">${status}</span>
+      <span class="pdv-subcommand-status${locked?' pix-awaiting':closed?' closed':''}">${status}</span>
       ${closed&&person.paid_at&&person.method?`<small>Pago por ${esc(person.method)}</small>`:''}
      </div>
     </div>
     <div class="pdv-subcommand-items">
      <h5>Itens individuais</h5>
-     ${itemRows(itemsByPerson.get(person.id)||[],openParticipants,canEdit,bookingCancelled)}
+     ${itemRows(itemsByPerson.get(person.id)||[],assignableParticipants,canEdit,bookingCancelled)}
     </div>
     <p class="pdv-participant-breakdown">Individual ${money(person.individual_cents??0)} · Compartilhado ${money(person.shared_cents??person.amount_cents)}</p>
     ${canEdit?`<div class="pdv-participant-actions">
+     ${actions}
      ${whatsapp?`<a class="outline" href="${esc(whatsapp)}" target="_blank" rel="noopener noreferrer" aria-label="Cobrar ${esc(person.name)} pelo WhatsApp">WhatsApp ↗</a>`:''}
      <button type="button" class="table-button cancel" data-pdv-remove-participant="${id}" aria-label="Remover ${esc(person.name)} da divisão">Remover</button>
     </div>
     <details><summary>Editar contato</summary><form data-pdv-participant-edit="${id}" class="pdv-participant-form">
      ${participantFields(person)}<button type="submit" class="outline">Salvar contato</button>
-    </form></details>`:''}
+    </form></details>`:actions}
     ${canSettle?`<details class="pdv-subcommand-close"><summary>Fechar subcomanda</summary><form data-pdv-participant-pay="${id}" class="pdv-settle-form">
      ${paymentSelect()}<button type="submit" class="primary">Confirmar ${money(person.amount_cents)}</button>
     </form></details>`:''}
@@ -206,13 +252,13 @@ const pdv=(()=>{
   const open=tab.status==='open';
   const bookingCancelled=tab.booking_status==='cancelled';
   const participants=tab.participants||[];
-  const openParticipants=participants.filter(person=>!participantClosed(person));
+  const assignableParticipants=participants.filter(person=>!participantClosed(person)&&!pixLocked(person));
   const sharedItems=tab.items.filter(item=>item.participant_id==null);
   const canAdd=open&&!bookingCancelled;
   const products=(dashboard?.products||[]).filter(product=>product.active);
   const generalBalance=tab.general_balance_cents??tab.consumption_balance_cents??tab.consumption_cents;
   const canSettle=generalBalance>0;
-  const closeWhole=open&&!openParticipants.some(person=>person.amount_cents>0);
+  const closeWhole=open&&!participants.some(person=>pixLocked(person)||(!participantClosed(person)&&person.amount_cents>0));
   const options=products.map(product=>`<option value="${esc(product.id)}">${esc(product.name)} · ${money(product.price_cents)}</option>`).join('');
   detail.innerHTML=`<div class="pdv-detail-header"><div><h3>${esc(tab.customer)}</h3><p>${esc(tab.court_name)} · ${dateLabel(tab.date)} · ${esc(tab.start)}–${esc(tab.end)}</p></div>${tabBadge(tab.status)}</div>
    <dl class="pdv-tab-totals">
@@ -231,15 +277,15 @@ const pdv=(()=>{
    </section>`:''}
    <section aria-label="Itens da comanda">
     <h3>${participants.length?'Itens compartilhados':'Itens'}</h3>
-    ${itemRows(sharedItems,openParticipants,open,bookingCancelled)}
+    ${itemRows(sharedItems,assignableParticipants,open,bookingCancelled)}
    </section>
-   ${canAdd?products.length?`<form data-pdv-add class="pdv-add-form${openParticipants.length?' pdv-assignment-form':''}">
+   ${canAdd?products.length?`<form data-pdv-add class="pdv-add-form${assignableParticipants.length?' pdv-assignment-form':''}">
     <label>Produto <select name="product_id" required><option value="">Selecione</option>${options}</select></label>
     <label>Qtd. <input name="quantity" type="number" min="1" step="1" value="1" required></label>
-    ${participantSelect(openParticipants,null)}
+    ${participantSelect(assignableParticipants,null)}
     <button type="submit" class="outline">Adicionar item</button>
    </form>`:'<button type="button" class="outline pdv-add-product" data-pdv-create-product>Cadastrar produto</button>':''}
-   ${renderParticipants(tab,openParticipants,bookingCancelled)}
+   ${renderParticipants(tab,assignableParticipants,bookingCancelled)}
    ${open&&!closeWhole?'<p class="pdv-muted pdv-close-hint">Feche as subcomandas com saldo para poder fechar a comanda geral.</p>':''}
    ${closeWhole?`<form data-pdv-close class="pdv-settle-form">
     ${canSettle?`<p>Registre o recebimento de <strong>${money(generalBalance)}</strong> ${participants.length?'em consumo compartilhado':'em consumo'}.</p>
@@ -377,6 +423,22 @@ const pdv=(()=>{
   }
  });
  detail.onclick=event=>{
+  const createPix=event.target.closest('[data-pdv-create-pix]');
+  if(createPix){
+   const person=activeTab?.participants?.find(row=>String(row.id)===createPix.dataset.pdvCreatePix);
+   if(activeTab?.status==='open'&&person&&person.amount_cents>0&&!pixLocked(person)&&!participantClosed(person)){
+    void updateTab(path=>api(`${path}/participants/${person.id}/payment-link`,{expected_cents:person.amount_cents}),'Link Pix gerado.');
+   }
+   return;
+  }
+  const cancelPix=event.target.closest('[data-pdv-cancel-pix]');
+  if(cancelPix){
+   const person=activeTab?.participants?.find(row=>String(row.id)===cancelPix.dataset.pdvCancelPix);
+   if(!tabBusy&&person?.payment_link?.status==='ready'&&window.confirm('Cancelar este link Pix? O endereço deixará de aceitar pagamentos.')){
+    void updateTab(path=>api(`${path}/participants/${person.id}/payment-link`,{},'DELETE'),'Link Pix cancelado.');
+   }
+   return;
+  }
   const remove=event.target.closest('[data-pdv-remove]');
   if(remove)void updateTab(path=>api(path+'/items/'+remove.dataset.pdvRemove,{},'DELETE'),'Item removido.');
   const participant=event.target.closest('[data-pdv-remove-participant]');

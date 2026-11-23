@@ -40,6 +40,7 @@ const misticpay=createMisticPay(db,{
 const pix=createPix(db,{...paidClientNotification,receiptReader});
 const courtPhotos=createCourtPhotos(db);
 const pdv=createPdv(db);
+const pdvPix=misticpay.createPdvPix(pdv);
 const notifications=bookingNotifications(db,{fetchImpl:notificationFetch});
 const sessions = sessionStore;
 const attempts = attemptStore;
@@ -87,8 +88,9 @@ const server=http.createServer(async(req,res)=>{
   }
   const misticWebhook=/^\/api\/misticpay\/webhook\/([a-f0-9]{64})$/.exec(url.pathname);
   const splitWebhook=/^\/api\/misticpay\/split-webhook\/([a-f0-9]{64})$/.exec(url.pathname);
+  const pdvWebhook=/^\/api\/misticpay\/pdv-webhook\/([a-f0-9]{64})$/.exec(url.pathname);
   const requestOrigin=`${req.headers['x-forwarded-proto']==='https'?'https':'http'}://${req.headers.host}`;
-  if(url.pathname!=='/api/payments/webhook' && !misticWebhook && !splitWebhook && req.headers.origin && req.headers.origin!==requestOrigin) fail('Origem não permitida.',403);
+  if(url.pathname!=='/api/payments/webhook' && !misticWebhook && !splitWebhook && !pdvWebhook && req.headers.origin && req.headers.origin!==requestOrigin) fail('Origem não permitida.',403);
   const courtGallery=/^\/api\/courts\/(\d+)\/photos$/.exec(url.pathname);
   let body={};
   if(['POST','PATCH','PUT'].includes(req.method)) { let raw=''; const maxBody=courtGallery&&req.method==='PUT'?courtPhotoBodyLimit:url.pathname==='/api/system/branding'?400000:/^\/api\/pix\/payments\/[a-f0-9]{64}\/receipt$/.test(url.pathname)?7*1024*1024:16000;for await(const chunk of req) { raw+=chunk; if(Buffer.byteLength(raw)>maxBody) fail('Requisição muito grande.',413); } try { body=JSON.parse(raw||'{}'); } catch { fail('JSON inválido.'); } if(!body||typeof body!=='object'||Array.isArray(body)) fail('Corpo inválido.'); }
@@ -102,6 +104,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(req.method==='POST'&&misticWebhook)return json(res,200,await misticpay.webhook(misticWebhook[1],body));
   if(req.method==='POST'&&splitWebhook)return json(res,200,await misticpay.splitWebhook(splitWebhook[1],body));
+  if(req.method==='POST'&&pdvWebhook)return json(res,200,await pdvPix.webhook(pdvWebhook[1],body));
   const token=/arena_session=([a-f0-9]+)/.exec(req.headers.cookie||'')?.[1];
   const authenticated=token && sessions.get(token)>Date.now();
   const publicPix=/^\/api\/pix\/payments\/([^/]+)(\/receipt)?$/.exec(url.pathname);
@@ -162,6 +165,14 @@ const server=http.createServer(async(req,res)=>{
    if(req.method==='POST')return json(res,200,check?await misticpay.syncShare(shareToken):await misticpay.createShare(shareToken,body));
    fail('Método não permitido.',405);
   }
+  const publicPdvPayment=/^\/api\/public\/pdv\/payments\/([^/]+)(\/check)?$/.exec(url.pathname);
+  if(publicPdvPayment){
+   const [,paymentToken,check]=publicPdvPayment;
+   if(!/^[a-f0-9]{64}$/.test(paymentToken))fail('Link de pagamento não encontrado.',404);
+   if(req.method==='GET'&&!check)return json(res,200,pdvPix.read(paymentToken));
+   if(req.method==='POST')return json(res,200,check?await pdvPix.check(paymentToken):await pdvPix.create(paymentToken,body));
+   fail('Método não permitido.',405);
+  }
   if(req.method==='GET'&&url.pathname==='/api/system/branding')return json(res,200,branding(db));
   if(req.method==='GET' && url.pathname==='/api/session') return json(res,200,{authenticated:!!authenticated,setup:!db.prepare('SELECT id FROM admin').get()});
   if(req.method==='POST' && ['/api/setup','/api/login'].includes(url.pathname)) {
@@ -184,6 +195,14 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'&&url.pathname==='/api/pdv/products')return json(res,201,pdv.createProduct(body));
   const pdvProduct=/^\/api\/pdv\/products\/(\d+)$/.exec(url.pathname);
   if(req.method==='PATCH'&&pdvProduct)return json(res,200,pdv.updateProduct(Number(pdvProduct[1]),body));
+  const pdvPaymentLink=/^\/api\/pdv\/tabs\/(\d+)\/participants\/(\d+)\/payment-link$/.exec(url.pathname);
+  if(pdvPaymentLink){
+   const bookingId=Number(pdvPaymentLink[1]),participantId=Number(pdvPaymentLink[2]);
+   if(req.method==='POST')await pdvPix.openLink(bookingId,participantId,body.expected_cents);
+   else if(req.method==='DELETE')pdvPix.cancelLink(bookingId,participantId);
+   else fail('Método não permitido.',405);
+   return json(res,200,pdv.tab(bookingId));
+  }
   const pdvParticipant=/^\/api\/pdv\/tabs\/(\d+)\/participants(?:\/(\d+)(\/payment)?)?$/.exec(url.pathname);
   if(pdvParticipant){
    const [,bookingId,participantId,payment]=pdvParticipant;

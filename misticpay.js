@@ -5,6 +5,7 @@ import {lookupMisticPay,lookupMisticPayOrder,readTransaction,requestMisticPay,tr
 import {createMisticPayConnection} from './misticpay-connection.js';
 import {createMisticPayRetry} from './misticpay-retry.js';
 import {createMisticPaySplit} from './misticpay-split.js';
+import {createPdvPix as createPdvPixCheckout,hasPdvPixTransaction,initializePdvPixOrders} from './pdv-pix.js';
 
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const invalidResponse=()=>fail('A MisticPay retornou dados inválidos. Consulte a transação no painel do provedor.',502);
@@ -40,6 +41,7 @@ export function createMisticPay(db,{
   amount_cents INTEGER NOT NULL,state TEXT NOT NULL,webhook_token TEXT UNIQUE,qr_code TEXT,copy_paste TEXT,
   checked_at INTEGER,created_at INTEGER NOT NULL,archived INTEGER NOT NULL DEFAULT 0
  );`);
+ initializePdvPixOrders(db);
  transaction(db,()=>{
   const columns=new Set(db.prepare('PRAGMA table_info(misticpay_orders)').all().map(column=>column.name));
   if(!columns.has('provider_state'))db.exec('ALTER TABLE misticpay_orders ADD COLUMN provider_state TEXT');
@@ -62,6 +64,14 @@ export function createMisticPay(db,{
  const confirmationRetry=createMisticPayRetry(db,{schedule,sync});
  const split=createMisticPaySplit(db,{connection:connectionSettings,fetchImpl,readCharge,validateCpf,schedule,
   enqueuePaidClient,dispatchPaidClient,enqueueDepositClient,dispatchDepositClient});
+ let pdvPix;
+ function createPdvPix(pdv){
+  pdvPix??=createPdvPixCheckout(db,{pdv,connection:connectionSettings,fetchImpl,readCharge,validateCpf,schedule});
+  return pdvPix;
+ }
+ function assertUniqueTransaction(id){
+  if(split.hasTransaction(id)||hasPdvPixTransaction(db,id))fail('A transação pertence a outra cobrança.',409);
+ }
  function details(id){
   const order=getOrder(id);
   if(!order)return null;
@@ -94,9 +104,11 @@ export function createMisticPay(db,{
     transactionId:claim.reference,description:`Reserva #${id} · Arena Vôlei`,
     projectWebhook:`${connection.base_url}/api/misticpay/webhook/${claim.webhookToken}`
    },{decode:result=>readCharge(result.data)});
-   if(split.hasTransaction(charge.id))fail('A transação retornada pertence a outra cobrança.',409);
-   db.prepare("UPDATE misticpay_orders SET provider_id=?,qr_code=?,copy_paste=?,state=? WHERE id=? AND state='creating'")
-    .run(charge.id,charge.qr,charge.copyPaste,charge.state==='PENDENTE'?'pending':'unknown',claim.reference);
+   transaction(db,()=>{
+    assertUniqueTransaction(charge.id);
+    db.prepare("UPDATE misticpay_orders SET provider_id=?,qr_code=?,copy_paste=?,state=? WHERE id=? AND state='creating'")
+     .run(charge.id,charge.qr,charge.copyPaste,charge.state==='PENDENTE'?'pending':'unknown',claim.reference);
+   });
   }catch(error){
    if(error.definitive)db.prepare("DELETE FROM misticpay_orders WHERE id=? AND state='creating'").run(claim.reference);
    else db.prepare("UPDATE misticpay_orders SET state='unknown' WHERE id=? AND state='creating'").run(claim.reference);
@@ -121,7 +133,7 @@ export function createMisticPay(db,{
    if(!current||current.id!==order.id||!booking||booking.total!==payment.cents||!connectionSettings.isCurrent(connection)){
     fail('A cobrança ou a configuração mudou durante a consulta.',409);
    }
-   if(split.hasTransaction(payment.id))fail('A transação consultada pertence a outra cobrança.',409);
+   assertUniqueTransaction(payment.id);
    connectionSettings.recordVerified();
    if(payment.updatedAt&&current.provider_updated_at&&payment.updatedAt<current.provider_updated_at)return details(id);
    const wasPaid=booking.paid&&booking.method==='MisticPay';
@@ -182,17 +194,18 @@ export function createMisticPay(db,{
    .run(digest,order.id,typeof body.status==='string'?body.status:'');
   return {ok:true};
  }
- async function runPaymentTasks(first,second){
-  const results=await Promise.allSettled([first(),second()]);
+ async function runPaymentTasks(...tasks){
+  const results=await Promise.allSettled(tasks.filter(Boolean).map(run=>run()));
   const failure=results.find(result=>result.status==='rejected');
   if(failure)throw failure.reason;
  }
  return {
-  ...split,
+  ...split,createPdvPix,
   settings:connectionSettings.settings,configuration:connectionSettings.configuration,
   saveSettings:connectionSettings.saveSettings,verify:connectionSettings.verify,
   status:id=>getStatus.get(id)?.status??null,details,create,sync,webhook,
-  retryConfirmations:()=>runPaymentTasks(confirmationRetry.drain,split.drainSplitChecks),
-  resumeConfirmations:()=>runPaymentTasks(confirmationRetry.resumeRecent,split.resumeSplitChecks)
+  drainSplitChecks:()=>runPaymentTasks(split.drainSplitChecks,pdvPix?.drain),
+  retryConfirmations:()=>runPaymentTasks(confirmationRetry.drain,split.drainSplitChecks,pdvPix?.drain),
+  resumeConfirmations:()=>runPaymentTasks(confirmationRetry.resumeRecent,split.resumeSplitChecks,pdvPix?.resume)
  };
 }

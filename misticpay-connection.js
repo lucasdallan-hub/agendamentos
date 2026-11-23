@@ -56,6 +56,8 @@ export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey
  const latestOrder=()=>db.prepare(`SELECT id,provider_id,amount_cents FROM (
   SELECT id,provider_id,amount_cents,created_at FROM misticpay_orders WHERE archived=0
   UNION ALL SELECT id,provider_id,amount_cents,created_at FROM misticpay_split_shares
+  UNION ALL SELECT id,provider_id,amount_cents,created_at FROM pdv_pix_orders
+  WHERE provider_id IS NOT NULL OR state IN ('creating','unknown','pending')
  ) ORDER BY created_at DESC,id DESC LIMIT 1`).get();
  const hasCiphertext=row=>row?.active_credentials!=null||row?.pending_credentials!=null;
  function vaultFor(row){
