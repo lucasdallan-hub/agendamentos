@@ -228,6 +228,9 @@ test('Entrada Pix: confirma a reserva com o primeiro pagamento e só dá baixa t
  t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-24T02:58:00Z')});
  const f=await fixture(t),booking=await f.reserve(180.01);
  const path=booking.path+'/split';
+ const tabPath=`/api/pdv/tabs/${booking.id}`;
+ const sendPath=tabPath+'/deposit-balance/send';
+ const admin=(endpoint,body)=>f.api(endpoint,body,{auth:true});
  async function courtRevenue(date){
   const report=await f.api('/api/pdv?date='+date,undefined,{auth:true});
   assert.equal(report.status,200,JSON.stringify(report.data));
@@ -248,6 +251,9 @@ test('Entrada Pix: confirma a reserva com o primeiro pagamento e só dá baixa t
  assert.equal(plan.data.count,2,'O servidor define as duas etapas e ignora os valores enviados pelo navegador');
  assert.deepEqual(plan.data.shares.map(({index,amount_cents})=>[index,amount_cents]),[[1,9001],[2,9000]]);
  const [entry,balance]=plan.data.shares.map(sharePath);
+ assert.deepEqual((await admin(tabPath)).data.booking_deposit_balance,{amount_cents:9000,status:'locked',can_send:false});
+ assert.equal((await f.api(sendPath,{})).status,401);
+ assert.equal((await admin(sendPath,{})).status,409);
  const entryDetails=await f.api(entry);
  assert.equal(entryDetails.status,200);
  assert.deepEqual([entryDetails.data.mode,entryDetails.data.index,entryDetails.data.amount_cents],['deposit',1,9001]);
@@ -287,6 +293,28 @@ test('Entrada Pix: confirma a reserva com o primeiro pagamento e só dá baixa t
  assert.equal(await courtRevenue('2026-11-23'),9001);
  assert.equal(await courtRevenue('2026-11-24'),0);
 
+ assert.deepEqual((await admin(tabPath)).data.booking_deposit_balance,{amount_cents:9000,status:'uncreated',can_send:true});
+ const participant=await admin(tabPath+'/participants',{
+  name:'Luana',whatsapp:'62999991234',request_key:randomBytes(16).toString('hex')
+ });
+ assert.equal(participant.status,201);
+ const [person]=participant.data.participants;
+ assert.equal((await admin(sendPath,{participant_id:person.id+1})).status,400);
+ f.db.prepare('UPDATE public_booking_requests SET expires_at=? WHERE booking_id=?').run(Date.now(),booking.id);
+ assert.equal((await f.api(balance)).status,410);
+ assert.equal((await admin(sendPath,{participant_id:person.id,phone:'5511999999999'})).status,200);
+ const sent=f.messages[2];
+ assert.equal(sent.number,'5562999991234');
+ assert.match(sent.text,/Olá, Luana!/);
+ assert.match(sent.text,/Saldo da quadra:\* R\$\s90,00/);
+ assert.ok(sent.text.endsWith(plan.data.shares[1].path));
+ assert.equal(sent.isTransaction,false);
+ assert.equal((await f.api(balance)).status,200);
+ assert.equal(f.charges.length,1,'O envio reutiliza o link existente e não cria uma cobrança');
+ const renewed=await admin(`/api/bookings/${booking.id}/misticpay-link`,{});
+ assert.equal(renewed.status,200);
+ const renewedPath='/api/public/bookings/'+renewed.data.path.split('#')[1];
+
  t.mock.timers.setTime(Date.parse('2026-11-24T03:01:00Z'));
  const secondCharge=await f.api(balance,payer);
  assert.ok([200,201].includes(secondCharge.status),JSON.stringify(secondCharge.data));
@@ -296,21 +324,23 @@ test('Entrada Pix: confirma a reserva com o primeiro pagamento e só dá baixa t
  f.charges[1].data.transactionState='COMPLETO';
  assert.equal((await f.api(secondHook,eventFor(f.charges[1]))).status,200);
  assert.equal((await f.api(secondHook,eventFor(f.charges[1]))).status,200);
- const settled=(await f.api(booking.path)).data;
+ const settled=(await f.api(renewedPath)).data;
  assert.equal(settled.paid,1);
  assert.deepEqual([settled.split.status,settled.split.remaining_cents],['approved',0]);
- assert.deepEqual(f.messages.map(({number})=>number),['5511998877665','5511999887766','5511999887766']);
- assert.match(f.messages[2].text,/reserva confirmada|pagamento integral confirmado/i);
- assert.equal(f.messages[2].isTransaction,false);
+ assert.deepEqual(f.messages.map(({number})=>number),['5511998877665','5511999887766','5562999991234','5511999887766']);
+ assert.match(f.messages[3].text,/reserva confirmada|pagamento integral confirmado/i);
+ assert.equal(f.messages[3].isTransaction,false);
+ assert.deepEqual((await admin(tabPath)).data.booking_deposit_balance,{amount_cents:0,status:'approved',can_send:false});
+ assert.equal((await admin(sendPath,{})).status,409);
  assert.equal(await courtRevenue('2026-11-23'),9001);
  assert.equal(await courtRevenue('2026-11-24'),9000);
 
  f.charges[0].data.transactionState='DEVOLVIDO';
  assert.equal((await f.api(firstHook,eventFor(f.charges[0],'DEVOLVIDO'))).status,200);
- const refunded=(await f.api(booking.path)).data;
+ const refunded=(await f.api(renewedPath)).data;
  assert.equal(refunded.paid,0);
  assert.deepEqual([refunded.split.deposit_confirmed,refunded.split.remaining_cents],[false,9001]);
- assert.equal(f.messages.length,3);
+ assert.equal(f.messages.length,4);
  assert.equal(await courtRevenue('2026-11-23'),0);
  assert.equal(await courtRevenue('2026-11-24'),9000);
 });

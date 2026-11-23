@@ -286,6 +286,30 @@ const pdv=(()=>{
   </section>`;
  }
 
+ function renderDepositBalance(tab,participants){
+  const balance=tab.booking_deposit_balance;
+  if(!balance)return '';
+  const status={
+   locked:'Disponível após a confirmação da entrada.',
+   archived:'Consulte o saldo na arena original.',
+   uncreated:'Aguardando pagamento.',
+   approved:'Saldo quitado.'
+  }[balance.status]??pixLabels[balance.status]??'Saldo em consulta.';
+  const options=participants.map(person=>`<option value="${esc(person.id)}">${esc(person.name)} · ${esc(person.whatsapp)}</option>`).join('');
+  return `<section class="pdv-deposit-balance" aria-labelledby="pdv-deposit-heading">
+   <h3 id="pdv-deposit-heading">Saldo da quadra</h3>
+   <p><strong>${money(balance.amount_cents)}</strong> · ${esc(status)}</p>
+   ${balance.can_send?`<form class="pdv-deposit-form" data-pdv-deposit-send>
+    <label>Enviar para <select name="recipient" required>
+     ${options?'<option value="">Selecione uma pessoa</option>':''}
+     <option value="holder">${esc(tab.customer)} (titular da reserva)</option>
+     ${options}
+    </select></label>
+    <button type="submit" class="outline">Enviar saldo pelo WhatsApp</button>
+   </form>`:''}
+  </section>`;
+ }
+
  function renderTab(tab){
   $('#pdv-tab-title').textContent=`Comanda #${tab.booking_id}`;
   const open=tab.status==='open';
@@ -302,10 +326,11 @@ const pdv=(()=>{
   detail.innerHTML=`<div class="pdv-detail-header"><div><h3>${esc(tab.customer)}</h3><p>${dateLabel(tab.date)} · ${tabLocation(tab)}</p></div>${tabBadge(tab.status)}</div>
    <dl class="pdv-tab-totals">
     ${tab.standalone?'':`<div><dt>Quadra · ${bookingCancelled?'cancelada':tab.booking_paid?'paga':'pendente'}</dt><dd>${bookingCancelled?'—':money(tab.booking_total_cents)}</dd>
-     ${!bookingCancelled&&tab.booking_uses_deposit&&!tab.booking_paid&&tab.booking_received_cents>0?`<small>${money(tab.booking_received_cents)} recebidos · saldo ${money(tab.booking_total_cents-tab.booking_received_cents)}</small>`:''}</div>`}
+     ${!bookingCancelled&&tab.booking_uses_deposit&&!tab.booking_paid&&tab.booking_received_cents>0?`<small>${money(tab.booking_received_cents)} recebidos</small>`:''}</div>`}
     <div><dt>Consumo</dt><dd>${money(tab.consumption_cents)}</dd></div>
     ${bookingCancelled||tab.standalone?'':`<div><dt>Total da reserva e consumo</dt><dd>${money(tab.booking_total_cents+tab.consumption_cents)}</dd></div>`}
    </dl>
+   ${renderDepositBalance(tab,participants)}
    ${tab.paid_at&&tab.method?`<p class="pdv-paid-info">Consumo recebido por ${esc(tab.method)} em ${dateTime.format(new Date(tab.paid_at))}.</p>
     ${tab.general_paid_cents>0?receiptButton(tab.customer):''}`:''}
    ${renderParticipants(tab,assignableParticipants,bookingCancelled)}
@@ -457,6 +482,12 @@ const pdv=(()=>{
   if(!activeTab)return;
   event.preventDefault();
   const form=event.target,data=new FormData(form);
+  if(form.hasAttribute('data-pdv-deposit-send')){
+   const recipient=data.get('recipient');
+   const participant_id=recipient==='holder'?null:Number(recipient);
+   void updateTab(path=>api(path+'/deposit-balance/send',{participant_id}),
+    'Link do saldo aceito pela Evolution Go para envio.',{reloadOnError:true});
+  }
   if(form.hasAttribute('data-pdv-add'))void updateTab(path=>sendAdd(path,data),'Item adicionado.');
   if(form.hasAttribute('data-pdv-item')){
    void updateTab(path=>api(path+'/items/'+form.dataset.pdvItem,{

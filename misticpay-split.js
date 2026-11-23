@@ -109,6 +109,21 @@ export function createMisticPaySplit(db,{
   return plan?summary(plan):null;
  }
 
+ function depositBalance(bookingId){
+  const plan=getPlan.get(bookingId);
+  if(plan?.mode!=='deposit')return null;
+  const booking=getBooking.get(bookingId);
+  const status=getChargeState.get(bookingId,2)?.state??'uncreated';
+  const paid=status==='approved'||(plan.archived&&!!booking.paid);
+  const locked=!plan.archived&&!paid&&balanceLocked(plan,2,status);
+  return {
+   amount_cents:paid?0:shareAmount(plan,2),
+   status:paid?'approved':plan.archived?'archived':locked?'locked':status,
+   can_send:!plan.archived&&!paid&&!locked&&booking.status==='confirmed'&&
+    ['uncreated','pending','creating','unknown'].includes(status)
+  };
+ }
+
  function splitBooking(bookingId,page=1){
   const plan=getPlan.get(bookingId);
   if(!plan)return null;
@@ -395,6 +410,6 @@ export function createMisticPaySplit(db,{
   await armRetries();
  }
 
- return {hasSplitPlan,hasTransaction,splitPlan,splitBooking,splitSummary,cancelSplit,share,shareStatus,createShare,syncShare,splitWebhook,
+ return {hasSplitPlan,hasTransaction,splitPlan,splitBooking,splitSummary,depositBalance,cancelSplit,share,shareStatus,createShare,syncShare,splitWebhook,
   drainSplitChecks,resumeSplitChecks:armRetries};
 }

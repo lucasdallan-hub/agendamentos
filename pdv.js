@@ -69,7 +69,7 @@ function tabSummary({closed_at,...row}){
 }
 const productSummary=row=>({...row,active:!!row.active});
 
-export function createPdv(db){
+export function createPdv(db,{depositBalance}={}){
  db.exec(`CREATE TABLE IF NOT EXISTS pdv_products(
   id INTEGER PRIMARY KEY,name TEXT NOT NULL,price_cents INTEGER NOT NULL CHECK(price_cents>0),
   active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1))
@@ -206,6 +206,7 @@ export function createPdv(db){
   const base=Math.floor(remainingShared/count),remainder=remainingShared%count;
   let index=0;
   return {...tabSummary(row),items,shared_consumption_cents,shared_paid_cents,shared_reserved_cents,
+   ...(row.booking_uses_deposit&&depositBalance?{booking_deposit_balance:depositBalance(bookingId)}:{}),
    general_balance_cents:row.closed_at||openCount?0:remainingShared,
    participants:participants.map(participant=>{
     const individual_cents=individualTotals.get(participant.id)||0;

@@ -4,7 +4,7 @@ import { MercadoPago, paymentConfiguration, createPayments, verifyWebhook } from
 import {createPix} from './pix.js';
 import {Buffer} from 'node:buffer';
 import {transaction} from './storage.js';
-import {bookingNotifications} from './notifications.js';
+import {bookingNotifications,normalizeNumber} from './notifications.js';
 import {publicCatalog} from './public-catalog.js';
 import {createCourtPhotos,courtPhotoBodyLimit} from './court-photos.js';
 import {financialSettings} from './financial-settings.js';
@@ -40,7 +40,7 @@ const misticpay=createMisticPay(db,{
 });
 const pix=createPix(db,{...paidClientNotification,receiptReader});
 const courtPhotos=createCourtPhotos(db);
-const pdv=createPdv(db);
+const pdv=createPdv(db,{depositBalance:misticpay.depositBalance});
 const pdvPix=misticpay.createPdvPix(pdv);
 const notifications=bookingNotifications(db,{fetchImpl:notificationFetch});
 const pdvLinkDeliveries=new Set();
@@ -204,6 +204,41 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='GET'&&url.pathname==='/api/pdv')return json(res,200,pdv.daily(url.searchParams.get('date')??undefined));
   if(req.method==='POST'&&url.pathname==='/api/pdv/tabs')return json(res,201,pdv.openStandalone(body));
   if(req.method==='POST'&&url.pathname==='/api/pdv/tabs/archive')return json(res,200,pdv.archiveDay(body.date));
+  const depositLink=/^\/api\/pdv\/tabs\/(\d+)\/deposit-balance\/send$/.exec(url.pathname);
+  if(req.method==='POST'&&depositLink){
+   const id=Number(depositLink[1]),tab=pdv.tab(id),balance=tab.booking_deposit_balance;
+   if(!balance?.can_send)fail('O link do saldo da quadra está indisponível. Confira a situação da entrada e do saldo.',409);
+   const deliveryKey=`deposit:${id}`;
+   if(pdvLinkDeliveries.has(deliveryKey))fail('Já existe um envio em andamento para esta comanda.',409);
+   const participantId=body.participant_id??null;
+   const participant=participantId===null?null:tab.participants.find(person=>person.id===participantId);
+   if(participantId!==null&&!participant)fail('Selecione uma pessoa cadastrada nesta comanda.',400);
+   let phone=participant?.whatsapp;
+   if(!participant){
+    try{phone=normalizeNumber(db.prepare('SELECT phone FROM bookings WHERE id=?').get(id).phone);}
+    catch{fail('O titular da reserva precisa ter um WhatsApp válido com DDD.');}
+   }
+   const send=notifications.preparePdvLinkDelivery(phone);
+   // Renew the reservation link when expired so the signed balance link can still be opened.
+   catalog.misticpayLink(id);
+   const share=misticpay.splitBooking(id).shares.find(part=>part.index===2);
+   const paymentUrl=new URL(share.path,requestOrigin).href;
+   const amount=pdvMoney.format(balance.amount_cents/100);
+   pdvLinkDeliveries.add(deliveryKey);
+   try{
+    await send(`Olá, ${participant?.name??tab.customer}! 👋
+
+🧾 *Comanda #${id}*
+📍 *Quadra:* ${tab.court_name}
+💰 *Saldo da quadra:* ${amount}
+
+📲 *Pague o saldo por Pix pelo link abaixo*
+${paymentUrl}`);
+   }finally{
+    pdvLinkDeliveries.delete(deliveryKey);
+   }
+   return json(res,200,pdv.tab(id));
+  }
   const pdvReceipt=/^\/api\/pdv\/tabs\/(\d+)(?:\/participants\/(\d+))?\/receipt\/send$/.exec(url.pathname);
   if(req.method==='POST'&&pdvReceipt){
    const bookingId=Number(pdvReceipt[1]),participantId=pdvReceipt[2]===undefined?undefined:Number(pdvReceipt[2]);
