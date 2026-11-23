@@ -42,6 +42,7 @@ function safeAmount(value,message='O total da comanda excede o limite suportado.
 
 const selectTabs=`SELECT b.id booking_id,b.customer,c.name court_name,b.date,b.start,b.end,
  b.status booking_status,b.total booking_total_cents,b.paid booking_paid,t.closed_at,t.paid_at,t.method,
+ COALESCE(t.paid_cents,0) general_paid_cents,
  p.booking_id IS NOT NULL booking_uses_deposit,
  CASE WHEN p.archived=1 THEN p.archived_paid_cents
   WHEN p.booking_id IS NOT NULL THEN (
@@ -142,13 +143,22 @@ export function createPdv(db){
    else individualTotals.set(item.participant_id,(individualTotals.get(item.participant_id)||0)+item.total_cents);
   }
   const participants=listParticipants.all(bookingId);
-  const count=participants.length||1;
-  const base=Math.floor(shared_consumption_cents/count),remainder=shared_consumption_cents%count;
-  return {...tabSummary(row),items,shared_consumption_cents,
-   participants:participants.map((participant,index)=>{
+  let shared_paid_cents=0,openCount=0;
+  for(const participant of participants){
+   if(participant.paid_at)shared_paid_cents+=participant.paid_cents-(individualTotals.get(participant.id)||0);
+   else openCount++;
+  }
+  const remainingShared=shared_consumption_cents-shared_paid_cents;
+  const count=openCount||1;
+  const base=Math.floor(remainingShared/count),remainder=remainingShared%count;
+  let index=0;
+  return {...tabSummary(row),items,shared_consumption_cents,shared_paid_cents,
+   general_balance_cents:row.closed_at||openCount?0:remainingShared,
+   participants:participants.map(participant=>{
     const individual_cents=individualTotals.get(participant.id)||0;
-    const shared_cents=base+Number(index<remainder);
-    return {...participant,individual_cents,shared_cents,amount_cents:individual_cents+shared_cents};
+    const shared_cents=participant.paid_at?participant.paid_cents-individual_cents:base+Number(index++<remainder);
+    const status=participant.paid_at||row.closed_at?'closed':'open';
+    return {...participant,individual_cents,shared_cents,amount_cents:individual_cents+shared_cents,status};
    })};
  }
 
@@ -201,14 +211,16 @@ export function createPdv(db){
  function requireOpen(current){
   if(current.status!=='open')fail('Esta comanda não está aberta.',409);
  }
- function requireAdjustable(current){
-  requireOpen(current);
-  if(current.division_locked)fail('A divisão e os itens ficam fixos após o primeiro recebimento.',409);
- }
- function verifyAssignee(bookingId,id){
+ function verifyOpenAssignee(bookingId,id){
   if(id===null)return;
   const participant=lookupParticipant.get(id,bookingId);
   if(!participant||participant.removed)fail('Participante não encontrado nesta comanda.',404);
+  if(participant.paid_at)fail('A subcomanda deste participante já foi fechada.',409);
+ }
+ function verifySharedAmount(current,change){
+  if(current.shared_consumption_cents+change<current.shared_paid_cents){
+   fail('O consumo compartilhado não pode ficar abaixo do valor já recebido.',409);
+  }
  }
  const assigneeId=value=>value===null?null:positiveInteger(value,'Selecione um participante ou marque o item como compartilhado.');
  function addItem(bookingId,body){
@@ -226,9 +238,9 @@ export function createPdv(db){
     }
     return current;
    }
-   requireAdjustable(current);
+   requireOpen(current);
    if(current.booking_status==='cancelled')fail('A reserva está cancelada e não recebe novos consumos.',409);
-   verifyAssignee(bookingId,participantId);
+   verifyOpenAssignee(bookingId,participantId);
    const product=getProduct(productId);
    if(!product.active)fail('Este produto está desativado.',409);
    safeAmount(current.consumption_cents+safeAmount(product.price_cents*quantity));
@@ -243,13 +255,18 @@ export function createPdv(db){
   return transaction(db,()=>{
    const current=tab(bookingId),item=lookupItem.get(itemId,bookingId);
    if(!item||item.removed)fail('Item não encontrado nesta comanda.',404);
-   requireAdjustable(current);
+   requireOpen(current);
    const quantity=Object.hasOwn(body,'quantity')?itemQuantity(body.quantity):item.quantity;
    const participantId=Object.hasOwn(body,'participant_id')?assigneeId(body.participant_id):item.participant_id;
    if(current.booking_status==='cancelled'&&quantity>item.quantity)fail('A reserva está cancelada e não recebe novos consumos.',409);
-   verifyAssignee(bookingId,participantId);
+   verifyOpenAssignee(bookingId,item.participant_id);
+   if(participantId!==item.participant_id)verifyOpenAssignee(bookingId,participantId);
    const previousTotal=item.price_cents*item.quantity;
-   safeAmount(current.consumption_cents-previousTotal+safeAmount(item.price_cents*quantity));
+   const newTotal=safeAmount(item.price_cents*quantity);
+   safeAmount(current.consumption_cents-previousTotal+newTotal);
+   const previousShared=item.participant_id===null?previousTotal:0;
+   const newShared=participantId===null?newTotal:0;
+   verifySharedAmount(current,newShared-previousShared);
    db.prepare('UPDATE pdv_items SET quantity=?,participant_id=? WHERE id=? AND booking_id=?')
     .run(quantity,participantId,itemId,bookingId);
    return tab(bookingId);
@@ -260,7 +277,9 @@ export function createPdv(db){
    const current=tab(bookingId),item=lookupItem.get(itemId,bookingId);
    if(!item)fail('Item não encontrado nesta comanda.',404);
    if(item.removed)return current;
-   requireAdjustable(current);
+   requireOpen(current);
+   verifyOpenAssignee(bookingId,item.participant_id);
+   if(item.participant_id===null)verifySharedAmount(current,-item.price_cents*item.quantity);
    // Preserve the original request key so retrying an earlier add cannot bring this item back.
    db.prepare('UPDATE pdv_items SET removed=1 WHERE id=? AND booking_id=?').run(itemId,bookingId);
    return tab(bookingId);
@@ -276,7 +295,7 @@ export function createPdv(db){
     if(existing.requested_name!==name||existing.requested_whatsapp!==whatsapp)fail('Este cadastro já foi utilizado para outro participante.',409);
     return current;
    }
-   requireAdjustable(current);
+   requireOpen(current);
    open(bookingId);
    db.prepare(`INSERT INTO pdv_participants(booking_id,name,whatsapp,requested_name,requested_whatsapp,request_key)
     VALUES(?,?,?,?,?,?)`).run(bookingId,name,whatsapp,name,whatsapp,key);
@@ -300,7 +319,8 @@ export function createPdv(db){
    const current=tab(bookingId),participant=lookupParticipant.get(participantId,bookingId);
    if(!participant)fail('Participante não encontrado nesta comanda.',404);
    if(participant.removed)return current;
-   requireAdjustable(current);
+   requireOpen(current);
+   if(participant.paid_at)fail('A subcomanda deste participante já foi fechada.',409);
    db.prepare('UPDATE pdv_items SET participant_id=NULL WHERE booking_id=? AND participant_id=? AND removed=0')
     .run(bookingId,participantId);
    db.prepare('UPDATE pdv_participants SET removed=1 WHERE id=? AND booking_id=?').run(participantId,bookingId);
@@ -322,31 +342,34 @@ export function createPdv(db){
    const now=new Date().toISOString();
    db.prepare('UPDATE pdv_participants SET paid_cents=?,paid_at=?,method=? WHERE id=? AND booking_id=?')
     .run(expected,now,body.method,participantId,bookingId);
-   if(expected===current.consumption_balance_cents){
-    // The individual rows are the receipts. Do not also book the same amounts on the tab.
-    db.prepare('UPDATE pdv_tabs SET closed_at=? WHERE booking_id=?').run(now,bookingId);
-   }
    return tab(bookingId);
   });
  }
  function close(bookingId,body){
-  const expected=body.expected_total_cents;
-  if(!Number.isSafeInteger(expected)||expected<0)fail('Informe o total a receber nesta comanda.');
+  const {expected_total_cents:total,expected_balance_cents:balance}=body;
+  const expectedValues=[total,balance].filter(value=>value!==undefined);
+  if(!expectedValues.length||expectedValues.some(value=>!Number.isSafeInteger(value)||value<0)){
+   fail('Informe o total ou o saldo a receber nesta comanda.');
+  }
   return transaction(db,()=>{
    const current=tab(bookingId);
-   if(current.consumption_cents!==expected)fail('O total da comanda mudou. Confira os itens e tente novamente.',409);
-   if(expected>0&&current.participant_count)fail('Registre o recebimento de cada participante para fechar a divisão.',409);
-   const method=expected>0?body.method:null;
+   if(total!==undefined&&current.consumption_cents!==total)fail('O total da comanda mudou. Confira os itens e tente novamente.',409);
+   if(current.participants.some(person=>person.status==='open'&&person.amount_cents>0)){
+    fail('Feche as subcomandas com saldo para fechar a comanda geral.',409);
+   }
+   const amount=current.status==='closed'?current.general_paid_cents:current.general_balance_cents;
+   if(balance!==undefined&&amount!==balance)fail('O saldo da comanda mudou. Confira os recebimentos e tente novamente.',409);
+   const method=amount>0?body.method:null;
    if(current.status==='closed'){
     if(current.method!==method)fail('Esta comanda já foi fechada com outra forma de pagamento.',409);
     return current;
    }
    requireOpen(current);
-   if(expected>0&&!paymentMethods.has(method))fail('Selecione a forma de recebimento do consumo.');
+   if(amount>0&&!paymentMethods.has(method))fail('Selecione a forma de recebimento do consumo.');
    const now=new Date().toISOString();
    open(bookingId);
    db.prepare('UPDATE pdv_tabs SET closed_at=?,paid_at=?,method=?,paid_cents=? WHERE booking_id=?')
-    .run(now,expected>0?now:null,method,expected,bookingId);
+    .run(now,amount>0?now:null,method,amount,bookingId);
    return tab(bookingId);
   });
  }

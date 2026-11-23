@@ -36,7 +36,7 @@ Cada reserva abre uma comanda vinculada ao cliente e à quadra. Em **PDV → Pro
 
 Ao receber o consumo, selecione a forma de pagamento e feche a comanda. A quadra tem seu próprio registro de pagamento. Ao escolher uma data no PDV, o painel mostra os valores recebidos pela quadra, pelo consumo e o total recebido naquele dia, no horário de São Paulo. O saldo das comandas da data também pode ser consultado.
 
-Em **Dividir consumo**, cadastre o nome e o WhatsApp dos participantes. Ao lançar ou editar um item, escolha a pessoa responsável ou deixe como **Compartilhado**. Cada pessoa paga seus itens individuais e uma parte igual dos itens compartilhados, com ajuste de centavos. Você pode abrir uma mensagem no WhatsApp com o valor de cada pessoa e registrar o recebimento individualmente. O primeiro recebimento fixa os itens e a divisão, e a comanda fecha ao quitar todo o consumo. Cada recebimento entra no faturamento no dia em que foi registrado.
+Em **Pessoas da comanda**, cadastre o nome e o WhatsApp com DDD. Ao lançar um produto, use **Consumo de** para colocá-lo na subcomanda da pessoa ou deixe como **Compartilhado**. Cada subcomanda mostra os itens individuais, a parte do consumo compartilhado e o valor devido. Ao receber, use **Fechar subcomanda**. O valor recebido fica registrado e as outras subcomandas continuam aceitando itens. O saldo compartilhado é dividido entre as pessoas com subcomandas abertas. Use **Fechar comanda geral** para encerrar o atendimento quando os saldos individuais estiverem quitados. Cada recebimento entra no faturamento no dia do registro.
 
 ## Notificações de agendamento por WhatsApp
 

@@ -121,8 +121,7 @@ const pdv=(()=>{
  function itemRows(items,participants,editable,bookingCancelled){
   if(!items.length)return '<p class="pdv-muted">Nenhum item lançado.</p>';
   return `<ul class="pdv-items">${items.map(item=>`<li>
-   <div><strong>${esc(item.name)}</strong><small>${esc(item.quantity)} × ${money(item.price_cents)}</small>
-    ${item.participant_name?`<small>Individual · ${esc(item.participant_name)}</small>`:participants.length?'<small>Compartilhado</small>':''}</div>
+   <div><strong>${esc(item.name)}</strong><small>${esc(item.quantity)} × ${money(item.price_cents)}</small></div>
    <strong>${money(item.total_cents)}</strong>
    ${editable?`<form data-pdv-item="${esc(item.id)}" class="pdv-item-form${participants.length?' pdv-assignment-form':''}">
     <label>Qtd. <input type="number" name="quantity" min="1" step="1" value="${esc(item.quantity)}" ${bookingCancelled?`max="${esc(item.quantity)}"`:''} aria-label="Quantidade de ${esc(item.name)}" required></label>
@@ -134,7 +133,7 @@ const pdv=(()=>{
  }
 
  function participantFields(person){
-  return `<label>Nome <input name="name" value="${esc(person?.name)}" maxlength="120" required></label>
+  return `<label>Nome da pessoa <input name="name" value="${esc(person?.name)}" maxlength="120" required></label>
    <label>WhatsApp com DDD <input name="whatsapp" type="tel" value="${esc(person?.whatsapp)}" placeholder="(62) 99999-9999" maxlength="30" required></label>`;
  }
 
@@ -149,40 +148,56 @@ const pdv=(()=>{
   return `<label>Forma de pagamento <select name="method" required><option value="">Selecione</option>${paymentMethods.map(method=>`<option>${method}</option>`).join('')}</select></label>`;
  }
 
- function renderParticipants(tab){
+ const participantClosed=person=>person.status==='closed'||Boolean(person.paid_at);
+
+ function renderParticipants(tab,openParticipants,bookingCancelled){
   const participants=tab.participants||[];
+  if(!participants.length)return '';
   const open=tab.status==='open';
-  const canChangeDivision=open&&!tab.division_locked;
-  if(!participants.length&&!canChangeDivision)return '';
+  const itemsByPerson=new Map();
+  for(const item of tab.items){
+   if(item.participant_id==null)continue;
+   const items=itemsByPerson.get(item.participant_id)||[];
+   items.push(item);
+   itemsByPerson.set(item.participant_id,items);
+  }
   const rows=participants.map(person=>{
-   const paid=Boolean(person.paid_at);
-   const contact=open&&!paid;
-   const canSettle=contact&&person.amount_cents>0;
+   const closed=participantClosed(person);
+   const canEdit=open&&!closed;
+   const canSettle=canEdit&&person.amount_cents>0;
    const whatsapp=canSettle?participantWhatsApp(person,tab):'';
    const id=esc(person.id);
-   const status=paid?`Pago por ${esc(person.method)}`:person.amount_cents>0?'Em aberto':'Sem valor a pagar';
-   return `<li>
-    <div class="pdv-participant-heading"><div><strong>${esc(person.name)}</strong><small>${esc(person.whatsapp)}</small></div>
-     <div><strong>${money(person.amount_cents)}</strong><small>${status}</small></div></div>
+   const status=closed?'Fechada':person.amount_cents>0?'Em aberto':'Sem saldo';
+   return `<li data-pdv-subcommand="${id}">
+    <div class="pdv-participant-heading">
+     <div><h4>${esc(person.name)}</h4><small>${esc(person.whatsapp)}</small></div>
+     <div class="pdv-subcommand-total">
+      <strong>${money(person.amount_cents)}</strong>
+      <span class="pdv-subcommand-status${closed?' closed':''}">${status}</span>
+      ${closed&&person.paid_at&&person.method?`<small>Pago por ${esc(person.method)}</small>`:''}
+     </div>
+    </div>
+    <div class="pdv-subcommand-items">
+     <h5>Itens individuais</h5>
+     ${itemRows(itemsByPerson.get(person.id)||[],openParticipants,canEdit,bookingCancelled)}
+    </div>
     <p class="pdv-participant-breakdown">Individual ${money(person.individual_cents??0)} · Compartilhado ${money(person.shared_cents??person.amount_cents)}</p>
-    ${contact?`<div class="pdv-participant-actions">
+    ${canEdit?`<div class="pdv-participant-actions">
      ${whatsapp?`<a class="outline" href="${esc(whatsapp)}" target="_blank" rel="noopener noreferrer" aria-label="Cobrar ${esc(person.name)} pelo WhatsApp">WhatsApp ↗</a>`:''}
-     ${!tab.division_locked?`<button type="button" class="table-button cancel" data-pdv-remove-participant="${id}" aria-label="Remover ${esc(person.name)} da divisão">Remover</button>`:''}
+     <button type="button" class="table-button cancel" data-pdv-remove-participant="${id}" aria-label="Remover ${esc(person.name)} da divisão">Remover</button>
     </div>
     <details><summary>Editar contato</summary><form data-pdv-participant-edit="${id}" class="pdv-participant-form">
      ${participantFields(person)}<button type="submit" class="outline">Salvar contato</button>
     </form></details>`:''}
-    ${canSettle?`<details><summary>Registrar pagamento</summary><form data-pdv-participant-pay="${id}" class="pdv-settle-form">
+    ${canSettle?`<details class="pdv-subcommand-close"><summary>Fechar subcomanda</summary><form data-pdv-participant-pay="${id}" class="pdv-settle-form">
      ${paymentSelect()}<button type="submit" class="primary">Confirmar ${money(person.amount_cents)}</button>
     </form></details>`:''}
    </li>`;
   }).join('');
   return `<section class="pdv-participants" aria-labelledby="pdv-participants-heading">
-   <h3 id="pdv-participants-heading">Dividir consumo</h3>
-   ${participants.length?`<p class="pdv-participants-summary">${participants.length} ${participants.length===1?'participante':'participantes'} · ${money(tab.participant_paid_cents)} recebido · ${money(tab.consumption_balance_cents)} em aberto</p><ul class="pdv-participants-list">${rows}</ul>`:
-    '<p class="pdv-muted">Adicione as pessoas para atribuir itens individuais e dividir os compartilhados.</p>'}
-   ${canChangeDivision?`<form data-pdv-participant-add class="pdv-participant-form">${participantFields()}<button type="submit" class="outline">Adicionar pessoa</button></form>`:''}
-   ${open&&tab.division_locked?'<p class="pdv-muted">A divisão e os itens ficam fixos após o primeiro pagamento.</p>':''}
+   <h3 id="pdv-participants-heading">Subcomandas</h3>
+   <p class="pdv-participants-summary">${participants.length} ${participants.length===1?'participante':'participantes'} · ${money(tab.participant_paid_cents)} recebido · ${money(tab.consumption_balance_cents)} em aberto</p>
+   <ul class="pdv-participants-list">${rows}</ul>
   </section>`;
  }
 
@@ -190,12 +205,14 @@ const pdv=(()=>{
   $('#pdv-tab-title').textContent=`Comanda #${tab.booking_id}`;
   const open=tab.status==='open';
   const bookingCancelled=tab.booking_status==='cancelled';
-  const canEditItems=open&&!tab.division_locked;
-  const canAdd=canEditItems&&!bookingCancelled;
   const participants=tab.participants||[];
+  const openParticipants=participants.filter(person=>!participantClosed(person));
+  const sharedItems=tab.items.filter(item=>item.participant_id==null);
+  const canAdd=open&&!bookingCancelled;
   const products=(dashboard?.products||[]).filter(product=>product.active);
-  const canSettle=tab.consumption_cents>0;
-  const closeWhole=open&&(!canSettle||!tab.participant_count);
+  const generalBalance=tab.general_balance_cents??tab.consumption_balance_cents??tab.consumption_cents;
+  const canSettle=generalBalance>0;
+  const closeWhole=open&&!openParticipants.some(person=>person.amount_cents>0);
   const options=products.map(product=>`<option value="${esc(product.id)}">${esc(product.name)} · ${money(product.price_cents)}</option>`).join('');
   detail.innerHTML=`<div class="pdv-detail-header"><div><h3>${esc(tab.customer)}</h3><p>${esc(tab.court_name)} · ${dateLabel(tab.date)} · ${esc(tab.start)}–${esc(tab.end)}</p></div>${tabBadge(tab.status)}</div>
    <dl class="pdv-tab-totals">
@@ -205,21 +222,29 @@ const pdv=(()=>{
     ${bookingCancelled?'':`<div><dt>Total da reserva e consumo</dt><dd>${money(tab.booking_total_cents+tab.consumption_cents)}</dd></div>`}
    </dl>
    ${tab.paid_at&&tab.method?`<p class="pdv-paid-info">Consumo recebido por ${esc(tab.method)} em ${dateTime.format(new Date(tab.paid_at))}.</p>`:''}
+   ${open?`<section class="pdv-person-entry" aria-labelledby="pdv-person-entry-heading">
+    <h3 id="pdv-person-entry-heading">Pessoas da comanda</h3>
+    <p>Adicione a pessoa e selecione o nome dela em <strong>Consumo de</strong> para vincular um item.</p>
+    <form data-pdv-participant-add class="pdv-participant-form">
+     ${participantFields()}<button type="submit" class="outline">Adicionar pessoa</button>
+    </form>
+   </section>`:''}
    <section aria-label="Itens da comanda">
-    <h3>Itens</h3>
-    ${itemRows(tab.items,participants,canEditItems,bookingCancelled)}
+    <h3>${participants.length?'Itens compartilhados':'Itens'}</h3>
+    ${itemRows(sharedItems,openParticipants,open,bookingCancelled)}
    </section>
-   ${canAdd?products.length?`<form data-pdv-add class="pdv-add-form${participants.length?' pdv-assignment-form':''}">
+   ${canAdd?products.length?`<form data-pdv-add class="pdv-add-form${openParticipants.length?' pdv-assignment-form':''}">
     <label>Produto <select name="product_id" required><option value="">Selecione</option>${options}</select></label>
     <label>Qtd. <input name="quantity" type="number" min="1" step="1" value="1" required></label>
-    ${participantSelect(participants,null)}
+    ${participantSelect(openParticipants,null)}
     <button type="submit" class="outline">Adicionar item</button>
    </form>`:'<button type="button" class="outline pdv-add-product" data-pdv-create-product>Cadastrar produto</button>':''}
-   ${renderParticipants(tab)}
+   ${renderParticipants(tab,openParticipants,bookingCancelled)}
+   ${open&&!closeWhole?'<p class="pdv-muted pdv-close-hint">Feche as subcomandas com saldo para poder fechar a comanda geral.</p>':''}
    ${closeWhole?`<form data-pdv-close class="pdv-settle-form">
-    ${canSettle?`<p>Registre aqui o recebimento de <strong>${money(tab.consumption_cents)}</strong> em consumo.</p>
+    ${canSettle?`<p>Registre o recebimento de <strong>${money(generalBalance)}</strong> ${participants.length?'em consumo compartilhado':'em consumo'}.</p>
     ${paymentSelect()}`:''}
-    <button type="submit" class="primary">${canSettle?'Confirmar recebimento e fechar':'Fechar sem consumo'}</button>
+    <button type="submit" class="primary">${participants.length?'Fechar comanda geral':canSettle?'Confirmar recebimento e fechar':'Fechar sem consumo'}</button>
    </form>`:''}`;
  }
 
@@ -335,10 +360,11 @@ const pdv=(()=>{
   }
   if(form.hasAttribute('data-pdv-close')){
    const expected_total_cents=activeTab.consumption_cents;
-   void updateTab(path=>api(path+'/close',{method:data.get('method'),expected_total_cents}),'Comanda fechada.');
+   const expected_balance_cents=activeTab.general_balance_cents??activeTab.consumption_balance_cents??expected_total_cents;
+   void updateTab(path=>api(path+'/close',{method:data.get('method'),expected_total_cents,expected_balance_cents}),'Comanda fechada.');
   }
   if(form.hasAttribute('data-pdv-participant-add')){
-   void updateTab(path=>sendParticipant(path,data),'Participante adicionado.');
+   void updateTab(path=>sendParticipant(path,data),'Subcomanda criada.');
   }
   if(form.hasAttribute('data-pdv-participant-edit')){
    void updateTab(path=>api(path+'/participants/'+form.dataset.pdvParticipantEdit,participantValues(data),'PATCH'),'Contato atualizado.');
@@ -347,7 +373,7 @@ const pdv=(()=>{
    const person=activeTab.participants.find(row=>String(row.id)===form.dataset.pdvParticipantPay);
    if(person)void updateTab(path=>api(`${path}/participants/${person.id}/payment`,{
     method:data.get('method'),expected_cents:person.amount_cents
-   }),'Pagamento registrado.');
+   }),'Subcomanda fechada.');
   }
  });
  detail.onclick=event=>{

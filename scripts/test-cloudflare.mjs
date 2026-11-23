@@ -222,12 +222,21 @@ try{
  const firstPart=await api(`${participants}/${ana.id}/payment`,{method:'Pix',expected_cents:1301});
  assert.equal(firstPart.status,200,JSON.stringify(firstPart.data));
  assert.deepEqual([firstPart.data.status,firstPart.data.consumption_balance_cents,firstPart.data.booking_paid],['open',500,false]);
- const dividedClose=await api(`${participants}/${bruno.id}/payment`,{method:'Dinheiro',expected_cents:500});
+ assert.deepEqual(firstPart.data.participants.map(person=>person.status),['closed','open']);
+ const laterItem=await api(dividedTabRoute+'/items',{
+  product_id:product.data.id,quantity:1,participant_id:bruno.id,request_key:randomBytes(16).toString('hex')
+ });
+ assert.equal(laterItem.status,201,JSON.stringify(laterItem.data));
+ assert.deepEqual(laterItem.data.participants.map(person=>person.amount_cents),[1301,1300]);
+ const secondPart=await api(`${participants}/${bruno.id}/payment`,{method:'Dinheiro',expected_cents:1300});
+ assert.equal(secondPart.status,200,JSON.stringify(secondPart.data));
+ assert.deepEqual([secondPart.data.status,secondPart.data.participant_paid_cents,secondPart.data.consumption_balance_cents],['open',2601,0]);
+ const dividedClose=await api(dividedTabRoute+'/close',{expected_total_cents:2601,expected_balance_cents:0});
  assert.equal(dividedClose.status,200,JSON.stringify(dividedClose.data));
- assert.deepEqual([dividedClose.data.status,dividedClose.data.participant_paid_cents,dividedClose.data.consumption_balance_cents],['closed',1801,0]);
+ assert.deepEqual([dividedClose.data.status,dividedClose.data.participant_paid_cents,dividedClose.data.consumption_balance_cents],['closed',2601,0]);
  const dividedRevenue=await api('/api/pdv');
- assert.equal(dividedRevenue.data.revenue.consumption_cents,3401);
- passed('PDV assigns an item to one person, splits shared cents and records receipts once');
+ assert.equal(dividedRevenue.data.revenue.consumption_cents,4201);
+ passed('PDV keeps the general tab open after individual checkout, accepts new items and records receipts once');
  assert.equal((await api('/api/notifications/config',undefined,{auth:false})).status,401);
  const notificationConfig={enabled:false,base_url:'https://evolution.example.com',api_key:'fake-smoke-instance-key',target:'arena',arena_number:'(21) 98888-7777',country_code:'55'};
  assert.equal((await api('/api/notifications/check',{})).status,409);

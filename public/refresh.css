@@ -369,20 +369,32 @@ dialog::backdrop, :root[data-theme="dark"] dialog::backdrop { background: #0a102
 .pdv-settle-form { grid-template-columns: minmax(0,1fr) auto; margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
 .pdv-settle-form p { grid-column: 1 / -1; margin: 0; }
 .pdv-settle-form button:only-child { grid-column: 1 / -1; justify-self: end; }
+.pdv-person-entry { margin: 0 0 16px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.pdv-person-entry h3 { margin: 0; }
+.pdv-person-entry p { margin: 4px 0 0; color: var(--muted); font-size: 0.85rem; }
 .pdv-participants { margin-top: 20px; }
 .pdv-participants-summary { color: var(--muted); }
 .pdv-participants-list { list-style: none; padding: 0; margin: 0; }
-.pdv-participants-list li { display: grid; gap: 9px; padding: 13px 12px; border: 1px solid var(--line); border-radius: 10px; }
-.pdv-participants-list li + li { margin-top: 8px; }
+.pdv-participants-list > li { display: grid; gap: 10px; padding: 14px 12px; border: 1px solid var(--line); border-radius: 12px; }
+.pdv-participants-list > li + li { margin-top: 10px; }
 .pdv-participant-heading, .pdv-participant-actions { display: flex; gap: 10px; justify-content: space-between; flex-wrap: wrap; }
 .pdv-participant-heading > div { min-width: 0; overflow-wrap: anywhere; }
+.pdv-participant-heading h4 { margin: 0; font-size: 1rem; }
 .pdv-participant-heading small { display: block; margin-top: 3px; color: var(--muted); }
+.pdv-subcommand-total { text-align: right; }
+.pdv-subcommand-status { display: block; margin-top: 3px; color: var(--muted); font-size: 0.8rem; font-weight: 650; }
+.pdv-subcommand-status.closed { color: var(--success-text); }
+.pdv-subcommand-items { min-width: 0; }
+.pdv-subcommand-items h5 { margin: 0 0 6px; font-size: 0.85rem; }
+.pdv-subcommand-items .pdv-muted { margin: 0; }
 .pdv-participant-breakdown { margin: 0; color: var(--muted); font-size: 0.85rem; }
 .pdv-participant-actions { justify-content: flex-start; align-items: center; }
 .pdv-participant-actions a { text-decoration: none; }
 .pdv-participants summary { cursor: pointer; font-weight: 650; }
+.pdv-subcommand-close summary { width: fit-content; padding: 8px 10px; border-radius: 8px; background: var(--surface-soft); color: var(--accent-text); }
 .pdv-participant-form { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)) auto; align-items: end; gap: 8px; margin-top: 10px; }
 .pdv-participants .pdv-settle-form { margin-top: 10px; }
+.pdv-close-hint { margin: 16px 0 0; }
 @media (max-width: 580px) {
   .pdv-items li { grid-template-columns: minmax(0,1fr) auto; }
   .pdv-item-form { grid-column: 1 / -1; justify-content: start; }
