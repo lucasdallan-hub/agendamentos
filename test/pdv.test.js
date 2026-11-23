@@ -200,6 +200,49 @@ test('PDV: preserva o consumo ao cancelar e permite fechar uma reserva anterior 
  assert.deepEqual((await request(dayPath(today))).data.revenue,revenue(0,500));
 });
 
+test('PDV: arquiva as comandas encerradas da data sem alterar consumo, participantes ou faturamento',async t=>{
+ const {db,request,reserve,product,add}=await fixture(t);
+ const closed=await reserve({date:today});
+ const cancelled=await reserve({date:today,start:'19:00',end:'20:00'});
+ const pending=await reserve({date:today,start:'20:00',end:'21:00'});
+ const otherDay=await reserve();
+ const drink=await product();
+ status(await request(participantsPath(closed),{
+  name:'Ana',whatsapp:'62999998765',request_key:randomUUID()
+ }),201);
+ const added=await add(closed,drink.id);
+ status(added,201);
+ const [person]=added.data.participants;
+ status(await request(`${participantsPath(closed)}/${person.id}/payment`,{
+  method:'Dinheiro',expected_cents:500
+ }),200);
+ for(const [id,expected] of [[closed,500],[otherDay,0]]){
+  status(await request(tabPath(id)+'/close',{expected_total_cents:expected,expected_balance_cents:0}),200);
+ }
+ status(await add(pending,drink.id),201);
+ for(const id of [cancelled,pending])status(await request(`/api/bookings/${id}/cancel`,{}),200);
+ // Reservas antigas podem ter sido canceladas antes de existir uma comanda no PDV.
+ db.prepare('DELETE FROM pdv_tabs WHERE booking_id=?').run(cancelled);
+ const archivePath='/api/pdv/tabs/archive';
+ status(await request(archivePath,{date:today},{auth:false}),401);
+ status(await request(archivePath,{}),400);
+
+ const before=(await request(dayPath(today))).data;
+ const closedBefore=(await request(tabPath(closed))).data;
+ const archived=await request(archivePath,{date:today});
+ status(archived,200);
+ assert.equal(archived.data.archived,2);
+ assert.equal((await request(archivePath,{date:today})).data.archived,0);
+ const after=(await request(dayPath(today))).data;
+ assert.deepEqual(after.tabs.map(tab=>tab.booking_id),[pending]);
+ assert.deepEqual(after.archived_tabs.map(tab=>[tab.booking_id,tab.status]),[[closed,'closed'],[cancelled,'cancelled']]);
+ assert.deepEqual(after.revenue,before.revenue);
+ assert.deepEqual((await request(dayPath(tomorrow))).data.tabs.map(tab=>tab.booking_id),[otherDay]);
+ const history=(await request(tabPath(closed))).data;
+ assert.ok(history.archived_at);
+ assert.deepEqual(history,{...closedBefore,archived_at:history.archived_at});
+});
+
 test('PDV: protege os participantes da comanda e divide os centavos igualmente',async t=>{
  const {request,reserve,product,add}=await fixture(t);
  const booking=await reserve();

@@ -194,6 +194,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(!authenticated) fail('Entre como administrador.',401);
   if(req.method==='GET'&&url.pathname==='/api/pdv')return json(res,200,pdv.daily(url.searchParams.get('date')??undefined));
+  if(req.method==='POST'&&url.pathname==='/api/pdv/tabs/archive')return json(res,200,pdv.archiveDay(body.date));
   if(req.method==='POST'&&url.pathname==='/api/pdv/products')return json(res,201,pdv.createProduct(body));
   const pdvProduct=/^\/api\/pdv\/products\/(\d+)$/.exec(url.pathname);
   if(req.method==='PATCH'&&pdvProduct)return json(res,200,pdv.updateProduct(Number(pdvProduct[1]),body));

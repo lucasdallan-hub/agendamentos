@@ -43,7 +43,7 @@ function safeAmount(value,message='O total da comanda excede o limite suportado.
 }
 
 const selectTabs=`SELECT b.id booking_id,b.customer,c.name court_name,b.date,b.start,b.end,
- b.status booking_status,b.total booking_total_cents,b.paid booking_paid,t.closed_at,t.paid_at,t.method,
+ b.status booking_status,b.total booking_total_cents,b.paid booking_paid,t.closed_at,t.paid_at,t.method,t.archived_at,
  COALESCE(t.paid_cents,0) general_paid_cents,
  p.booking_id IS NOT NULL booking_uses_deposit,
  CASE WHEN p.archived=1 THEN p.archived_paid_cents
@@ -75,7 +75,7 @@ export function createPdv(db){
  );
  CREATE TABLE IF NOT EXISTS pdv_tabs(
   booking_id INTEGER PRIMARY KEY REFERENCES bookings(id),opened_at TEXT NOT NULL,
-  closed_at TEXT,paid_at TEXT,method TEXT,paid_cents INTEGER NOT NULL DEFAULT 0 CHECK(paid_cents>=0)
+  closed_at TEXT,paid_at TEXT,method TEXT,paid_cents INTEGER NOT NULL DEFAULT 0 CHECK(paid_cents>=0),archived_at TEXT
  );
  CREATE TABLE IF NOT EXISTS pdv_participants(
   id INTEGER PRIMARY KEY,booking_id INTEGER NOT NULL REFERENCES pdv_tabs(booking_id),
@@ -100,6 +100,9 @@ export function createPdv(db){
  CREATE INDEX IF NOT EXISTS pdv_tabs_payment_dates ON pdv_tabs(paid_at) WHERE paid_at IS NOT NULL;
  CREATE INDEX IF NOT EXISTS pdv_booking_payment_dates ON bookings(paid_at) WHERE paid=1;`);
  transaction(db,()=>{
+  if(!db.prepare('PRAGMA table_info(pdv_tabs)').all().some(column=>column.name==='archived_at')){
+   db.exec('ALTER TABLE pdv_tabs ADD COLUMN archived_at TEXT');
+  }
   const columns=new Set(db.prepare('PRAGMA table_info(pdv_items)').all().map(column=>column.name));
   for(const column of ['participant_id','requested_participant_id']){
    if(!columns.has(column))db.exec(`ALTER TABLE pdv_items ADD COLUMN ${column} INTEGER REFERENCES pdv_participants(id)`);
@@ -109,6 +112,14 @@ export function createPdv(db){
  const insertTab=db.prepare('INSERT INTO pdv_tabs(booking_id,opened_at) VALUES(?,?) ON CONFLICT(booking_id) DO NOTHING');
  const lookupTab=db.prepare(`${selectTabs} WHERE b.id=? GROUP BY b.id`);
  const listTabs=db.prepare(`${selectTabs} WHERE b.date=? GROUP BY b.id ORDER BY b.start,c.name,b.id`);
+ const archiveTabs=db.prepare(`INSERT INTO pdv_tabs(booking_id,opened_at,archived_at)
+  SELECT b.id,?,? FROM bookings b LEFT JOIN pdv_tabs t ON t.booking_id=b.id
+  WHERE b.date=? AND t.archived_at IS NULL AND (
+   t.closed_at IS NOT NULL OR (b.status='cancelled' AND NOT EXISTS(
+    SELECT 1 FROM pdv_items i WHERE i.booking_id=b.id AND i.removed=0
+   ))
+  )
+  ON CONFLICT(booking_id) DO UPDATE SET archived_at=excluded.archived_at`);
  const listItems=db.prepare(`SELECT i.id,i.product_id,i.name,i.price_cents,i.quantity,
   i.price_cents*i.quantity total_cents,i.participant_id,p.name participant_name
   FROM pdv_items i LEFT JOIN pdv_participants p ON p.id=i.participant_id AND p.booking_id=i.booking_id
@@ -198,9 +209,15 @@ export function createPdv(db){
   const consumption_cents=receivedForDay(consumptionPayments.all(start,end,start,end),date);
   const total_cents=safeAmount(courts_cents+consumption_cents,'O faturamento do dia excede o limite suportado.');
   const open_consumption_cents=safeAmount(tabs.reduce((sum,row)=>sum+(row.status==='open'?row.consumption_balance_cents:0),0));
-  return {date,tabs,products:listProducts.all().map(productSummary),revenue:{
+  return {date,tabs:tabs.filter(row=>!row.archived_at),archived_tabs:tabs.filter(row=>row.archived_at),
+   products:listProducts.all().map(productSummary),revenue:{
    courts_cents,consumption_cents,total_cents,open_consumption_cents
   }};
+ }
+ function archiveDay(value){
+  const {date}=selectedDay(value??'');
+  const now=new Date().toISOString();
+  return {archived:Number(archiveTabs.run(now,now,date).changes)};
  }
 
  function getProduct(id){
@@ -452,6 +469,6 @@ export function createPdv(db){
   });
  }
 
- return {open,daily,tab,createProduct,updateProduct,addItem,updateItem,removeItem,close,
+ return {open,daily,archiveDay,tab,createProduct,updateProduct,addItem,updateItem,removeItem,close,
   addParticipant,updateParticipant,removeParticipant,payParticipant,preparePix,settlePix,reversePix};
 }

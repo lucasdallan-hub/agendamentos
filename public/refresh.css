@@ -285,6 +285,7 @@ dialog::backdrop, :root[data-theme="dark"] dialog::backdrop { background: #0a102
   gap: 12px;
 }
 .pdv-toolbar label { margin: 0; }
+#pdv-date-toolbar[hidden] { display: none; }
 .pdv-error { color: var(--danger-text); font-weight: 650; }
 .pdv-error:empty { display: none; }
 .pdv-tabs {

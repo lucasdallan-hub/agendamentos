@@ -29,16 +29,21 @@
 <section id="pdv-content" aria-labelledby="page-title" hidden>
  <div class="pdv-view-switch" role="tablist" aria-label="Seções do PDV">
   <button type="button" role="tab" id="pdv-comandas-tab" aria-controls="pdv-comandas-panel" aria-selected="true">Comandas</button>
+  <button type="button" role="tab" id="pdv-history-tab" aria-controls="pdv-history-panel" aria-selected="false" tabindex="-1">Histórico</button>
   <button type="button" role="tab" id="pdv-products-tab" aria-controls="pdv-products-panel" aria-selected="false" tabindex="-1">Produtos</button>
  </div>
  <p id="pdv-load-error" class="pdv-error" role="alert"></p>
+ <div class="pdv-toolbar" id="pdv-date-toolbar"><label>Data <input type="date" id="pdv-date" required></label><button type="button" class="outline" id="pdv-today">Hoje</button></div>
  <section id="pdv-comandas-panel" role="tabpanel" aria-labelledby="pdv-comandas-tab">
-  <div class="pdv-toolbar"><label>Data <input type="date" id="pdv-date" required></label><button type="button" class="outline" id="pdv-today">Hoje</button></div>
   <div id="pdv-stats" class="stats" aria-label="Faturamento do dia"></div>
   <section aria-labelledby="pdv-tabs-heading">
-   <div class="section-heading"><div><h2 id="pdv-tabs-heading">Comandas</h2><p id="pdv-tabs-description" role="status"></p></div></div>
+   <div class="section-heading"><div><h2 id="pdv-tabs-heading">Comandas</h2><p id="pdv-tabs-description" role="status"></p></div><button type="button" class="outline" id="pdv-archive-tabs" disabled>Limpar comandas encerradas</button></div>
    <div id="pdv-tabs" class="pdv-tabs"></div>
   </section>
+ </section>
+ <section id="pdv-history-panel" role="tabpanel" aria-labelledby="pdv-history-tab" hidden>
+  <div class="section-heading"><div><h2>Histórico de comandas</h2><p id="pdv-history-description" role="status"></p></div></div>
+  <div id="pdv-history-tabs" class="pdv-tabs"></div>
  </section>
  <section id="pdv-products-panel" role="tabpanel" aria-labelledby="pdv-products-tab" hidden>
   <div class="section-heading"><h2>Produtos</h2><button type="button" class="primary" id="pdv-new-product">＋ Novo produto</button></div>

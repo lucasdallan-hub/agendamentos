@@ -1,5 +1,6 @@
 const pdv=(()=>{
  const dateField=$('#pdv-date');
+ const archiveButton=$('#pdv-archive-tabs');
  const dialog=$('#pdv-tab-dialog');
  const detail=$('#pdv-tab-detail');
  const tabError=$('#pdv-tab-error');
@@ -18,11 +19,12 @@ const pdv=(()=>{
   expired:'Link Pix expirado'
  };
  const dateTime=new Intl.DateTimeFormat('pt-BR',{timeZone:'America/Sao_Paulo',dateStyle:'short',timeStyle:'short'});
- const sectionTabs=[$('#pdv-comandas-tab'),$('#pdv-products-tab')];
- let dashboard,loadRequest,activeTab,activeBookingId,tabRequest=0,tabBusy=false,addAttempt,participantAttempt;
+ const sectionTabs=[$('#pdv-comandas-tab'),$('#pdv-history-tab'),$('#pdv-products-tab')];
+ let dashboard,loadRequest,archiving=false,activeTab,activeBookingId,tabRequest=0,tabBusy=false,addAttempt,participantAttempt;
  dateField.value=today();
 
  function showSection(tab){
+  $('#pdv-date-toolbar').hidden=tab.id==='pdv-products-tab';
   for(const button of sectionTabs){
    const selected=button===tab;
    button.setAttribute('aria-selected',String(selected));
@@ -34,8 +36,11 @@ const pdv=(()=>{
  for(const tab of sectionTabs){
   tab.onclick=()=>showSection(tab);
   tab.onkeydown=event=>{
-   const other=sectionTabs.find(button=>button!==tab);
-   const target={ArrowLeft:other,ArrowRight:other,Home:sectionTabs[0],End:sectionTabs[1]}[event.key];
+   const index=sectionTabs.indexOf(tab),count=sectionTabs.length;
+   const target={
+    ArrowLeft:sectionTabs[(index+count-1)%count],ArrowRight:sectionTabs[(index+1)%count],
+    Home:sectionTabs[0],End:sectionTabs[count-1]
+   }[event.key];
    if(!target)return;
    event.preventDefault();
    showSection(target);
@@ -49,6 +54,21 @@ const pdv=(()=>{
   return '<span class="badge">Aberta</span>';
  }
 
+ function tabCards(tabs){
+  return tabs.map(tab=>`<article class="pdv-tab-card">
+   <div class="pdv-card-heading"><h3>${esc(tab.customer)}</h3>${tabBadge(tab.status)}</div>
+   <p>${esc(tab.court_name)} · ${esc(tab.start)}–${esc(tab.end)}</p>
+   <small>Comanda #${esc(tab.booking_id)}</small>
+   ${tab.participant_count?`<small>${esc(tab.participant_count)} ${tab.participant_count===1?'participante':'participantes'} · saldo ${money(tab.consumption_balance_cents)}</small>`:''}
+   ${tab.archived_at?`<small>Arquivada em ${dateTime.format(new Date(tab.archived_at))}</small>`:''}
+   <div class="pdv-card-footer"><div><small>Consumo</small><strong>${money(tab.consumption_cents)}</strong></div><button type="button" class="outline" data-pdv-tab="${esc(tab.booking_id)}">Ver comanda</button></div>
+  </article>`).join('');
+ }
+
+ function updateArchiveButton(){
+  archiveButton.disabled=archiving||dashboard?.date!==dateField.value||!dashboard.tabs.some(tab=>tab.status==='closed'||tab.status==='cancelled');
+ }
+
  function renderDashboard(data){
   const revenue=data.revenue;
   $('#pdv-stats').innerHTML=
@@ -57,13 +77,11 @@ const pdv=(()=>{
    stat('Consumo recebido',money(revenue.consumption_cents),'Baixas do dia','▤')+
    stat('Consumo em aberto',money(revenue.open_consumption_cents),'Nas reservas desta data','◷');
   $('#pdv-tabs-description').textContent=`${data.tabs.length} ${data.tabs.length===1?'comanda':'comandas'} das reservas desta data`;
-  $('#pdv-tabs').innerHTML=data.tabs.length?data.tabs.map(tab=>`<article class="pdv-tab-card">
-   <div class="pdv-card-heading"><h3>${esc(tab.customer)}</h3>${tabBadge(tab.status)}</div>
-   <p>${esc(tab.court_name)} · ${esc(tab.start)}–${esc(tab.end)}</p>
-   <small>Comanda #${esc(tab.booking_id)}</small>
-   ${tab.participant_count?`<small>${esc(tab.participant_count)} ${tab.participant_count===1?'participante':'participantes'} · saldo ${money(tab.consumption_balance_cents)}</small>`:''}
-   <div class="pdv-card-footer"><div><small>Consumo</small><strong>${money(tab.consumption_cents)}</strong></div><button type="button" class="outline" data-pdv-tab="${esc(tab.booking_id)}">Ver comanda</button></div>
-  </article>`).join(''):'<div class="empty"><h3>Nenhuma comanda nesta data</h3><p>As comandas são abertas com as reservas.</p></div>';
+  $('#pdv-tabs').innerHTML=tabCards(data.tabs)||'<div class="empty"><p>Nenhuma comanda para exibir nesta data.</p></div>';
+  const archived=data.archived_tabs??[];
+  $('#pdv-history-description').textContent=`${archived.length} ${archived.length===1?'comanda arquivada':'comandas arquivadas'} das reservas desta data`;
+  $('#pdv-history-tabs').innerHTML=tabCards(archived)||'<div class="empty"><p>Nenhuma comanda arquivada para esta data.</p></div>';
+  updateArchiveButton();
   renderProducts(data.products);
  }
 
@@ -78,13 +96,16 @@ const pdv=(()=>{
  function refresh({force=false}={}){
   const date=dateField.value||today();
   dateField.value=date;
+  updateArchiveButton();
   if(!force&&loadRequest?.date===date)return loadRequest.promise;
   const request={date};
   loadRequest=request;
   if(dashboard?.date!==date){
    $('#pdv-stats').replaceChildren();
    $('#pdv-tabs').replaceChildren();
+   $('#pdv-history-tabs').replaceChildren();
    $('#pdv-tabs-description').textContent='Carregando comandas…';
+   $('#pdv-history-description').textContent='Carregando histórico…';
   }
   $('#pdv-load-error').textContent='';
   request.promise=api('pdv?date='+encodeURIComponent(date)).then(data=>{
@@ -94,7 +115,10 @@ const pdv=(()=>{
   }).catch(error=>{
    if(loadRequest!==request)return;
    $('#pdv-load-error').textContent=error.message||'Não foi possível carregar o PDV.';
-   if(dashboard?.date!==date)$('#pdv-tabs-description').textContent='';
+   if(dashboard?.date!==date){
+    $('#pdv-tabs-description').textContent='';
+    $('#pdv-history-description').textContent='';
+   }
   }).finally(()=>{if(loadRequest===request)loadRequest=null;});
   return request.promise;
  }
@@ -363,10 +387,27 @@ const pdv=(()=>{
 
  dateField.onchange=()=>refresh();
  $('#pdv-today').onclick=()=>{dateField.value=today();void refresh();};
- $('#pdv-tabs').onclick=event=>{
+ archiveButton.onclick=async()=>{
+  const date=dateField.value;
+  if(archiveButton.disabled||!window.confirm(`Mover as comandas encerradas de ${dateLabel(date)} para o Histórico?`))return;
+  archiving=true;
+  updateArchiveButton();
+  $('#pdv-load-error').textContent='';
+  try{
+   const {archived}=await api('pdv/tabs/archive',{date});
+   await refresh({force:true});
+   toast(archived===1?'1 comanda movida para o Histórico.':`${archived} comandas movidas para o Histórico.`);
+  }catch(error){
+   $('#pdv-load-error').textContent=error.message||'Não foi possível arquivar as comandas.';
+  }finally{
+   archiving=false;
+   updateArchiveButton();
+  }
+ };
+ $('#pdv-content').addEventListener('click',event=>{
   const button=event.target.closest('[data-pdv-tab]');
   if(button)void openTab(Number(button.dataset.pdvTab));
- };
+ });
  $('#booking-rows').addEventListener('click',event=>{
   const button=event.target.closest('[data-booking-pdv]');
   const booking=button&&bookings.find(row=>row.id===Number(button.dataset.bookingPdv));
