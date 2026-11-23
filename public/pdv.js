@@ -156,16 +156,6 @@ const pdv=(()=>{
   return new URL(path,location.origin).href;
  }
 
- function participantWhatsApp(person,tab,pixUrl=''){
-  const phone=String(person.whatsapp||'').replace(/\D/g,'');
-  if(!/^[1-9]\d{7,14}$/.test(phone))return '';
-  const amount=pixUrl?person.payment_link.amount_cents:person.amount_cents;
-  if(!Number.isSafeInteger(amount)||amount<=0)return '';
-  let text=`Olá, ${person.name}! Sua parte do consumo na comanda #${tab.booking_id} da quadra ${tab.court_name} é de ${money(amount)}.`;
-  if(pixUrl)text+=`\n\nPague por Pix pelo link abaixo. O recibo fica disponível na mesma página após a confirmação.\n${pixUrl}`;
-  return `https://wa.me/${phone}?${new URLSearchParams({text})}`;
- }
-
  function paymentSelect(){
   return `<label>Forma de pagamento <select name="method" required><option value="">Selecione</option>${paymentMethods.map(method=>`<option>${method}</option>`).join('')}</select></label>`;
  }
@@ -174,28 +164,27 @@ const pdv=(()=>{
  const pixStatus=person=>person.payment_link?.status||person.pix_status;
  const pixLocked=person=>person.pix_pending===true||activePixStatuses.has(pixStatus(person));
 
- function pixActions(person,tab,id,canSettle){
+ function pixActions(person,id,canSettle){
   const status=pixStatus(person),url=pixPaymentUrl(person);
+  const sendLink=`<button type="button" class="outline" data-pdv-send-pix="${id}" aria-label="Enviar link Pix para ${esc(person.name)} pelo WhatsApp">Enviar link Pix pelo WhatsApp</button>`;
   if(status==='approved'&&url){
    return `<div class="pdv-participant-actions pdv-pix-actions"><a class="outline" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Ver comprovante Pix ↗</a></div>`;
   }
   if(pixLocked(person)){
    if(!url&&status!=='ready')return '';
-   const whatsapp=url&&status!=='review'?participantWhatsApp(person,tab,url):'';
    return `<div class="pdv-participant-actions pdv-pix-actions">
-    ${whatsapp?`<a class="outline" href="${esc(whatsapp)}" target="_blank" rel="noopener noreferrer">Enviar link pelo WhatsApp ↗</a>`:''}
+    ${url&&status!=='review'&&!participantClosed(person)?sendLink:''}
     ${url?`<a class="outline" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Abrir link Pix ↗</a>`:''}
     ${status==='ready'?`<button type="button" class="table-button cancel" data-pdv-cancel-pix="${id}">Cancelar link Pix</button>`:''}
    </div>`;
   }
-  return canSettle?`<button type="button" class="outline" data-pdv-create-pix="${id}">Gerar link Pix</button>`:'';
+  return canSettle?sendLink:'';
  }
 
  function renderParticipants(tab,assignableParticipants,bookingCancelled){
   const participants=tab.participants||[];
   if(!participants.length)return '';
   const open=tab.status==='open';
-  const expanded=new Set([...detail.querySelectorAll('[data-pdv-person-options][open]')].map(options=>options.dataset.pdvPersonOptions));
   const itemsByPerson=new Map();
   for(const item of tab.items){
    if(item.participant_id==null)continue;
@@ -208,22 +197,14 @@ const pdv=(()=>{
    const locked=pixLocked(person);
    const canEdit=open&&!closed&&!locked;
    const canSettle=canEdit&&person.amount_cents>0;
-   const whatsapp=canSettle?participantWhatsApp(person,tab):'';
    const id=esc(person.id);
    const pix=pixStatus(person);
-   const canSend=open&&!closed&&(canSettle||(pix!=='review'&&Boolean(pixPaymentUrl(person))));
    const currentPixLabel=!closed||locked||pix==='approved'?pixLabels[pix]:'';
    const status=currentPixLabel||(closed?'Fechada':person.amount_cents>0?'Em aberto':'Sem saldo');
-   const actions=pixActions(person,tab,id,canSettle);
+   const actions=pixActions(person,id,canSettle);
    return `<li data-pdv-subcommand="${id}">
     <div class="pdv-participant-heading">
-     <div>
-      ${canSend?`<details class="pdv-person-options" data-pdv-person-options="${id}"${expanded.has(String(person.id))?' open':''}>
-       <summary>${esc(person.name)}</summary>
-       <small>${esc(person.whatsapp)}</small>
-       <button type="button" class="outline" data-pdv-send-pix="${id}">Enviar link Pix via Evolution Go</button>
-      </details>`:`<h4>${esc(person.name)}</h4><small>${esc(person.whatsapp)}</small>`}
-     </div>
+     <div><h4>${esc(person.name)}</h4><small>${esc(person.whatsapp)}</small></div>
      <div class="pdv-subcommand-total">
       <strong>${money(person.amount_cents)}</strong>
       <span class="pdv-subcommand-status${locked?' pix-awaiting':closed?' closed':''}">${status}</span>
@@ -237,7 +218,6 @@ const pdv=(()=>{
     <p class="pdv-participant-breakdown">Individual ${money(person.individual_cents??0)} · Compartilhado ${money(person.shared_cents??person.amount_cents)}</p>
     ${canEdit?`<div class="pdv-participant-actions">
      ${actions}
-     ${whatsapp?`<a class="outline" href="${esc(whatsapp)}" target="_blank" rel="noopener noreferrer" aria-label="Cobrar ${esc(person.name)} pelo WhatsApp">WhatsApp ↗</a>`:''}
      <button type="button" class="table-button cancel" data-pdv-remove-participant="${id}" aria-label="Remover ${esc(person.name)} da divisão">Remover</button>
     </div>
     <details><summary>Editar contato</summary><form data-pdv-participant-edit="${id}" class="pdv-participant-form">
@@ -445,14 +425,6 @@ const pdv=(()=>{
    if(person)void updateTab(path=>api(`${path}/participants/${person.id}/payment-link/send`,{
     expected_cents:person.amount_cents
    }),'Link aceito pela Evolution Go para envio.',{reloadOnError:true});
-   return;
-  }
-  const createPix=event.target.closest('[data-pdv-create-pix]');
-  if(createPix){
-   const person=activeTab?.participants?.find(row=>String(row.id)===createPix.dataset.pdvCreatePix);
-   if(activeTab?.status==='open'&&person&&person.amount_cents>0&&!pixLocked(person)&&!participantClosed(person)){
-    void updateTab(path=>api(`${path}/participants/${person.id}/payment-link`,{expected_cents:person.amount_cents}),'Link Pix gerado.');
-   }
    return;
   }
   const cancelPix=event.target.closest('[data-pdv-cancel-pix]');
