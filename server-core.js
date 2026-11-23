@@ -184,6 +184,18 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'&&url.pathname==='/api/pdv/products')return json(res,201,pdv.createProduct(body));
   const pdvProduct=/^\/api\/pdv\/products\/(\d+)$/.exec(url.pathname);
   if(req.method==='PATCH'&&pdvProduct)return json(res,200,pdv.updateProduct(Number(pdvProduct[1]),body));
+  const pdvParticipant=/^\/api\/pdv\/tabs\/(\d+)\/participants(?:\/(\d+)(\/payment)?)?$/.exec(url.pathname);
+  if(pdvParticipant){
+   const [,bookingId,participantId,payment]=pdvParticipant;
+   const id=Number(bookingId),participant=Number(participantId);
+   if(req.method==='POST'&&!participantId)return json(res,201,pdv.addParticipant(id,body));
+   if(req.method==='POST'&&payment)return json(res,200,pdv.payParticipant(id,participant,body));
+   if(participantId&&!payment){
+    if(req.method==='PATCH')return json(res,200,pdv.updateParticipant(id,participant,body));
+    if(req.method==='DELETE')return json(res,200,pdv.removeParticipant(id,participant));
+   }
+   fail('Método não permitido.',405);
+  }
   const pdvTab=/^\/api\/pdv\/tabs\/(\d+)(?:\/(items|close)(?:\/(\d+))?)?$/.exec(url.pathname);
   if(pdvTab){
    const [,bookingId,action,itemId]=pdvTab;

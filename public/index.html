@@ -27,15 +27,21 @@
 <div id="courts-content" hidden><div class="section-heading"><div><h2>O espaço do seu jogo</h2><p>Cadastre quadras e defina o valor por hora.</p></div><button class="outline" id="configure-catalog">Agendamento online</button><button class="primary" id="new-court">＋ Adicionar quadra</button></div><div id="court-list" class="court-grid"></div></div>
 <section id="live-courts-content" aria-labelledby="page-title" hidden><div id="live-court-list" class="live-court-grid"></div></section>
 <section id="pdv-content" aria-labelledby="page-title" hidden>
- <div class="pdv-toolbar"><label>Data <input type="date" id="pdv-date" required></label><button type="button" class="outline" id="pdv-today">Hoje</button></div>
+ <div class="pdv-view-switch" role="tablist" aria-label="Seções do PDV">
+  <button type="button" role="tab" id="pdv-comandas-tab" aria-controls="pdv-comandas-panel" aria-selected="true">Comandas</button>
+  <button type="button" role="tab" id="pdv-products-tab" aria-controls="pdv-products-panel" aria-selected="false" tabindex="-1">Produtos</button>
+ </div>
  <p id="pdv-load-error" class="pdv-error" role="alert"></p>
- <div id="pdv-stats" class="stats" aria-label="Faturamento do dia"></div>
- <section aria-labelledby="pdv-tabs-heading">
-  <div class="section-heading"><div><h2 id="pdv-tabs-heading">Comandas</h2><p id="pdv-tabs-description" role="status"></p></div></div>
-  <div id="pdv-tabs" class="pdv-tabs"></div>
+ <section id="pdv-comandas-panel" role="tabpanel" aria-labelledby="pdv-comandas-tab">
+  <div class="pdv-toolbar"><label>Data <input type="date" id="pdv-date" required></label><button type="button" class="outline" id="pdv-today">Hoje</button></div>
+  <div id="pdv-stats" class="stats" aria-label="Faturamento do dia"></div>
+  <section aria-labelledby="pdv-tabs-heading">
+   <div class="section-heading"><div><h2 id="pdv-tabs-heading">Comandas</h2><p id="pdv-tabs-description" role="status"></p></div></div>
+   <div id="pdv-tabs" class="pdv-tabs"></div>
+  </section>
  </section>
- <section class="pdv-products" aria-labelledby="pdv-products-heading">
-  <div class="section-heading"><div><h2 id="pdv-products-heading">Produtos</h2></div><button type="button" class="primary" id="pdv-new-product">＋ Novo produto</button></div>
+ <section id="pdv-products-panel" role="tabpanel" aria-labelledby="pdv-products-tab" hidden>
+  <div class="section-heading"><h2>Produtos</h2><button type="button" class="primary" id="pdv-new-product">＋ Novo produto</button></div>
   <div id="pdv-products"></div>
  </section>
 </section>

@@ -32,9 +32,11 @@ Em **Minhas quadras → Agendamento online**, configure abertura e fechamento ou
 
 ## PDV e comandas
 
-Cada reserva abre uma comanda vinculada ao cliente e à quadra. Em **PDV**, cadastre os produtos e seus preços, selecione a comanda e lance os itens e as quantidades. Os lançamentos guardam o preço aplicado naquele atendimento.
+Cada reserva abre uma comanda vinculada ao cliente e à quadra. Em **PDV → Produtos**, cadastre os produtos e seus preços. Em **Comandas**, selecione a comanda e lance os itens e as quantidades. Os lançamentos guardam o preço aplicado naquele atendimento.
 
 Ao receber o consumo, selecione a forma de pagamento e feche a comanda. A quadra tem seu próprio registro de pagamento. Ao escolher uma data no PDV, o painel mostra os valores recebidos pela quadra, pelo consumo e o total recebido naquele dia, no horário de São Paulo. O saldo das comandas da data também pode ser consultado.
+
+Em **Dividir consumo**, cadastre o nome e o WhatsApp dos participantes. Ao lançar ou editar um item, escolha a pessoa responsável ou deixe como **Compartilhado**. Cada pessoa paga seus itens individuais e uma parte igual dos itens compartilhados, com ajuste de centavos. Você pode abrir uma mensagem no WhatsApp com o valor de cada pessoa e registrar o recebimento individualmente. O primeiro recebimento fixa os itens e a divisão, e a comanda fecha ao quitar todo o consumo. Cada recebimento entra no faturamento no dia em que foi registrado.
 
 ## Notificações de agendamento por WhatsApp
 

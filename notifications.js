@@ -44,7 +44,7 @@ function alertWindow(){
 }
 
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
-function normalizeNumber(value,country='55'){
+export function normalizeNumber(value,country='55'){
  if(typeof value!=='string'||value.length>30||/[^\d\s()+.-]/.test(value))fail('Informe o WhatsApp do administrador com DDD e código do país.');
  let digits=value.replace(/\D/g,'');
  const international=value.trim().startsWith('+')||digits.startsWith('00');

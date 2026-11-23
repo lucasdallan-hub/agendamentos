@@ -202,6 +202,32 @@ try{
  assert.deepEqual([balance.status,balance.data.mode,balance.data.amount_cents,balance.data.locked],[200,'deposit',6000,true]);
  assert.equal((await api(splitRoute,undefined,{auth:false,method:'DELETE'})).status,200);
  passed('50 percent deposit plan keeps the balance locked until confirmed payment');
+ const dividedTabRoute=`/api/pdv/tabs/${publicReservation.data.reservation.id}`;
+ const snack=await api('/api/pdv/products',{name:'Lanche',price_cents:1001});
+ assert.equal(snack.status,201);
+ const purchase=await api(dividedTabRoute+'/items',{product_id:snack.data.id,quantity:1,request_key:randomBytes(16).toString('hex')});
+ assert.equal(purchase.status,201,JSON.stringify(purchase.data));
+ const participants=dividedTabRoute+'/participants';
+ assert.equal((await api(participants,{name:'Ana',whatsapp:'(62) 99999-0101',request_key:randomBytes(16).toString('hex')})).status,201);
+ const divided=await api(participants,{name:'Bruno',whatsapp:'(62) 99999-0102',request_key:randomBytes(16).toString('hex')});
+ assert.equal(divided.status,201,JSON.stringify(divided.data));
+ const [ana,bruno]=divided.data.participants;
+ assert.deepEqual([ana.amount_cents,bruno.amount_cents,ana.whatsapp],[501,500,'5562999990101']);
+ const assigned=await api(dividedTabRoute+'/items',{
+  product_id:product.data.id,quantity:1,participant_id:ana.id,request_key:randomBytes(16).toString('hex')
+ });
+ assert.equal(assigned.status,201,JSON.stringify(assigned.data));
+ assert.equal(assigned.data.items.at(-1).participant_name,'Ana');
+ assert.deepEqual(assigned.data.participants.map(p=>[p.individual_cents,p.shared_cents,p.amount_cents]),[[800,501,1301],[0,500,500]]);
+ const firstPart=await api(`${participants}/${ana.id}/payment`,{method:'Pix',expected_cents:1301});
+ assert.equal(firstPart.status,200,JSON.stringify(firstPart.data));
+ assert.deepEqual([firstPart.data.status,firstPart.data.consumption_balance_cents,firstPart.data.booking_paid],['open',500,false]);
+ const dividedClose=await api(`${participants}/${bruno.id}/payment`,{method:'Dinheiro',expected_cents:500});
+ assert.equal(dividedClose.status,200,JSON.stringify(dividedClose.data));
+ assert.deepEqual([dividedClose.data.status,dividedClose.data.participant_paid_cents,dividedClose.data.consumption_balance_cents],['closed',1801,0]);
+ const dividedRevenue=await api('/api/pdv');
+ assert.equal(dividedRevenue.data.revenue.consumption_cents,3401);
+ passed('PDV assigns an item to one person, splits shared cents and records receipts once');
  assert.equal((await api('/api/notifications/config',undefined,{auth:false})).status,401);
  const notificationConfig={enabled:false,base_url:'https://evolution.example.com',api_key:'fake-smoke-instance-key',target:'arena',arena_number:'(21) 98888-7777',country_code:'55'};
  assert.equal((await api('/api/notifications/check',{})).status,409);
@@ -239,6 +265,9 @@ try{
  const childTab=await api(tabRoute,undefined,{headers:childHeaders});
  assert.equal(childTab.status,200,JSON.stringify(childTab.data));
  assert.deepEqual(childTab.data,tabClose.data);
+ const childDividedTab=await api(dividedTabRoute,undefined,{headers:childHeaders});
+ assert.equal(childDividedTab.status,200,JSON.stringify(childDividedTab.data));
+ assert.deepEqual(childDividedTab.data,dividedClose.data);
  assert.equal((await api('/api/courts',{name:'Só no filho',type:'Vôlei',price:50},{headers:childHeaders})).status,201);
  assert.equal((await api('/api/system/branding',{name:'Logo do filho',logo:''},{headers:childHeaders,method:'PUT'})).status,200);
  assert.equal((await api('/api/system/domain',{hostname:'mae.example.com'},{auth:false,headers:childHeaders,method:'PUT'})).status,401);

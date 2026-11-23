@@ -9,6 +9,7 @@ const today='2026-11-23';
 const tomorrow='2026-11-24';
 const productPath='/api/pdv/products';
 const tabPath=id=>`/api/pdv/tabs/${id}`;
+const participantsPath=id=>`${tabPath(id)}/participants`;
 const dayPath=date=>`/api/pdv?date=${encodeURIComponent(date)}`;
 const revenue=(courts=0,consumption=0,open=0)=>({
  courts_cents:courts,consumption_cents:consumption,total_cents:courts+consumption,open_consumption_cents:open
@@ -197,4 +198,224 @@ test('PDV: preserva o consumo ao cancelar e permite fechar uma reserva anterior 
  status(zero,200);
  assert.equal(zero.data.status,'closed');
  assert.deepEqual((await request(dayPath(today))).data.revenue,revenue(0,500));
+});
+
+test('PDV: protege os participantes da comanda e divide os centavos igualmente',async t=>{
+ const {request,reserve,product,add}=await fixture(t);
+ const booking=await reserve();
+ const path=participantsPath(booking);
+ const drink=await product({price_cents:1000});
+ status(await add(booking,drink.id),201);
+ const initial=(await request(tabPath(booking))).data;
+ assert.deepEqual(initial.participants,[]);
+ assert.equal(initial.participant_count,0);
+ assert.equal(initial.participant_paid_cents,0);
+ assert.equal(initial.consumption_balance_cents,1000);
+ assert.equal(initial.division_locked,false);
+
+ const first={name:'  Ana  ',whatsapp:'(62) 99999-8765',request_key:randomUUID()};
+ status(await request(path,first,{auth:false}),401);
+ status(await request(path,{...first,whatsapp:'telefone inválido'}),400);
+ status(await request(path,{...first,name:'   '}),400);
+ const concurrent=await Promise.all([request(path,first),request(path,first)]);
+ for(const result of concurrent)assert.ok([200,201].includes(result.status),JSON.stringify(result.data));
+ let tab=(await request(tabPath(booking))).data;
+ assert.equal(tab.participant_count,1);
+ const [ana]=tab.participants;
+ assert.equal(ana.name,'Ana');
+ assert.equal(ana.whatsapp,'5562999998765');
+ assert.equal(ana.amount_cents,1000);
+ assert.equal(ana.paid_cents,0);
+ assert.equal(ana.paid_at,null);
+ status(await request(path,{...first,name:'Nome diferente'}),409);
+
+ const second={name:'Bruno',whatsapp:'+55 (62) 99999-8765',request_key:randomUUID()};
+ status(await request(path,second),201);
+ const third={name:'Caio',whatsapp:'62988888765',request_key:randomUUID()};
+ status(await request(path,third),201);
+ tab=(await request(tabPath(booking))).data;
+ assert.equal(tab.participant_count,3);
+ assert.deepEqual(tab.participants.map(person=>person.amount_cents).sort((a,b)=>a-b),[333,333,334]);
+ assert.deepEqual(tab.participants.filter(person=>person.whatsapp===ana.whatsapp).map(person=>person.name),['Ana','Bruno']);
+ assert.equal(tab.participant_paid_cents,0);
+ assert.equal(tab.consumption_balance_cents,1000);
+ assert.equal(tab.division_locked,false);
+
+ const [,,caio]=tab.participants;
+ const person=path+'/'+caio.id;
+ status(await request(person,{name:'Carlos'},{method:'PATCH',auth:false}),401);
+ status(await request(person,undefined,{method:'DELETE',auth:false}),401);
+ status(await request(person+'/payment',{method:'Pix',expected_cents:caio.amount_cents},{auth:false}),401);
+ status(await request(person,{name:' Carlos ',whatsapp:'+55 62 98888-8765'},{method:'PATCH'}),200);
+ const edited=(await request(tabPath(booking))).data.participants.find(row=>row.id===caio.id);
+ assert.deepEqual([edited.name,edited.whatsapp],['Carlos','5562988888765']);
+ status(await request(person,undefined,{method:'DELETE'}),200);
+ const deletedReplay=await request(path,third);
+ assert.ok([200,201].includes(deletedReplay.status),JSON.stringify(deletedReplay.data));
+ tab=(await request(tabPath(booking))).data;
+ assert.equal(tab.participant_count,2);
+ assert.deepEqual(tab.participants.map(person=>person.amount_cents),[500,500]);
+});
+
+test('PDV: soma cada cota no dia do recebimento e fecha o consumo após a última baixa',async t=>{
+ const {db,request,reserve,product,add}=await fixture(t);
+ const booking=await reserve(),path=tabPath(booking),participants=participantsPath(booking);
+ const drink=await product({price_cents:1001});
+ const item=(await add(booking,drink.id)).data.items[0];
+ const person=(name,whatsapp)=>({name,whatsapp,request_key:randomUUID()});
+ status(await request(participants,person('Ana','62999998765')),201);
+ status(await request(participants,person('Bruno','62988888765')),201);
+ const divided=(await request(path)).data;
+ const [first,last]=divided.participants;
+ const firstPath=`${participants}/${first.id}/payment`;
+ const closePath=path+'/close';
+ assert.equal(divided.consumption_balance_cents,1001);
+ assert.equal(divided.participant_paid_cents,0);
+ assert.deepEqual((await request(dayPath(tomorrow))).data.revenue,revenue(0,0,1001));
+ assert.deepEqual([first.amount_cents,last.amount_cents].sort((a,b)=>a-b),[500,501]);
+
+ status(await request(firstPath,{method:'Pix',expected_cents:first.amount_cents-1}),409);
+ assert.deepEqual((await request(dayPath(today))).data.revenue,revenue());
+ const payment={method:'Pix',expected_cents:first.amount_cents};
+ const repeated=await Promise.all([request(firstPath,payment),request(firstPath,payment)]);
+ for(const result of repeated)status(result,200);
+ const partial=(await request(path)).data;
+ const firstPaid=partial.participants.find(person=>person.id===first.id);
+ assert.equal(firstPaid.method,'Pix');
+ assert.equal(firstPaid.paid_cents,first.amount_cents);
+ assert.equal(firstPaid.paid_at,'2026-11-24T01:30:00.000Z');
+ assert.equal(partial.status,'open');
+ assert.equal(partial.participant_paid_cents,first.amount_cents);
+ assert.equal(partial.consumption_balance_cents,last.amount_cents);
+ assert.equal(partial.division_locked,true);
+ assert.equal(partial.booking_paid,false);
+ assert.deepEqual((await request(dayPath(today))).data.revenue,revenue(0,first.amount_cents));
+ assert.deepEqual((await request(dayPath(tomorrow))).data.revenue,revenue(0,0,last.amount_cents));
+
+ status(await request(firstPath,{...payment,method:'Dinheiro'}),409);
+ status(await add(booking,drink.id),409);
+ status(await request(`${path}/items/${item.id}`,{quantity:2},{method:'PATCH'}),409);
+ status(await request(`${path}/items/${item.id}`,undefined,{method:'DELETE'}),409);
+ status(await request(participants,person('Nova pessoa','62991111111')),409);
+ status(await request(`${participants}/${first.id}`,{name:'Novo nome'},{method:'PATCH'}),409);
+ const corrected=await request(`${participants}/${last.id}`,{name:'Bruno Silva'},{method:'PATCH'});
+ status(corrected,200);
+ const unpaid=corrected.data.participants.find(person=>person.id===last.id);
+ assert.equal(unpaid.name,'Bruno Silva');
+ assert.equal(unpaid.amount_cents,last.amount_cents);
+ status(await request(`${participants}/${last.id}`,undefined,{method:'DELETE'}),409);
+ status(await request(closePath,{method:'Pix',expected_total_cents:1001}),409);
+ assert.equal(db.prepare('SELECT paid FROM bookings WHERE id=?').get(booking).paid,0);
+
+ t.mock.timers.setTime(Date.parse('2026-11-24T03:05:00Z'));
+ const lastPath=`${participants}/${last.id}/payment`;
+ const finalPayment={method:'Cartão de débito',expected_cents:last.amount_cents};
+ status(await request(lastPath,finalPayment),200);
+ status(await request(lastPath,finalPayment),200);
+ const closed=(await request(path)).data;
+ assert.equal(closed.status,'closed');
+ assert.equal(closed.participant_paid_cents,1001);
+ assert.equal(closed.consumption_balance_cents,0);
+ assert.equal(closed.booking_paid,false);
+ assert.equal(closed.method,null);
+ assert.deepEqual(closed.participants.map(({paid_cents,method})=>[paid_cents,method]),[
+  [first.amount_cents,'Pix'],[last.amount_cents,'Cartão de débito']
+ ]);
+ assert.deepEqual((await request(dayPath(today))).data.revenue,revenue(0,first.amount_cents));
+ assert.deepEqual((await request(dayPath(tomorrow))).data.revenue,revenue(0,last.amount_cents));
+ assert.equal(db.prepare('SELECT paid FROM bookings WHERE id=?').get(booking).paid,0);
+
+ status(await request(`/api/bookings/${booking}/payment`,{method:'Pix'}),200);
+ assert.deepEqual((await request(dayPath(tomorrow))).data.revenue,revenue(12000,last.amount_cents));
+});
+
+test('PDV: encerra a divisão quando a única cota positiva é recebida',async t=>{
+ const {request,reserve,product,add}=await fixture(t);
+ const booking=await reserve(),path=participantsPath(booking);
+ const item=await product({name:'Item de teste',price_cents:1});
+ status(await add(booking,item.id),201);
+ for(const name of ['Ana','Bruno','Caio']){
+  status(await request(path,{name,whatsapp:'62999998765',request_key:randomUUID()}),201);
+ }
+ const open=(await request(tabPath(booking))).data;
+ assert.deepEqual(open.participants.map(person=>person.amount_cents).sort((a,b)=>a-b),[0,0,1]);
+ const zero=open.participants.find(person=>person.amount_cents===0);
+ const invalid=await request(path+'/'+zero.id+'/payment',{method:'Pix',expected_cents:0});
+ assert.ok([400,409].includes(invalid.status),JSON.stringify(invalid.data));
+ const positive=open.participants.find(person=>person.amount_cents===1);
+ const paid=await request(path+'/'+positive.id+'/payment',{method:'Pix',expected_cents:1});
+ status(paid,200);
+ assert.equal(paid.data.status,'closed');
+ assert.equal(paid.data.consumption_balance_cents,0);
+ assert.equal(paid.data.participants.filter(person=>person.paid_at!==null).length,1);
+ assert.deepEqual((await request(dayPath(today))).data.revenue,revenue(0,1));
+});
+
+test('PDV: cobra itens individuais e rateia apenas os itens compartilhados',async t=>{
+ const {db,request,reserve,product,add}=await fixture(t);
+ const booking=await reserve();
+ const other=await reserve({start:'19:00',end:'20:00'});
+ const path=tabPath(booking),participants=participantsPath(booking),items=path+'/items';
+ for(const [tab,names] of [[booking,['Ana','Bruno','Caio']],[other,['Dora']]]){
+  for(const name of names){
+   status(await request(participantsPath(tab),{name,whatsapp:'62999998765',request_key:randomUUID()}),201);
+  }
+ }
+ const [ana,bruno,caio]=(await request(path)).data.participants;
+ const [dora]=(await request(tabPath(other))).data.participants;
+ const shared=await product({name:'Porção',price_cents:502});
+ const individual=await product({name:'Água',price_cents:275});
+ const reassigned=await product({name:'Suco',price_cents:341});
+ const unassigned=await product({name:'Refrigerante',price_cents:201});
+ status(await add(booking,shared.id),201);
+
+ const water={product_id:individual.id,quantity:2,request_key:randomUUID(),participant_id:ana.id};
+ const added=await request(items,water);
+ status(added,201);
+ const waterLine=added.data.items.find(item=>item.product_id===individual.id);
+ assert.deepEqual([waterLine.participant_id,waterLine.participant_name,waterLine.total_cents],[ana.id,'Ana',550]);
+ status(await request(items,water),201);
+ status(await request(items,{...water,participant_id:bruno.id}),409);
+ const crossTab=await request(items,{...water,request_key:randomUUID(),participant_id:dora.id});
+ assert.ok([400,404,409].includes(crossTab.status),JSON.stringify(crossTab.data));
+
+ const juice=await request(items,{product_id:reassigned.id,quantity:1,request_key:randomUUID(),participant_id:bruno.id});
+ status(juice,201);
+ const juiceLine=juice.data.items.find(item=>item.product_id===reassigned.id);
+ status(await request(items,{product_id:unassigned.id,quantity:1,request_key:randomUUID(),participant_id:caio.id}),201);
+ const amounts=tab=>tab.participants.map(({name,individual_cents,shared_cents,amount_cents})=>[name,individual_cents,shared_cents,amount_cents]);
+ const initial=(await request(path)).data;
+ assert.deepEqual(amounts(initial),[['Ana',550,168,718],['Bruno',341,167,508],['Caio',201,167,368]]);
+ assert.equal(initial.consumption_cents,1594);
+ assert.equal(initial.items.filter(item=>item.product_id===individual.id).length,1);
+
+ const unlinked=await request(`${items}/${juiceLine.id}`,{quantity:1,participant_id:null},{method:'PATCH'});
+ status(unlinked,200);
+ assert.equal(unlinked.data.items.find(item=>item.id===juiceLine.id).participant_id,null);
+ assert.deepEqual(amounts(unlinked.data),[['Ana',550,281,831],['Bruno',0,281,281],['Caio',201,281,482]]);
+ const moved=await request(`${items}/${juiceLine.id}`,{quantity:1,participant_id:ana.id},{method:'PATCH'});
+ status(moved,200);
+ assert.equal(moved.data.items.find(item=>item.id===juiceLine.id).participant_id,ana.id);
+ assert.deepEqual(amounts(moved.data),[['Ana',891,168,1059],['Bruno',0,167,167],['Caio',201,167,368]]);
+ const crossTabPatch=await request(`${items}/${juiceLine.id}`,{quantity:1,participant_id:dora.id},{method:'PATCH'});
+ assert.ok([400,404,409].includes(crossTabPatch.status),JSON.stringify(crossTabPatch.data));
+
+ const removed=await request(`${participants}/${caio.id}`,undefined,{method:'DELETE'});
+ status(removed,200);
+ const sharedLine=removed.data.items.find(item=>item.product_id===unassigned.id);
+ assert.deepEqual([sharedLine.participant_id,sharedLine.participant_name],[null,null]);
+ assert.deepEqual(amounts(removed.data),[['Ana',891,352,1243],['Bruno',0,351,351]]);
+ assert.equal(removed.data.consumption_balance_cents,1594);
+ assert.equal(removed.data.booking_paid,false);
+ assert.deepEqual((await request(dayPath(today))).data.revenue,revenue());
+ assert.deepEqual((await request(dayPath(tomorrow))).data.revenue,revenue(0,0,1594));
+
+ const paid=await request(`${participants}/${ana.id}/payment`,{method:'Pix',expected_cents:1243});
+ status(paid,200);
+ assert.equal(paid.data.consumption_balance_cents,351);
+ status(await request(`${items}/${juiceLine.id}`,{quantity:1,participant_id:null},{method:'PATCH'}),409);
+ status(await request(items,{...water,request_key:randomUUID(),participant_id:bruno.id}),409);
+ assert.equal(db.prepare('SELECT paid FROM bookings WHERE id=?').get(booking).paid,0);
+ assert.deepEqual((await request(dayPath(today))).data.revenue,revenue(0,1243));
+ assert.deepEqual((await request(dayPath(tomorrow))).data.revenue,revenue(0,0,351));
 });
