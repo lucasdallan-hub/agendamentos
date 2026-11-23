@@ -5,6 +5,9 @@ import {createApplication} from '../server-core.js';
 import {MercadoPago,paymentConfiguration} from '../payments.js';
 import {DurableDatabase,DurableMap} from './database.js';
 import {initializeSystems,setting,installSystem,updateChildDomain} from '../systems.js';
+import {workerReceiptReader} from './receipt-reader.js';
+import {readReceiptPdf} from './receipt-pdf.js';
+import {readReceiptImage} from './receipt-image.js';
 
 const securityHeaders={
  'X-Content-Type-Options':'nosniff',
@@ -32,10 +35,11 @@ export class Arena extends DurableObject {
   }:null;
   // Children retain financial history but never inherit the mother's provider credentials.
   const paymentConfig=child?{ready:false,mode:'test'}:paymentConfiguration(this.env);
-  const {server,retryMisticpayConfirmations,processBookingAlerts}=createApplication({
+  const {server,retryMisticpayConfirmations,drainSplitChecks,processBookingAlerts,processReceiptReads}=createApplication({
    db,paymentConfig,paymentClient:new MercadoPago(paymentConfig),
    misticpayEncryptionKey:this.env.MISTICPAY_CREDENTIALS_KEY,
    misticpayManagedEncryptionKey:this.env.MISTICPAY_MANAGED_CREDENTIALS_KEY,
+   receiptReader:workerReceiptReader({readImage:readReceiptImage,readPdf:readReceiptPdf}),
    keepNotificationAlive:delivery=>this.ctx.waitUntil(delivery),
    scheduleMisticpayConfirmation:async when=>{
     const alarm=await this.ctx.storage.getAlarm();
@@ -46,10 +50,15 @@ export class Arena extends DurableObject {
   });
   this.nodeHandler=httpServerHandler(server);
   this.retryMisticpayConfirmations=retryMisticpayConfirmations;
+  this.drainSplitChecks=drainSplitChecks;
   this.processBookingAlerts=processBookingAlerts;
+  this.processReceiptReads=processReceiptReads;
  }
  async alarm(){await this.retryMisticpayConfirmations();}
- async sendBookingAlerts(){await this.processBookingAlerts();}
+ async runScheduledWork(){
+  const results=await Promise.allSettled([this.processBookingAlerts(),this.processReceiptReads(),this.drainSplitChecks()]);
+  if(results.some(result=>result.status==='rejected'))throw new Error('Não foi possível concluir uma tarefa agendada da arena.');
+ }
  readyChildSystems(){
   return this.db.prepare("SELECT slug FROM child_systems WHERE status='ready'").all().map(({slug})=>'child:'+slug);
  }
@@ -112,8 +121,8 @@ export default {
   const main=env.ARENA.getByName('main');
   const children=await main.readyChildSystems();
   const arenas=[main,...children.map(name=>env.ARENA.getByName(name))];
-  const results=await Promise.allSettled(arenas.map(arena=>arena.sendBookingAlerts()));
-  if(results.some(result=>result.status==='rejected'))throw new Error('Não foi possível processar os avisos de todas as arenas.');
+  const results=await Promise.allSettled(arenas.map(arena=>arena.runScheduledWork()));
+  if(results.some(result=>result.status==='rejected'))throw new Error('Não foi possível concluir as tarefas agendadas de todas as arenas.');
  },
  async fetch(request,env) {
   const url=new URL(request.url);

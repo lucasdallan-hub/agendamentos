@@ -95,6 +95,7 @@ export function createPayments(db,config,client,{enqueuePaidClient,dispatchPaidC
   if(method!==undefined&&(typeof method!=='string'||!Object.hasOwn(checkoutMethods,method)))throw failure('Escolha cartão de crédito, cartão de débito ou Pix.');
   const now=new Date(),expires=new Date(now.getTime()+24*3600000).toISOString();
   const claim=transaction(db,()=>{
+   if(db.prepare('SELECT 1 FROM misticpay_split_plans WHERE booking_id=?').get(id))throw failure('Esta reserva já usa uma divisão Pix.',409);
    if(db.prepare('SELECT 1 FROM misticpay_orders WHERE booking_id=?').get(id))throw failure('Esta reserva já possui cobrança MisticPay.',409);
    if(db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(id)){
     throw failure('Esta reserva já utiliza Pix direto. Abra o link Pix existente.',409);

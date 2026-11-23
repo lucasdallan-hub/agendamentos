@@ -11,7 +11,7 @@ import {financialSettings} from './financial-settings.js';
 import {createMisticPay} from './misticpay.js';
 import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
-export function createApplication({db,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch,misticpayFetch=fetch,misticpayEncryptionKey,misticpayManagedEncryptionKey,scheduleMisticpayConfirmation,keepNotificationAlive}={}) {
+export function createApplication({db,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch,misticpayFetch=fetch,misticpayEncryptionKey,misticpayManagedEncryptionKey,scheduleMisticpayConfirmation,keepNotificationAlive,receiptReader,keepReceiptAlive=keepNotificationAlive}={}) {
 db.exec(`CREATE TABLE IF NOT EXISTS admin(id INTEGER PRIMARY KEY CHECK(id=1), salt TEXT NOT NULL, hash TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS courts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, price INTEGER NOT NULL CHECK(price>0), active INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, court_id INTEGER NOT NULL REFERENCES courts(id), customer TEXT NOT NULL, phone TEXT NOT NULL, date TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, total INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'confirmed', paid INTEGER NOT NULL DEFAULT 0, method TEXT, paid_at TEXT, notes TEXT NOT NULL DEFAULT '');`);
@@ -34,7 +34,7 @@ const misticpay=createMisticPay(db,{
  scope:arenaIdentity?`child:${arenaIdentity.slug}`:'main',scheduleConfirmation:scheduleMisticpayConfirmation,
  ...paidClientNotification
 });
-const pix=createPix(db,paidClientNotification);
+const pix=createPix(db,{...paidClientNotification,receiptReader});
 const courtPhotos=createCourtPhotos(db);
 const notifications=bookingNotifications(db,{fetchImpl:notificationFetch});
 const sessions = sessionStore;
@@ -80,8 +80,9 @@ const server=http.createServer(async(req,res)=>{
    return json(res,404,{error:'Não encontrado.'});
   }
   const misticWebhook=/^\/api\/misticpay\/webhook\/([a-f0-9]{64})$/.exec(url.pathname);
+  const splitWebhook=/^\/api\/misticpay\/split-webhook\/([a-f0-9]{64})$/.exec(url.pathname);
   const requestOrigin=`${req.headers['x-forwarded-proto']==='https'?'https':'http'}://${req.headers.host}`;
-  if(url.pathname!=='/api/payments/webhook' && !misticWebhook && req.headers.origin && req.headers.origin!==requestOrigin) fail('Origem não permitida.',403);
+  if(url.pathname!=='/api/payments/webhook' && !misticWebhook && !splitWebhook && req.headers.origin && req.headers.origin!==requestOrigin) fail('Origem não permitida.',403);
   const courtGallery=/^\/api\/courts\/(\d+)\/photos$/.exec(url.pathname);
   let body={};
   if(['POST','PATCH','PUT'].includes(req.method)) { let raw=''; const maxBody=courtGallery&&req.method==='PUT'?courtPhotoBodyLimit:url.pathname==='/api/system/branding'?400000:/^\/api\/pix\/payments\/[a-f0-9]{64}\/receipt$/.test(url.pathname)?7*1024*1024:16000;for await(const chunk of req) { raw+=chunk; if(Buffer.byteLength(raw)>maxBody) fail('Requisição muito grande.',413); } try { body=JSON.parse(raw||'{}'); } catch { fail('JSON inválido.'); } if(!body||typeof body!=='object'||Array.isArray(body)) fail('Corpo inválido.'); }
@@ -94,12 +95,20 @@ const server=http.createServer(async(req,res)=>{
    return json(res,200,await payments.reconcile(id));
   }
   if(req.method==='POST'&&misticWebhook)return json(res,200,await misticpay.webhook(misticWebhook[1],body));
+  if(req.method==='POST'&&splitWebhook)return json(res,200,await misticpay.splitWebhook(splitWebhook[1],body));
   const token=/arena_session=([a-f0-9]+)/.exec(req.headers.cookie||'')?.[1];
   const authenticated=token && sessions.get(token)>Date.now();
   const publicPix=/^\/api\/pix\/payments\/([^/]+)(\/receipt)?$/.exec(url.pathname);
   if(publicPix){
    if(req.method==='GET'&&!publicPix[2])return json(res,200,pix.publicPayment(publicPix[1]));
-   if(req.method==='POST'&&publicPix[2])return json(res,201,pix.upload(publicPix[1],body));
+   if(req.method==='POST'&&publicPix[2]){
+    const saved=pix.upload(publicPix[1],body);
+    if(saved.match_status!=='processing')return json(res,201,saved);
+    const reading=pix.readReceipt(saved.id).catch(()=>console.warn('Não foi possível concluir a leitura do comprovante.'));
+    if(keepReceiptAlive){keepReceiptAlive(reading);return json(res,201,saved);}
+    await reading;
+    return json(res,201,pix.receiptResult(saved.id)||saved);
+   }
    fail('Método não permitido.',405);
   }
   const publicPhoto=/^\/api\/public\/courts\/(\d+)\/photos\/([a-f0-9]{32})$/.exec(url.pathname);
@@ -127,6 +136,25 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'&&publicMistic){
    const id=catalog.reservationId(publicMistic[1]);
    return json(res,200,publicMistic[2]?await misticpay.sync(id):await misticpay.create(id,body));
+  }
+  const publicSplit=/^\/api\/public\/bookings\/([a-f0-9]{64})\/split$/.exec(url.pathname);
+  if(publicSplit){
+   const id=catalog.reservationId(publicSplit[1]);
+   if(req.method==='POST')return json(res,200,await misticpay.splitPlan(id,body.count));
+   if(req.method==='GET'){
+    const result=misticpay.splitBooking(id,Number(url.searchParams.get('page')??1));
+    if(!result)fail('Divisão Pix não encontrada.',404);
+    return json(res,200,result);
+   }
+   if(req.method==='DELETE')return json(res,200,misticpay.cancelSplit(id));
+   fail('Método não permitido.',405);
+  }
+  const publicShare=/^\/api\/public\/split\/([^/]+)(\/check)?$/.exec(url.pathname);
+  if(publicShare){
+   const [,shareToken,check]=publicShare;
+   if(req.method==='GET')return json(res,200,check?{status:misticpay.shareStatus(shareToken)}:misticpay.share(shareToken));
+   if(req.method==='POST')return json(res,200,check?await misticpay.syncShare(shareToken):await misticpay.createShare(shareToken,body));
+   fail('Método não permitido.',405);
   }
   if(req.method==='GET'&&url.pathname==='/api/system/branding')return json(res,200,branding(db));
   if(req.method==='GET' && url.pathname==='/api/session') return json(res,200,{authenticated:!!authenticated,setup:!db.prepare('SELECT id FROM admin').get()});
@@ -238,10 +266,14 @@ const server=http.createServer(async(req,res)=>{
    EXISTS(SELECT 1 FROM archived_payment_orders a WHERE a.order_id=o.id) online_archived,
    EXISTS(SELECT 1 FROM pix_links p WHERE p.booking_id=b.id) pix_link,
    r.status receipt_status,r.match_status receipt_match,r.amount_cents receipt_amount,
-   CASE WHEN m.archived=1 THEN 'archived' ELSE m.state END misticpay_status
+   CASE WHEN m.archived=1 THEN 'archived' ELSE m.state END misticpay_status,
+   s.share_count split_count,s.archived split_archived,
+   CASE WHEN s.archived=1 THEN s.archived_paid_count ELSE
+    (SELECT COUNT(*) FROM misticpay_split_shares c WHERE c.booking_id=s.booking_id AND c.state='approved') END split_paid_count
    FROM bookings b JOIN courts c ON c.id=b.court_id
    LEFT JOIN payment_orders o ON o.booking_id=b.id
    LEFT JOIN misticpay_orders m ON m.booking_id=b.id
+   LEFT JOIN misticpay_split_plans s ON s.booking_id=b.id
    LEFT JOIN pix_receipts r ON r.id=(SELECT id FROM pix_receipts WHERE booking_id=b.id ORDER BY id DESC LIMIT 1)
    ORDER BY date,start,b.id`).all());
   }
@@ -256,6 +288,7 @@ const server=http.createServer(async(req,res)=>{
    transaction(db,()=>{
     const b=db.prepare('SELECT * FROM bookings WHERE id=?').get(bookingId); if(!b) fail('Agendamento não encontrado.',404);
     if(b.status==='cancelled') fail('Agendamento cancelado.');
+    if(misticpay.splitSummary(b.id))fail('Esta reserva possui uma divisão Pix. Gerencie as cotas antes de alterar a reserva.',409);
     if(db.prepare('SELECT 1 FROM misticpay_orders WHERE booking_id=?').get(b.id))fail('Esta reserva possui cobrança MisticPay. Consulte a cobrança antes de alterar a reserva.',409);
     if(db.prepare('SELECT id FROM payment_orders WHERE booking_id=?').get(b.id)) fail('Esta reserva possui cobrança online. Gerencie o pagamento ou estorno no Mercado Pago antes de alterar a reserva.',409);
     if(registerPayment&&db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(b.id))fail('Analise o comprovante Pix antes de confirmar o recebimento.',409);
@@ -274,5 +307,5 @@ const server=http.createServer(async(req,res)=>{
   return json(res,404,{error:'Não encontrado.'});
  } catch(error) { if(!error.status) console.error(error); return json(res,error.status||500,{error:error.status?error.message:'Erro interno do servidor.'}); }
 });
-return {server,db,retryMisticpayConfirmations:misticpay.retryConfirmations,processBookingAlerts:notifications.processBookingAlerts};
+return {server,db,retryMisticpayConfirmations:misticpay.retryConfirmations,drainSplitChecks:misticpay.drainSplitChecks,processBookingAlerts:notifications.processBookingAlerts,processReceiptReads:pix.processReceiptReads};
 }

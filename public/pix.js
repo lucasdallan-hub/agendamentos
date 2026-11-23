@@ -2,7 +2,7 @@ const $=selector=>document.querySelector(selector);
 const token=location.hash.slice(1);
 const money=value=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(value/100);
 const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let current,uploading=false,loading=false;
+let current,refreshTimer,uploading=false,loading=false;
 const endpoint='/api/pix/payments/'+encodeURIComponent(token);
 async function request(url,body){
  const response=await fetch(url,body===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -15,8 +15,15 @@ function renderReceipt(receipt){
  const box=$('#pix-receipt-result');
  box.hidden=!receipt;if(!receipt)return;
  const approved=receipt.status==='approved',rejected=receipt.status==='rejected';
- const title=approved?'Comprovante aprovado':rejected?'Comprovante recusado':'Aguardando conferência';
- const description=approved?'A arena confirmou o recebimento.':rejected?'Envie outro comprovante legível do Pix com o valor exato da reserva.':'A arena vai conferir o arquivo e o crédito na conta.';
+ const reading={
+  processing:'Lendo o comprovante…',
+  exact:'Valor igual ao da reserva',matched:'Valor igual ao da reserva',
+  different:'Valor diferente da reserva',mismatch:'Valor diferente da reserva',
+  unreadable:'Valor não identificado',
+  manual:'Aguardando conferência'
+ };
+ const title=approved?'Comprovante aprovado':rejected?'Comprovante recusado':reading[receipt.match_status]||reading.manual;
+ const description=approved?'A arena confirmou o recebimento.':rejected?'Envie outro comprovante legível do Pix com o valor exato da reserva.':'Aguardando a conferência do crédito na conta da arena.';
  box.className=approved?'pix-receipt-result pix-approved':'pix-receipt-result';
  box.innerHTML=`<strong>${title}</strong><p>${description}</p>${receipt.review_note?`<p>Observação da arena: ${escape(receipt.review_note)}</p>`:''}`;
 }
@@ -28,7 +35,15 @@ function render(){
  const paid=Boolean(current.paid),pending=current.receipt?.status==='pending';
  $('#pix-transfer-section').hidden=paid;$('#pix-paid-section').hidden=!paid;
  $('#pix-upload-form').hidden=paid||pending;
+ $('#pix-ocr-detail').hidden=!current.ocr_ready||!!current.receipt;
+ $('#pix-receipt-disclaimer').hidden=paid||pending;
  renderReceipt(current.receipt);
+}
+function scheduleLoad(){
+ clearTimeout(refreshTimer);
+ if(document.hidden)return;
+ const reading=current?.receipt?.status==='pending'&&current.receipt.match_status==='processing';
+ refreshTimer=setTimeout(load,reading?3000:15000);
 }
 async function load(initial=false){
  if(loading||uploading)return;loading=true;
@@ -39,7 +54,7 @@ async function load(initial=false){
  }catch(error){
   if(initial||!current){$('#pix-loading').hidden=true;$('#pix-content').hidden=true;$('#pix-error-card').hidden=false;$('#pix-load-error').textContent=error.message;}
   else toast(error.message);
- }finally{loading=false;}
+ }finally{loading=false;scheduleLoad();}
 }
 $('#pix-copy-key').onclick=async()=>{try{await navigator.clipboard.writeText(current.key);toast('Chave Pix copiada. Cole no aplicativo do seu banco.');}catch{$('#pix-key').select();toast('Selecione e copie a chave Pix para usar no seu banco.');}};
 $('#pix-retry').onclick=()=>load(true);
@@ -55,11 +70,11 @@ $('#pix-upload-form').onsubmit=async event=>{
  progress.hidden=false;
  try{
   const content=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.onerror=()=>reject(Error('Não foi possível abrir o arquivo selecionado.'));reader.readAsDataURL(file);});
-  await request(endpoint+'/receipt',{filename:file.name,content_base64:content});
+  const receipt=await request(endpoint+'/receipt',{filename:file.name,content_base64:content});
   $('#pix-upload-form').reset();$('#pix-selected-file').textContent='';
-  current=await request(endpoint);render();toast('Comprovante enviado para conferência.');
+  current={...current,receipt};render();toast('Comprovante enviado para conferência.');
  }catch(error){$('#pix-upload-error').textContent=error.message;}
- finally{uploading=false;$('#pix-submit').disabled=false;$('#pix-file').disabled=false;progress.hidden=true;}
+ finally{uploading=false;$('#pix-submit').disabled=false;$('#pix-file').disabled=false;progress.hidden=true;scheduleLoad();}
 };
+document.addEventListener('visibilitychange',()=>{if(document.hidden)clearTimeout(refreshTimer);else void load();});
 load(true);
-setInterval(()=>{if(!document.hidden)load();},15000);

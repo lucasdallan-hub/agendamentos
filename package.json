@@ -22,5 +22,10 @@
   },
   "devDependencies": {
     "wrangler": "4.160.1"
+  },
+  "dependencies": {
+    "@hyzyla/pdfium": "3.0.0",
+    "@tesseract.js-data/por": "1.0.0",
+    "tesseract.js-core": "6.1.2"
   }
 }

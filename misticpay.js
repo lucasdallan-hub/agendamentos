@@ -4,6 +4,7 @@ import {transaction} from './storage.js';
 import {lookupMisticPay,lookupMisticPayOrder,readTransaction,requestMisticPay,transactionIdPattern} from './misticpay-api.js';
 import {createMisticPayConnection} from './misticpay-connection.js';
 import {createMisticPayRetry} from './misticpay-retry.js';
+import {createMisticPaySplit} from './misticpay-split.js';
 
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const invalidResponse=()=>fail('A MisticPay retornou dados inválidos. Consulte a transação no painel do provedor.',502);
@@ -51,7 +52,15 @@ export function createMisticPay(db,{
  const lookup=(credentials,id,options)=>lookupMisticPay(fetchImpl,credentials,id,options);
  const lookupOrder=(credentials,order,options)=>lookupMisticPayOrder(fetchImpl,credentials,order,options);
  const connectionSettings=createMisticPayConnection(db,{encryptionKey,managedEncryptionKey,scope,lookup,lookupOrder});
- const confirmationRetry=createMisticPayRetry(db,{schedule:scheduleConfirmation,sync});
+ let alarmUpdate=Promise.resolve();
+ const schedule=typeof scheduleConfirmation==='function'?when=>{
+  // Full payments and split shares use the same durable alarm.
+  alarmUpdate=alarmUpdate.catch(()=>{}).then(()=>scheduleConfirmation(when));
+  return alarmUpdate;
+ }:undefined;
+ const confirmationRetry=createMisticPayRetry(db,{schedule,sync});
+ const split=createMisticPaySplit(db,{connection:connectionSettings,fetchImpl,readCharge,validateCpf,schedule,
+  enqueuePaidClient,dispatchPaidClient});
  function details(id){
   const order=getOrder(id);
   if(!order)return null;
@@ -64,6 +73,7 @@ export function createMisticPay(db,{
   const connection=await connectionSettings.active();
   const claim=transaction(db,()=>{
    if(getOrder(id))return null;
+   if(split.hasSplitPlan(id))fail('Esta reserva utiliza Pix dividido em cotas.',409);
    if(!connectionSettings.isCurrent(connection))fail('A configuração MisticPay mudou. Tente novamente.',409);
    const booking=getBooking(id);
    if(!booking)fail('Agendamento não encontrado.',404);
@@ -83,6 +93,7 @@ export function createMisticPay(db,{
     transactionId:claim.reference,description:`Reserva #${id} · Arena Vôlei`,
     projectWebhook:`${connection.base_url}/api/misticpay/webhook/${claim.webhookToken}`
    },{decode:result=>readCharge(result.data)});
+   if(split.hasTransaction(charge.id))fail('A transação retornada pertence a outra cobrança.',409);
    db.prepare("UPDATE misticpay_orders SET provider_id=?,qr_code=?,copy_paste=?,state=? WHERE id=? AND state='creating'")
     .run(charge.id,charge.qr,charge.copyPaste,charge.state==='PENDENTE'?'pending':'unknown',claim.reference);
   }catch(error){
@@ -109,6 +120,7 @@ export function createMisticPay(db,{
    if(!current||current.id!==order.id||!booking||booking.total!==payment.cents||!connectionSettings.isCurrent(connection)){
     fail('A cobrança ou a configuração mudou durante a consulta.',409);
    }
+   if(split.hasTransaction(payment.id))fail('A transação consultada pertence a outra cobrança.',409);
    connectionSettings.recordVerified();
    if(payment.updatedAt&&current.provider_updated_at&&payment.updatedAt<current.provider_updated_at)return details(id);
    const wasPaid=booking.paid&&booking.method==='MisticPay';
@@ -169,10 +181,17 @@ export function createMisticPay(db,{
    .run(digest,order.id,typeof body.status==='string'?body.status:'');
   return {ok:true};
  }
+ async function runPaymentTasks(first,second){
+  const results=await Promise.allSettled([first(),second()]);
+  const failure=results.find(result=>result.status==='rejected');
+  if(failure)throw failure.reason;
+ }
  return {
+  ...split,
   settings:connectionSettings.settings,configuration:connectionSettings.configuration,
   saveSettings:connectionSettings.saveSettings,verify:connectionSettings.verify,
   status:id=>getStatus.get(id)?.status??null,details,create,sync,webhook,
-  retryConfirmations:confirmationRetry.drain,resumeConfirmations:confirmationRetry.resumeRecent
+  retryConfirmations:()=>runPaymentTasks(confirmationRetry.drain,split.drainSplitChecks),
+  resumeConfirmations:()=>runPaymentTasks(confirmationRetry.resumeRecent,split.resumeSplitChecks)
  };
 }

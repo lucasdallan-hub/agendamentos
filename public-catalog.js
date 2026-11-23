@@ -58,19 +58,23 @@ export function publicCatalog(db,{book,pix,payments,misticpay,paymentConfig,atte
   const checkoutLinkReady=!!(order?.checkout_url&&Date.parse(order.expires_at)>Date.now()&&['open','pending','rejected'].includes(order.state));
   const directPix=!!db.prepare('SELECT booking_id FROM pix_links WHERE booking_id=?').get(b.id);
   const mistic=misticpay.details(b.id);
+  const split=misticpay.splitSummary(b.id);
+  const misticReady=!split&&!mistic&&!directPix&&(!order||failedWithoutCharge)&&misticpay.settings().ready;
   return {...b,
-   pix_ready:!mistic&&pix.settings().ready&&(!order||failedWithoutCharge),
-   checkout_ready:!mistic&&!directPix&&!!paymentConfig.ready&&(!order||failedWithoutCharge||checkoutLinkReady),
+   pix_ready:!split&&!mistic&&pix.settings().ready&&(!order||failedWithoutCharge),
+   checkout_ready:!split&&!mistic&&!directPix&&!!paymentConfig.ready&&(!order||failedWithoutCharge||checkoutLinkReady),
    checkout_method:checkoutLinkReady?order.checkout_method:null,
    checkout_link_ready:!mistic&&checkoutLinkReady,
-   misticpay_ready:!mistic&&!directPix&&(!order||failedWithoutCharge)&&misticpay.settings().ready,
-   misticpay:mistic
+   misticpay_ready:misticReady,
+   misticpay:mistic,
+   split_ready:b.status==='confirmed'&&!b.paid&&b.total>=2&&misticReady,
+   split
   };
  }
  function misticpayLink(id){
   return transaction(db,()=>{
    const b=bookingDetails(id);
-   if(b.status!=='confirmed'||b.paid||(!b.misticpay_ready&&!b.misticpay)||b.misticpay?.status==='archived')fail('Esta reserva não pode receber um link MisticPay.',409);
+   if(b.status!=='confirmed'||b.split?.status==='archived'||(!b.split&&(b.paid||(!b.misticpay_ready&&!b.misticpay)||b.misticpay?.status==='archived')))fail('Esta reserva não pode receber um link MisticPay.',409);
    const request=db.prepare('SELECT token,expires_at FROM public_booking_requests WHERE booking_id=?').get(id);
    if(request?.expires_at>Date.now())return {path:`/catalogo#${request.token}`};
    const token=randomBytes(32).toString('hex'),expires=Date.now()+7*24*3600000;

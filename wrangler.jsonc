@@ -7,6 +7,16 @@
     "nodejs_compat"
   ],
   "workers_dev": true,
+  "define": {
+    "__dirname": "\"/\""
+  },
+  "rules": [
+    {
+      "type": "Data",
+      "globs": ["**/*.traineddata.gz"],
+      "fallthrough": true
+    }
+  ],
   "triggers": {
     "crons": ["* * * * *"]
   },

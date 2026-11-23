@@ -53,7 +53,10 @@ export function createMisticPayConnection(db,{encryptionKey,managedEncryptionKey
   }
  });
  const read=()=>db.prepare('SELECT * FROM misticpay_connection WHERE id=1').get();
- const latestOrder=()=>db.prepare('SELECT id,provider_id,amount_cents FROM misticpay_orders WHERE archived=0 ORDER BY created_at DESC,id DESC LIMIT 1').get();
+ const latestOrder=()=>db.prepare(`SELECT id,provider_id,amount_cents FROM (
+  SELECT id,provider_id,amount_cents,created_at FROM misticpay_orders WHERE archived=0
+  UNION ALL SELECT id,provider_id,amount_cents,created_at FROM misticpay_split_shares
+ ) ORDER BY created_at DESC,id DESC LIMIT 1`).get();
  const hasCiphertext=row=>row?.active_credentials!=null||row?.pending_credentials!=null;
  function vaultFor(row){
   if(row?.credentials_key_id)return vaults.find(vault=>vault.keyId===row.credentials_key_id);

@@ -3,6 +3,7 @@ import {mkdirSync,readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import {createApplication} from './server-core.js';
+import {nativeReceiptReader} from './receipt-ocr.js';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const files={'/sidebar.js':['sidebar.js','text/javascript; charset=utf-8'],'/theme.js':['theme.js','text/javascript; charset=utf-8'],'/catalogo':['catalog.html','text/html; charset=utf-8'],'/catalog.js':['catalog.js','text/javascript; charset=utf-8'],'/branding.js':['branding.js','text/javascript; charset=utf-8'],'/':['index.html','text/html; charset=utf-8'],'/pagamento':['payment.html','text/html; charset=utf-8'],'/pix':['pix.html','text/html; charset=utf-8'],'/pix.js':['pix.js','text/javascript; charset=utf-8'],'/app.js':['app.js','text/javascript; charset=utf-8'],'/style.css':['style.css','text/css; charset=utf-8'],
@@ -21,13 +22,17 @@ export function createApp({dataDir=process.env.DATA_DIR||path.join(root,'data'),
  const app=createApplication({
   db,serveStatic,cookieSecure:process.env.COOKIE_SECURE==='1',
   misticpayEncryptionKey:process.env.MISTICPAY_CREDENTIALS_KEY,
-  misticpayManagedEncryptionKey:process.env.MISTICPAY_MANAGED_CREDENTIALS_KEY,...options
+  misticpayManagedEncryptionKey:process.env.MISTICPAY_MANAGED_CREDENTIALS_KEY,
+  receiptReader:nativeReceiptReader(),...options
  });
  let alertTimer;
- const checkBookingAlerts=()=>app.processBookingAlerts().catch(()=>console.warn('Não foi possível processar os avisos de reserva.'));
+ const runScheduledWork=async()=>{
+  const results=await Promise.allSettled([app.processBookingAlerts(),app.processReceiptReads(),app.drainSplitChecks()]);
+  if(results.some(result=>result.status==='rejected'))console.warn('Não foi possível concluir uma tarefa agendada da arena.');
+ };
  app.server.on('listening',()=>{
-  void checkBookingAlerts();
-  alertTimer=setInterval(checkBookingAlerts,60_000).unref();
+  void runScheduledWork();
+  alertTimer=setInterval(runScheduledWork,60_000).unref();
  });
  app.server.on('close',()=>clearInterval(alertTimer));
  return app;

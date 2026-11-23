@@ -5,9 +5,11 @@ const dateLabel=date=>new Date(date+'T12:00:00Z').toLocaleDateString('pt-BR',{ti
 const key=()=>Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,'0')).join('');
 let catalog,selection,requestKey,reservationView,misticpayBusy=false;
 let paymentCheck,paymentTimer,pageSuspended=false;
-async function api(path,body,signal){
+let splitCheck,splitTimer;
+const splitTokenPattern=/^[a-f0-9]{32}\.[1-9]\d{0,15}\.[a-f0-9]{64}$/;
+async function api(path,body,signal,method=body?'POST':'GET'){
  const response=await fetch('/api/public/'+path,{
-  method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:{},
+  method,headers:body?{'Content-Type':'application/json'}:{},
   body:body?JSON.stringify(body):undefined,cache:'no-store',signal
  });
  const result=await response.json().catch(()=>null);
@@ -92,7 +94,7 @@ const misticpayStatus={
  unknown:'A confirmação da cobrança está pendente.',
  archived:'Cobrança registrada no histórico da arena.'
 };
-function misticpayDetails(payment,canAct){
+function misticpayDetails(payment,canAct,share=false){
  const pending=canAct&&payment.status==='pending';
  const qr=payment.qr_code;
  const qrImage=pending&&typeof qr==='string'&&qr.length<=200_000&&/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(qr)
@@ -101,17 +103,17 @@ function misticpayDetails(payment,canAct){
   ?payment.copy_paste:'';
  const canCheck=canAct&&['pending','review','creating','unknown'].includes(payment.status);
  return `<section class="misticpay-details" aria-labelledby="misticpay-title">
-  <h3 id="misticpay-title">Pix via MisticPay</h3>
+  <h3 id="misticpay-title">${share?'Pix da cota':'Pix via MisticPay'}</h3>
   <p>${misticpayStatus[payment.status]||'Consulte a arena sobre este pagamento.'}</p>
   ${qrImage}
   ${code?`<label>Pix copia e cola<input id="misticpay-copy-code" readonly value="${esc(code)}"></label>`:''}
   ${code||canCheck?`<div class="catalog-payment-actions">
    ${code?'<button type="button" class="primary" data-misticpay-copy>Copiar código Pix</button>':''}
-   ${canCheck?'<button type="button" class="outline" data-payment="misticpay/check">Verificar pagamento</button>':''}
+   ${canCheck?`<button type="button" class="outline" data-payment="${share?'split/check':'misticpay/check'}">Verificar pagamento</button>`:''}
   </div>`:''}
  </section>`;
 }
-function paymentChoices(booking){
+function wholePaymentChoices(booking){
  if(booking.misticpay)return misticpayDetails(booking.misticpay,!booking.paid&&booking.status==='confirmed');
  if(booking.paid||booking.status!=='confirmed')return '';
  if(booking.checkout_link_ready&&!booking.checkout_method){
@@ -133,12 +135,59 @@ function paymentChoices(booking){
  const debitNote=methods.includes('debit_card')?'<p>A disponibilidade do cartão de débito depende das opções exibidas pelo Mercado Pago no checkout.</p>':'';
  return `<h3>Forma de pagamento</h3><div class="catalog-payment-actions">${buttons}${misticpayButton}</div>${debitNote}`;
 }
+const splitShareLabels={
+ uncreated:'Aguardando pagamento',creating:'Gerando Pix',pending:'Pix disponível',approved:'Paga',
+ unknown:'Em consulta',review:'Em conferência',cancelled:'Cancelada',failed:'Indisponível',refunded:'Devolvida'
+};
+function splitSharePath(path){
+ const prefix='/catalogo#cota:';
+ return typeof path==='string'&&path.startsWith(prefix)&&splitTokenPattern.test(path.slice(prefix.length))?path:null;
+}
+function splitPlanDetails(plan){
+ if(!plan)return '<p>Carregando cotas…</p>';
+ const shares=plan.shares.map(share=>{
+  const path=splitSharePath(share.path);
+  const index=esc(share.index);
+  return `<li>
+   <div><strong>Cota ${index}</strong><small>${splitShareLabels[share.status]||'Em consulta'}</small></div>
+   <strong>${money(share.amount_cents)}</strong>
+   ${path&&share.status!=='approved'?`<div class="catalog-split-actions"><button type="button" class="outline" data-copy-split="${index}" aria-label="Copiar link da cota ${index}">Copiar link</button><a class="outline" href="${esc(path)}" target="_blank" rel="noopener noreferrer" aria-label="Abrir cota ${index}">Abrir cota ↗</a></div>`:''}
+  </li>`;
+ }).join('');
+ const openShares=plan.shares.some(share=>share.status!=='approved'&&splitSharePath(share.path));
+ return `<h3 id="catalog-split-heading" tabindex="-1">Pix dividido</h3>
+  <p class="catalog-split-summary"><strong>${esc(plan.paid_count)} de ${esc(plan.count)} cotas pagas</strong> · ${money(plan.paid_cents)} de ${money(plan.total)}</p>
+  <progress class="catalog-split-progress" max="${esc(plan.count)}" value="${esc(plan.paid_count)}" aria-label="Cotas pagas"></progress>
+  ${openShares?'<p>Envie um link diferente para cada pessoa pagar sua cota.</p>':''}
+  <div class="catalog-split-actions">
+   ${openShares&&plan.shares.length>1?'<button type="button" class="outline" data-copy-split-page>Copiar links da página</button>':''}
+   ${plan.editable?'<button type="button" class="outline" data-configure-split>Alterar quantidade</button><button type="button" class="outline" data-cancel-split>Voltar ao pagamento total</button>':''}
+  </div>
+  <ul class="catalog-split-list">${shares}</ul>
+  ${plan.pages>1?`<div class="catalog-split-actions" aria-label="Páginas de cotas">
+   <button type="button" class="outline" data-split-page="${esc(plan.page-1)}" ${plan.page<=1?'disabled':''}>Anterior</button>
+   <span>Página ${esc(plan.page)} de ${esc(plan.pages)}</span>
+   <button type="button" class="outline" data-split-page="${esc(plan.page+1)}" ${plan.page>=plan.pages?'disabled':''}>Próxima</button>
+  </div>`:''}
+  <div data-split-copy-fallback></div>`;
+}
+function paymentChoices(view,booking){
+ if(booking.split)return `<section class="catalog-split-panel" id="catalog-split-panel" aria-label="Pagamento dividido">${splitPlanDetails(view.plan)}</section>`;
+ const whole=wholePaymentChoices(booking);
+ if(!booking.split_ready||booking.paid||booking.status!=='confirmed')return whole;
+ return `<div class="catalog-payment-actions">
+  <button type="button" class="primary" data-pay-whole aria-expanded="${Boolean(view.payWhole)}" aria-controls="catalog-whole-payment">Pagar o total</button>
+  <button type="button" class="outline" data-configure-split>Dividir com amigos</button>
+ </div><div id="catalog-whole-payment" ${view.payWhole?'':'hidden'}>${whole}</div>`;
+}
 function renderConfirmation(view,b){
  view.booking=b;
  const summary=b.status==='cancelled'?'Esta reserva foi cancelada pela arena.':b.misticpay?'':b.paid?'Pagamento confirmado.':'Reserva confirmada. O pagamento ainda está pendente.';
- $('#catalog-confirmation').innerHTML=`<span class="eyebrow">${b.status==='cancelled'?'RESERVA CANCELADA':'HORÁRIO RESERVADO'}</span><h2>${b.status==='cancelled'?'Entre em contato com a arena.':`Tudo certo, ${esc(b.customer)}!`}</h2><p>${esc(b.court_name)} · ${dateLabel(b.date)} · ${b.start} – ${b.end}</p><p class="catalog-total">${money(b.total)}</p>${summary?`<p>${summary}</p>`:''}${paymentChoices(b)}<p>Guarde este link privado para consultar sua reserva. Não o compartilhe com terceiros.</p><button id="copy-reservation" class="outline">Copiar link da reserva</button> <a class="outline" href="/catalogo">Fazer outra reserva</a>`;
+ const privateLinkHelp=b.split?'Guarde o link privado da reserva e envie aos amigos os links das cotas.':'Guarde este link privado para consultar sua reserva.';
+ $('#catalog-confirmation').innerHTML=`<span class="eyebrow">${b.status==='cancelled'?'RESERVA CANCELADA':'HORÁRIO RESERVADO'}</span><h2>${b.status==='cancelled'?'Entre em contato com a arena.':`Tudo certo, ${esc(b.customer)}!`}</h2><p>${esc(b.court_name)} · ${dateLabel(b.date)} · ${esc(b.start)} – ${esc(b.end)}</p><p class="catalog-total">${money(b.total)}</p>${summary?`<p>${summary}</p>`:''}${paymentChoices(view,b)}<p>${privateLinkHelp}</p><button id="copy-reservation" class="outline">Copiar link da reserva</button> <a class="outline" href="/catalogo">Fazer outra reserva</a>`;
  $('#copy-reservation').onclick=async()=>{try{await navigator.clipboard.writeText(location.href);$('#copy-reservation').textContent='Link copiado';}catch{$('#catalog-error').textContent='Copie o endereço desta página para guardar seu link.';}};
  schedulePaymentCheck();
+ scheduleSplitRefresh();
 }
 const currentToken=()=>location.hash.slice(1);
 const isCurrentReservation=view=>view&&view===reservationView&&view.token===currentToken()&&!pageSuspended;
@@ -150,7 +199,10 @@ async function showConfirmation(token){
  try{
   if(!/^[a-f0-9]{64}$/.test(token))throw Error('Link de reserva inválido.');
   const booking=await api('bookings/'+token);
-  if(isCurrentReservation(view))renderConfirmation(view,booking);
+  if(isCurrentReservation(view)){
+   renderConfirmation(view,booking);
+   if(booking.split)await refreshSplit(view,1,true);
+  }
  }catch(error){
   if(!isCurrentReservation(view))return;
   $('#catalog-confirmation').textContent='Não foi possível consultar a reserva.';
@@ -222,6 +274,240 @@ async function checkMisticpay(view,manual=false){
   schedulePaymentCheck();
  }
 }
+function applySplitPlan(view,plan){
+ const changed=JSON.stringify(view.plan)!==JSON.stringify(plan);
+ view.plan=plan;
+ const paid=plan.status==='approved';
+ const booking=view.booking;
+ if(!booking.split||Boolean(booking.paid)!==paid){
+  renderConfirmation(view,{...booking,paid,split:true});
+ }else if(changed){
+  $('#catalog-split-panel').innerHTML=splitPlanDetails(plan);
+ }
+}
+function sharePaymentForm(){
+ return `<form class="catalog-split-share-form" data-split-share-form>
+  <label>Nome do pagador<input name="name" maxlength="120" autocomplete="name" required></label>
+  <label>CPF do pagador<input name="cpf" inputmode="numeric" autocomplete="off" maxlength="14" placeholder="000.000.000-00" required></label>
+  <p>A MisticPay usa esses dados para emitir o Pix da cota.</p>
+  <p id="catalog-split-share-error" role="alert"></p>
+  <button class="primary" type="submit">Gerar código Pix</button>
+ </form>`;
+}
+function renderSplitShare(view,share){
+ if(JSON.stringify(view.share)===JSON.stringify(share))return;
+ view.share=share;
+ $('#catalog-confirmation').innerHTML=`<span class="eyebrow">COTA ${esc(share.index)} DE ${esc(share.count)}</span>
+  <h2>${share.status==='approved'?'Cota paga':'Pague sua cota'}</h2>
+  <p>${esc(share.court_name)} · ${dateLabel(share.date)} · ${esc(share.start)} – ${esc(share.end)}</p>
+  <p class="catalog-total">${money(share.amount_cents)}</p>
+  ${share.status==='uncreated'?sharePaymentForm():misticpayDetails(share,true,true)}`;
+ scheduleSplitRefresh();
+}
+function scheduleSplitRefresh(){
+ clearTimeout(splitTimer);
+ const view=reservationView;
+ if(splitCheck||document.hidden||!isCurrentReservation(view)||view.stopSplitPolling)return;
+ const sharePending=view.shareToken&&automaticPaymentStates.includes(view.share?.status);
+ const planPending=view.booking?.split&&!view.booking.paid&&view.booking.status!=='cancelled';
+ if(!sharePending&&!planPending)return;
+ if(sharePending)view.nextSplitProviderCheck??=Date.now()+providerCheckInterval;
+ splitTimer=setTimeout(()=>refreshSplit(view),sharePending?paymentStatusInterval:5_000);
+}
+async function splitShareStatus(view,path,signal){
+ const previous=view.share;
+ if(!previous)return api(path,undefined,signal);
+ const {status}=await api(path+'/check',undefined,signal);
+ if(status===previous.status)return previous;
+ if(status==='pending')return api(path,undefined,signal);
+ return {...previous,status,qr_code:null,copy_paste:null};
+}
+async function refreshSplit(view,page=view?.plan?.page||1,manual=false,checkProvider=false){
+ if(!isCurrentReservation(view)||document.hidden||(!view.shareToken&&!view.booking?.split))return;
+ if(splitCheck&&!manual)return;
+ splitCheck?.abort();
+ clearTimeout(splitTimer);
+ const controller=new AbortController();
+ splitCheck=controller;
+ const active=()=>isCurrentReservation(view)&&!controller.signal.aborted;
+ if(manual)$('#catalog-error').textContent='';
+ try{
+  if(view.shareToken){
+   const path='split/'+view.shareToken;
+   const share=await splitShareStatus(view,path,controller.signal);
+   if(!active())return;
+   renderSplitShare(view,share);
+   const now=Date.now();
+   const pending=automaticPaymentStates.includes(share.status);
+   if((checkProvider&&(pending||share.status==='review'))||(pending&&now>=view.nextSplitProviderCheck)){
+    view.nextSplitProviderCheck=now+providerCheckInterval;
+    const payment=await api(path+'/check',{},controller.signal);
+    if(active())renderSplitShare(view,payment);
+   }
+  }else{
+   const plan=await api(`bookings/${view.token}/split?page=${page}`,undefined,controller.signal);
+   if(active())applySplitPlan(view,plan);
+  }
+ }catch(error){
+  if(!active())return;
+  if(error.status===404&&view.booking?.split){
+   try{
+    const booking=await api(`bookings/${view.token}`,undefined,controller.signal);
+    if(!active())return;
+    if(!booking.split){
+     view.plan=null;
+     renderConfirmation(view,booking);
+     return;
+    }
+   }catch{}
+  }
+  if(!active())return;
+  if([401,403,404,410].includes(error.status))view.stopSplitPolling=true;
+  if(manual||view.stopSplitPolling)$('#catalog-error').textContent=error.message;
+  if(view.shareToken&&(!view.share||view.stopSplitPolling))$('#catalog-confirmation').textContent='Não foi possível abrir a cota.';
+  if(!view.shareToken&&!view.plan)$('#catalog-split-panel').innerHTML='<p>As cotas estão indisponíveis.</p><button type="button" class="outline" data-split-page="1">Tentar novamente</button>';
+ }finally{
+  if(splitCheck===controller)splitCheck=null;
+  if(isCurrentReservation(view))scheduleSplitRefresh();
+ }
+}
+function showSplitShare(token){
+ const shareToken=token.slice('cota:'.length);
+ const view={token,shareToken};
+ reservationView=view;
+ $('#catalog-error').textContent='';
+ $('#catalog-search').hidden=true;
+ $('#catalog-confirmation').hidden=false;
+ if(!splitTokenPattern.test(shareToken)){
+  view.stopSplitPolling=true;
+  $('#catalog-confirmation').textContent='Link de cota inválido.';
+  return;
+ }
+ $('#catalog-confirmation').textContent='Carregando cota…';
+ void refreshSplit(view,1,true);
+}
+const splitDialog=$('#catalog-split-modal');
+const splitCount=$('#catalog-split-count');
+const splitPreview=$('#catalog-split-preview');
+function showSplitDialog(view){
+ splitCount.max=String(view.booking.total);
+ splitCount.value=String(view.plan?.count||2);
+ $('#catalog-split-error').textContent='';
+ $('#catalog-split-submit').textContent=view.plan?'Atualizar links das cotas':'Criar links das cotas';
+ updateSplitPreview();
+ splitDialog.showModal();
+}
+function updateSplitPreview(){
+ const count=splitCount.valueAsNumber;
+ const view=reservationView;
+ const total=view?.booking?.total;
+ if(!Number.isSafeInteger(count)||count<2||count>total){
+  splitPreview.textContent='';
+  return;
+ }
+ const amount=Math.floor(total/count),remainder=total%count;
+ const portion=(number,value)=>`${number} ${number===1?'cota':'cotas'} de ${money(value)}`;
+ splitPreview.textContent=remainder?`${portion(remainder,amount+1)} e ${portion(count-remainder,amount)}.`:`${portion(count,amount)}.`;
+}
+splitCount.addEventListener('input',updateSplitPreview);
+$('#catalog-split-close').onclick=()=>splitDialog.close();
+splitDialog.addEventListener('cancel',event=>{if(reservationView?.splitCreating)event.preventDefault();});
+$('#catalog-split-form').onsubmit=async event=>{
+ event.preventDefault();
+ const view=reservationView;
+ if(!isCurrentReservation(view)||!view.booking||view.splitCreating)return;
+ const count=splitCount.valueAsNumber;
+ if(!Number.isSafeInteger(count)||count<2||count>view.booking.total)return;
+ const submit=$('#catalog-split-submit'),close=$('#catalog-split-close'),message=$('#catalog-split-error');
+ submit.disabled=true;close.disabled=true;message.textContent='';
+ view.splitCreating=true;
+ try{
+  const plan=await api(`bookings/${view.token}/split`,{count});
+  if(!isCurrentReservation(view))return;
+  splitCheck?.abort();
+  splitCheck=null;
+  splitDialog.close();
+  applySplitPlan(view,plan);
+  scheduleSplitRefresh();
+  $('#catalog-split-heading')?.focus();
+ }catch(error){
+  if(isCurrentReservation(view))message.textContent=error.message;
+ }finally{
+  view.splitCreating=false;
+  submit.disabled=false;close.disabled=false;
+ }
+};
+async function cancelSplitPlan(view,button){
+ if(view.splitCreating||!view.plan?.editable)return;
+ if(!window.confirm('Voltar ao pagamento total? Os links das cotas atuais vão expirar.'))return;
+ button.disabled=true;
+ view.splitCreating=true;
+ try{
+  await api(`bookings/${view.token}/split`,undefined,undefined,'DELETE');
+  if(!isCurrentReservation(view))return;
+  splitCheck?.abort();
+  splitCheck=null;
+  const booking=await api(`bookings/${view.token}`);
+  if(isCurrentReservation(view)){
+   view.plan=null;
+   view.payWhole=true;
+   renderConfirmation(view,booking);
+  }
+ }catch(error){
+  if(isCurrentReservation(view))$('#catalog-error').textContent=error.message;
+ }finally{
+  view.splitCreating=false;
+  button.disabled=false;
+ }
+}
+async function copySplitLinks(view,button,page){
+ const rows=view.plan?.shares.filter(share=>
+  (page||String(share.index)===button.dataset.copySplit)&&share.status!=='approved'&&splitSharePath(share.path)
+ );
+ if(!rows?.length)return;
+ const links=rows.map(share=>{
+  const url=new URL(share.path,location.origin).href;
+  return page?`Cota ${share.index} · ${money(share.amount_cents)}\n${url}`:url;
+ }).join('\n\n');
+ const fallback=$('[data-split-copy-fallback]');
+ try{
+  await navigator.clipboard.writeText(links);
+  button.textContent=page?'Links copiados':'Link copiado';
+  fallback.replaceChildren();
+ }catch{
+  const label=document.createElement('label');
+  label.textContent=page?'Copie os links abaixo':'Copie o link abaixo';
+  const area=document.createElement('textarea');
+  area.rows=page?4:2;area.readOnly=true;area.value=links;
+  label.append(area);fallback.replaceChildren(label);
+  area.focus();area.select();
+ }
+}
+$('#catalog-confirmation').addEventListener('submit',async e=>{
+ const form=e.target.closest('[data-split-share-form]');
+ if(!form)return;
+ e.preventDefault();
+ const view=reservationView;
+ if(!isCurrentReservation(view)||!view.shareToken||view.shareCreating)return;
+ const fields=new FormData(form);
+ const name=String(fields.get('name')||'').trim(),cpf=String(fields.get('cpf')||'').replace(/[.\s-]/g,'');
+ const message=$('#catalog-split-share-error');
+ if(!name||!/^\d{11}$/.test(cpf)){message.textContent='Informe o nome e os 11 dígitos do CPF.';return;}
+ const submit=form.querySelector('button[type=submit]');
+ view.shareCreating=true;submit.disabled=true;message.textContent='';
+ form.querySelector('[name=cpf]').value='';
+ try{
+  const share=await api('split/'+view.shareToken,{name,cpf});
+  if(isCurrentReservation(view))renderSplitShare(view,share);
+ }catch(error){
+  if(isCurrentReservation(view)){
+   message.textContent=error.message;
+   void refreshSplit(view);
+  }
+ }finally{
+  view.shareCreating=false;submit.disabled=false;
+ }
+});
 const misticpayDialog=$('#catalog-misticpay-modal');
 const cpfField=$('#catalog-misticpay-cpf');
 $('#catalog-misticpay-close').onclick=()=>misticpayDialog.close();
@@ -254,11 +540,37 @@ $('#catalog-confirmation').onclick=async e=>{
   catch{code.select();}
   return;
  }
- const button=e.target.closest('[data-payment]');if(!button||button.disabled)return;
  const view=reservationView;
- if(!isCurrentReservation(view)||!view.booking)return;
+ if(!isCurrentReservation(view))return;
+ const configure=e.target.closest('[data-configure-split]');
+ if(configure&&view.booking){showSplitDialog(view);return;}
+ const cancelSplit=e.target.closest('[data-cancel-split]');
+ if(cancelSplit){await cancelSplitPlan(view,cancelSplit);return;}
+ const whole=e.target.closest('[data-pay-whole]');
+ if(whole){
+  view.payWhole=!view.payWhole;
+  whole.setAttribute('aria-expanded',String(view.payWhole));
+  $('#catalog-whole-payment').hidden=!view.payWhole;
+  return;
+ }
+ const shareCopy=e.target.closest('[data-copy-split]');
+ const pageCopy=e.target.closest('[data-copy-split-page]');
+ if(shareCopy||pageCopy){await copySplitLinks(view,shareCopy||pageCopy,Boolean(pageCopy));return;}
+ const page=e.target.closest('[data-split-page]');
+ if(page){
+  if(!page.disabled)await refreshSplit(view,Number(page.dataset.splitPage),true);
+  return;
+ }
+ const button=e.target.closest('[data-payment]');if(!button||button.disabled)return;
  $('#catalog-error').textContent='';
  const {payment,method}=button.dataset;
+ if(payment==='split/check'){
+  button.disabled=true;
+  try{await refreshSplit(view,undefined,true,true);}
+  finally{button.disabled=false;}
+  return;
+ }
+ if(!view.booking)return;
  if(payment==='misticpay/check'){await checkMisticpay(view,true);return;}
  if(payment==='misticpay'){
   $('#catalog-misticpay-error').textContent='';
@@ -281,11 +593,17 @@ $('#catalog-date').min=today;$('#catalog-date').value=today;
 const last=new Date(today+'T12:00:00Z');last.setUTCDate(last.getUTCDate()+180);$('#catalog-date').max=last.toISOString().slice(0,10);
 function showCatalogView(){
  clearTimeout(paymentTimer);
+ clearTimeout(splitTimer);
  paymentCheck?.abort();
+ splitCheck?.abort();
+ splitCheck=null;
  reservationView=null;
  if(misticpayDialog.open)misticpayDialog.close();
+ if(splitDialog.open)splitDialog.close();
  const token=currentToken();
- if(token)showConfirmation(token);
+ $('.catalog-hero').hidden=Boolean(token);
+ if(token.startsWith('cota:'))showSplitShare(token);
+ else if(token)showConfirmation(token);
  else{
   $('#catalog-confirmation').hidden=true;
   $('#catalog-search').hidden=false;
@@ -294,13 +612,19 @@ function showCatalogView(){
 }
 document.addEventListener('visibilitychange',()=>{
  clearTimeout(paymentTimer);
- if(!document.hidden)checkMisticpay(reservationView);
+ clearTimeout(splitTimer);
+ if(!document.hidden){
+  checkMisticpay(reservationView);
+  if(!reservationView?.stopSplitPolling)void refreshSplit(reservationView);
+ }
 });
 window.addEventListener('hashchange',showCatalogView);
 window.addEventListener('pagehide',()=>{
  pageSuspended=true;
  clearTimeout(paymentTimer);
+ clearTimeout(splitTimer);
  paymentCheck?.abort();
+ splitCheck?.abort();
 });
 window.addEventListener('pageshow',event=>{
  if(!event.persisted)return;

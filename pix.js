@@ -2,6 +2,7 @@ import {createHash,randomBytes} from 'node:crypto';
 import {Buffer} from 'node:buffer';
 import {jpegDimensions} from './image-size.js';
 import {transaction} from './storage.js';
+import {receiptReads} from './receipt-reads.js';
 
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const maximum=5*1024*1024;
@@ -32,21 +33,24 @@ function decodeUpload(body){
  return {buffer,mime,filename:body.filename.trim()};
 }
 
-export function createPix(db,{enqueuePaidClient,dispatchPaidClient}={}){
+export function createPix(db,{enqueuePaidClient,dispatchPaidClient,receiptReader}={}){
  db.exec(`CREATE TABLE IF NOT EXISTS pix_settings(id INTEGER PRIMARY KEY CHECK(id=1),key TEXT NOT NULL,receiver TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS pix_links(booking_id INTEGER PRIMARY KEY REFERENCES bookings(id),token TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,pix_key TEXT NOT NULL,receiver TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS pix_receipts(id INTEGER PRIMARY KEY,booking_id INTEGER NOT NULL REFERENCES bookings(id),filename TEXT NOT NULL,mime_type TEXT NOT NULL,content BLOB NOT NULL,file_hash TEXT NOT NULL UNIQUE,amount_cents INTEGER,match_status TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL,review_note TEXT NOT NULL DEFAULT '',reviewed_at TEXT);`);
+ const reads=receiptReads(db,receiptReader);
+ const ocrReady=receiptReader?{ocr_ready:true}:{};
  const attempts=new Map();
  const booking=id=>{const b=db.prepare('SELECT b.*,c.name court_name FROM bookings b JOIN courts c ON c.id=b.court_id WHERE b.id=?').get(id);if(!b)fail('Agendamento não encontrado.',404);return b;};
  const latest=id=>db.prepare(`SELECT ${summaryColumns} FROM pix_receipts WHERE booking_id=? ORDER BY id DESC LIMIT 1`).get(id)||null;
  const orderExists=id=>!!db.prepare('SELECT id FROM payment_orders WHERE booking_id=?').get(id);
  const available=b=>{
   if(b.status!=='confirmed'||b.paid)fail('Esta reserva não aceita novos comprovantes.',409);
+  if(db.prepare('SELECT 1 FROM misticpay_split_plans WHERE booking_id=?').get(b.id))fail('Esta reserva já usa uma divisão Pix.',409);
   if(db.prepare('SELECT 1 FROM misticpay_orders WHERE booking_id=?').get(b.id))fail('Esta reserva já possui cobrança MisticPay.',409);
   if(orderExists(b.id))fail('Esta reserva já possui cobrança Mercado Pago. Use o checkout existente.',409);
  };
  const linkFor=token=>{if(!/^[a-f0-9]{64}$/.test(token))fail('Link Pix não encontrado.',404);const link=db.prepare('SELECT * FROM pix_links WHERE token=?').get(token);if(!link)fail('Link Pix não encontrado.',404);if(new Date(link.expires_at)<=new Date())fail('Este link Pix expirou. Peça um novo link à arena.',410);return link;};
- function settings(){const current=db.prepare('SELECT key,receiver FROM pix_settings WHERE id=1').get()||{key:'',receiver:''};return {...current,ready:!!(current.key&&current.receiver),manual_review:true};}
+ function settings(){const current=db.prepare('SELECT key,receiver FROM pix_settings WHERE id=1').get()||{key:'',receiver:''};return {...current,ready:!!(current.key&&current.receiver),manual_review:true,...ocrReady};}
  function saveSettings(body){
   if(typeof body.key!=='string'||!body.key.trim()||body.key.trim().length>140||/[\x00-\x1f]/.test(body.key))fail('Informe uma chave Pix válida.');
   if(typeof body.receiver!=='string'||!body.receiver.trim()||body.receiver.trim().length>120||/[\x00-\x1f]/.test(body.receiver))fail('Informe o nome do recebedor.');
@@ -65,7 +69,7 @@ export function createPix(db,{enqueuePaidClient,dispatchPaidClient}={}){
    return {path:`/pix#${token}`,expires_at};
   });
  }
- function publicPayment(token){const link=linkFor(token),b=booking(link.booking_id);if(b.status!=='confirmed')fail('Esta reserva não está mais disponível.',410);return {customer:b.customer,court_name:b.court_name,date:b.date,start:b.start,end:b.end,total:b.total,key:link.pix_key,receiver:link.receiver,paid:!!b.paid,expires_at:link.expires_at,receipt:latest(b.id)};}
+ function publicPayment(token){const link=linkFor(token),b=booking(link.booking_id);if(b.status!=='confirmed')fail('Esta reserva não está mais disponível.',410);return {customer:b.customer,court_name:b.court_name,date:b.date,start:b.start,end:b.end,total:b.total,key:link.pix_key,receiver:link.receiver,paid:!!b.paid,expires_at:link.expires_at,receipt:latest(b.id),...ocrReady};}
  function upload(token,body){
   return transaction(db,()=>{
    const link=linkFor(token),b=booking(link.booking_id);available(b);
@@ -74,11 +78,14 @@ export function createPix(db,{enqueuePaidClient,dispatchPaidClient}={}){
    if(db.prepare('SELECT id FROM pix_receipts WHERE file_hash=?').get(hash))fail('Este comprovante já foi enviado. Envie um comprovante diferente.',409);
    const now=Date.now(),limit=attempts.get(b.id);
    if(limit&&limit.until>now&&limit.count>=10)fail('Limite de envios atingido. Aguarde uma hora para tentar novamente.',429);
-   db.prepare("INSERT INTO pix_receipts(booking_id,filename,mime_type,content,file_hash,match_status,created_at) VALUES(?,?,?,?,?,'manual',?)").run(b.id,data.filename,data.mime,data.buffer,hash,new Date(now).toISOString());
+   const saved=db.prepare('INSERT INTO pix_receipts(booking_id,filename,mime_type,content,file_hash,match_status,created_at) VALUES(?,?,?,?,?,?,?)')
+    .run(b.id,data.filename,data.mime,data.buffer,hash,receiptReader?'processing':'manual',new Date(now).toISOString());
+   if(receiptReader)reads.enqueue(Number(saved.lastInsertRowid));
    attempts.set(b.id,{count:limit?.until>now?limit.count+1:1,until:limit?.until>now?limit.until:now+3600000});
    return latest(b.id);
   });
  }
+ const receiptResult=id=>db.prepare(`SELECT ${summaryColumns} FROM pix_receipts WHERE id=?`).get(id);
  function list(id){booking(id);return db.prepare(`SELECT ${summaryColumns} FROM pix_receipts WHERE booking_id=? ORDER BY id DESC`).all(id);}
  function file(id){const receipt=db.prepare('SELECT id,mime_type,content FROM pix_receipts WHERE id=?').get(id);if(!receipt)fail('Comprovante não encontrado.',404);return receipt;}
  async function review(id,body){
@@ -94,16 +101,19 @@ export function createPix(db,{enqueuePaidClient,dispatchPaidClient}={}){
    }
    const note=typeof body.note==='string'?body.note.trim().slice(0,1000):'';
    const reviewedAt=new Date().toISOString();
-   db.prepare('UPDATE pix_receipts SET status=?,review_note=?,reviewed_at=? WHERE id=?').run(approved?'approved':'rejected',note,reviewedAt,id);
+   db.prepare(`UPDATE pix_receipts SET status=?,review_note=?,reviewed_at=?,
+    match_status=CASE WHEN match_status='processing' THEN 'manual' ELSE match_status END WHERE id=?`)
+    .run(approved?'approved':'rejected',note,reviewedAt,id);
+   reads.remove(id);
    if(approved){
     db.prepare("UPDATE bookings SET paid=1,method='Pix',paid_at=? WHERE id=?").run(reviewedAt,b.id);
     enqueuePaidClient?.(b.id);
    }
-   const result=db.prepare(`SELECT ${summaryColumns} FROM pix_receipts WHERE id=?`).get(id);
+   const result=receiptResult(id);
    return {result,paidBookingId:approved?b.id:null};
   });
   if(paidBookingId!==null)await dispatchPaidClient?.(paidBookingId);
   return result;
  }
- return {settings,saveSettings,createLink,publicPayment,upload,list,file,review};
+ return {settings,saveSettings,createLink,publicPayment,upload,list,file,review,receiptResult,readReceipt:reads.read,processReceiptReads:reads.process};
 }

@@ -18,7 +18,7 @@ npm run deploy:cloudflare
 
 No painel conectado ao GitHub: branch `main`, raiz `/`, build `npm run build` e deploy `npm run deploy:cloudflare`. Em um banco novo, o acesso inicial é usuário `admin` e senha `admin`. O segredo opcional `ADMIN_INITIAL_PASSWORD` substitui a senha inicial.
 
-A arena pode usar Pix direto com conferência manual ou configurar Pix com QR Code e conciliação pela MisticPay. [Configuração de pagamentos na Cloudflare](docs/cloudflare.md#pix-via-misticpay)
+A arena pode usar Pix direto com leitura automática do valor do comprovante ou configurar Pix com QR Code e conciliação pela MisticPay. [Configuração de pagamentos na Cloudflare](docs/cloudflare.md#pix-via-misticpay)
 
 ## Sistemas filhos e identidade própria
 
@@ -71,7 +71,7 @@ O servidor usa a porta 3000. No primeiro acesso, crie a senha do administrador (
 - Reservas com cliente, telefone, data, horário e observações. Valor proporcional à duração, com mínimo de 30 minutos e bloqueio de sobreposição na mesma quadra.
 - Filtros de data e pagamento, cancelamento de reservas não pagas e liberação do horário.
 - Cobrança online pelo Checkout Pro do Mercado Pago: link compartilhável, confirmação por webhook assinado, consulta de status e histórico financeiro. Formas de pagamento dependem da conta do Mercado Pago.
-- Pix direto com chave da arena, link privado e envio de comprovante PNG, JPG ou PDF para conferência manual.
+- Pix direto com chave da arena, link privado e leitura do valor de comprovantes PNG, JPG ou PDF para auxiliar a conferência do crédito.
 - Pix via MisticPay com QR Code, código copia e cola e confirmação pela API do provedor.
 - Acesso administrativo com senha armazenada por scrypt, cookie HttpOnly e limite de tentativas de login.
 - Dados persistidos em SQLite; sessões em memória expiram em 12 horas e exigem novo login após reinício.
@@ -97,7 +97,7 @@ Os testes Pix cobrem permissões, validação de arquivos, conferência manual d
 1. No **Financeiro → Pix direto**, cadastre a chave Pix da arena e o nome do favorecido.
 2. Na reserva, selecione **Pix + comprovante**, gere o link e envie ao cliente. O cliente não precisa acessar a conta administrativa.
 3. O cliente confere a chave e o nome no aplicativo do banco, transfere o valor exato e envia um comprovante PNG, JPG ou PDF de até 5 MB.
-4. A reserva fica com pagamento pendente enquanto o comprovante aguarda conferência.
+4. O sistema lê o valor do comprovante e compara os centavos com o total da reserva. A reserva fica com pagamento pendente enquanto aguarda a conferência do crédito.
 5. Em **Ver comprovante**, abra o arquivo, confira o crédito na conta e informe o valor recebido. Marque **Conferi o recebimento na conta** e aprove se o valor for igual ao total da reserva. A recusa permite um novo envio.
 
 O link Pix vale por 7 dias. A chave e o favorecido são preservados ao gerar o link. Emitir um novo link após expiração invalida o anterior. Um comprovante pendente impede reenvio até a análise, e arquivos idênticos não podem ser reutilizados. O painel mantém os originais e o histórico no SQLite.
@@ -106,7 +106,9 @@ O link Pix vale por 7 dias. A chave e o favorecido são preservados ao gerar o l
 
 Em **Financeiro → Configurar MisticPay**, salve o Client ID e o Client Secret para habilitar novos pagamentos. No catálogo, o cliente seleciona **Pix via MisticPay** e informa o CPF para gerar o QR Code. O painel também pode compartilhar um link de pagamento para uma reserva existente. A Arena confirma o recebimento automaticamente pela API da MisticPay.
 
-Cada reserva pode ter uma cobrança ativa por vez. As credenciais e os detalhes da configuração estão no [guia da Cloudflare](docs/cloudflare.md#pix-via-misticpay).
+No link privado da reserva, quem reservou pode **Pagar o total** ou **Dividir com amigos**. Cada cota tem um link individual e a MisticPay gera um Pix ao solicitar a cobrança. A soma das cotas fecha o total exato em centavos. Cada cota precisa respeitar o valor mínimo do provedor. A reserva fica paga quando todas as cotas são confirmadas. O link original mostra o progresso e permite alterar ou remover a divisão antes da primeira cobrança.
+
+Cada reserva usa uma única modalidade de cobrança. No Pix dividido, cada cota ativa tem seu próprio QR Code. As credenciais e os detalhes da configuração estão no [guia da Cloudflare](docs/cloudflare.md#pix-via-misticpay).
 
 ## Ativar Mercado Pago
 

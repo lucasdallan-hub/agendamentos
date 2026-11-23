@@ -241,22 +241,22 @@ body:has(.payment-return) .payment-return {
   color: var(--public-muted);
 }
 
-.catalog-body :is(#catalog-modal,#catalog-misticpay-modal) {
+.catalog-body :is(#catalog-modal,#catalog-misticpay-modal,#catalog-split-modal) {
   border: 1px solid var(--public-line);
   border-radius: 20px;
   background: var(--public-surface);
   color: var(--public-ink);
 }
 
-.catalog-body #catalog-misticpay-modal {
+.catalog-body :is(#catalog-misticpay-modal,#catalog-split-modal) {
   max-width: 520px;
 }
 
-.catalog-body #catalog-misticpay-form {
+.catalog-body :is(#catalog-misticpay-form,#catalog-split-form) {
   padding: clamp(18px, 4vw, 28px);
 }
 
-.catalog-body #catalog-misticpay-submit {
+.catalog-body :is(#catalog-misticpay-submit,#catalog-split-submit) {
   width: 100%;
 }
 
@@ -266,6 +266,75 @@ body:has(.payment-return) .payment-return {
   border: 1px solid var(--public-line);
   border-radius: 14px;
   background: var(--public-soft);
+}
+
+.catalog-body .catalog-split-panel {
+  margin: 20px 0;
+  padding: clamp(14px, 4vw, 22px);
+  border: 1px solid var(--public-line);
+  border-radius: 14px;
+  background: var(--public-soft);
+}
+
+.catalog-body .catalog-split-summary {
+  color: var(--public-muted);
+}
+
+.catalog-body .catalog-split-progress {
+  display: block;
+  width: 100%;
+  height: 10px;
+  accent-color: var(--public-accent);
+}
+
+.catalog-body .catalog-split-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.catalog-body .catalog-split-list {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+}
+
+.catalog-body .catalog-split-list li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--public-line);
+}
+
+.catalog-body .catalog-split-list :is(small,strong) {
+  display: block;
+}
+
+.catalog-body .catalog-split-list small {
+  margin-top: 2px;
+  color: var(--public-muted);
+}
+
+.catalog-body .catalog-split-list a.outline {
+  margin: 0;
+}
+
+.catalog-body .catalog-split-preview {
+  overflow-wrap: anywhere;
+  color: var(--public-accent);
+  font-weight: 700;
+}
+
+.catalog-body .catalog-split-share-form {
+  max-width: 400px;
+}
+
+.catalog-body .catalog-split-share-form button {
+  margin-top: 6px;
 }
 
 .catalog-body .misticpay-qr {
@@ -285,7 +354,7 @@ body:has(.payment-return) .payment-return {
   background: var(--public-soft);
 }
 
-.catalog-body :is(#catalog-error,#catalog-booking-error,#catalog-misticpay-error),
+.catalog-body :is(#catalog-error,#catalog-booking-error,#catalog-misticpay-error,#catalog-split-error,#catalog-split-share-error),
 .pix-public-body :is(#pix-load-error,.pix-public-card .pix-error) {
   color: var(--public-danger);
 }

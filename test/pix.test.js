@@ -3,19 +3,21 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
 import {once} from 'node:events';
+import {DatabaseSync} from 'node:sqlite';
 import {createApp} from '../server.js';
+import {createApplication} from '../server-core.js';
 import {createPix} from '../pix.js';
 
 const PNG=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/F6cAAAAASUVORK5CYII=','base64');
 const file=(suffix='')=>({filename:'comprovante.png',content_base64:Buffer.concat([PNG,Buffer.from(suffix)]).toString('base64')});
 const rejected=r=>assert.ok(r.status>=400&&r.status<500,`Esperava rejeição 4xx, recebeu ${r.status}: ${JSON.stringify(r.data)}`);
 
-async function fixture(t,{ready=false,preferenceError}={}){
+async function fixture(t,{ready=false,preferenceError,receiptReader=null,keepReceiptAlive,notificationFetch}={}){
  const dataDir=mkdtempSync('/tmp/arena-pix-test-');
  let preferences=0;
  const paymentClient={async createPreference(){preferences++;if(preferenceError)throw preferenceError;return{id:'test-preference',sandbox_init_point:'https://sandbox.mercadopago.com.br/checkout/v1/redirect?pref_id=test-preference'};}};
  const paymentConfig={ready,token:'test-token',webhookSecret:'test-secret',baseUrl:'https://arena.example',mode:'test'};
- const {server,db}=createApp({dataDir,paymentClient,paymentConfig});
+ const {server,db}=createApp({dataDir,paymentClient,paymentConfig,receiptReader,keepReceiptAlive,notificationFetch});
  server.listen(0,'127.0.0.1');await once(server,'listening');
  t.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();rmSync(dataDir,{recursive:true,force:true});});
  let cookie='';
@@ -36,7 +38,7 @@ async function fixture(t,{ready=false,preferenceError}={}){
  async function settings(){const r=await request('/api/pix/settings',{key:'pix@arena.example',receiver:'Arena Teste'},{method:'PUT'});assert.equal(r.status,200);return r;}
  async function link(id){const r=await request(`/api/bookings/${id}/pix-link`,{});assert.equal(r.status,200);assert.match(r.data.path,/^\/pix#[a-f0-9]{64}$/);return{...r.data,token:r.data.path.split('#')[1]};}
  const bookingId=await reserve();
- return{db,request,bookingId,reserve,settings,link,stats:()=>({preferences})};
+ return{db,dataDir,request,bookingId,reserve,settings,link,stats:()=>({preferences})};
 }
 
 test('Pix: configurações administrativas, link privado e dados públicos mínimos',async t=>{
@@ -138,6 +140,138 @@ test('Pix: comprovantes antigos preservam a leitura original e exigem conferênc
   assert.equal(approved.data.amount_cents,amount);
   assert.equal(approved.data.match_status,match);
   assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(bookingId).paid,1);
+ }
+});
+
+test('Pix: OCR compara centavos e conserva o pagamento pendente até a conferência bancária',async t=>{
+ const reads=[],messages=[];
+ const cases=[
+  {label:'exato',amount:18000,match:'exact'},
+  {label:'diferente',amount:18001,match:'different'},
+  {label:'ilegível',amount:null,match:'unreadable'},
+  {label:'falha',amount:null,match:'unreadable'}
+ ];
+ const f=await fixture(t,{
+  receiptReader:async(...args)=>{
+   const {label,amount}=cases[reads.length];
+   const row=f.db.prepare(`SELECT b.paid,r.status,r.match_status,r.content
+    FROM pix_receipts r JOIN bookings b ON b.id=r.booking_id ORDER BY r.id DESC LIMIT 1`).get();
+   reads.push({args,row,inTransaction:f.db.isTransaction});
+   if(label==='falha')throw Error('diagnóstico interno de leitura');
+   return amount;
+  },
+  notificationFetch:async(_url,options)=>{
+   messages.push(JSON.parse(options.body));
+   return Response.json({message:'success'});
+  }
+ });
+ await f.settings();
+ const bookingIds=[f.bookingId];
+ for(let index=1;index<cases.length;index++)bookingIds.push(await f.reserve());
+ const alerts=await f.request('/api/notifications/config',{
+  enabled:true,base_url:'https://evolution.example',api_key:'pix-test-key',arena_number:'5511998877665',country_code:'55'
+ },{method:'PUT'});
+ assert.equal(alerts.status,200);
+ let approvedId;
+ for(const [index,{label,amount,match}] of cases.entries()){
+  const bookingId=bookingIds[index];
+  const {token}=await f.link(bookingId);
+  const path=`/api/pix/payments/${token}`;
+  const upload=file(label);
+  const response=await f.request(path+'/receipt',{
+   ...upload,amount_cents:18000,match_status:'exact',status:'approved',paid:true
+  },{auth:false});
+  assert.equal(response.status,201);
+  const receipt=response.data;
+  assert.equal(receipt.amount_cents,amount);
+  assert.equal(receipt.match_status,match);
+  assert.equal(receipt.status,'pending');
+  assert.doesNotMatch(JSON.stringify(receipt),/diagnóstico interno/);
+  assert.equal(f.db.prepare('SELECT paid FROM bookings WHERE id=?').get(bookingId).paid,0);
+  assert.deepEqual(messages,[]);
+  const pending=(await f.request(path,undefined,{auth:false})).data;
+  assert.equal(pending.paid,false);
+  assert.equal(pending.receipt.match_status,match);
+  const original=Buffer.from(upload.content_base64,'base64');
+  const {args,row,inTransaction}=reads[index];
+  assert.deepEqual([Buffer.from(args[0]),args[1]],[original,'image/png']);
+  assert.equal(args.length,2,'O preço não é passado ao leitor');
+  assert.deepEqual(Buffer.from(row.content),original);
+  assert.equal(row.match_status,'processing');
+  assert.equal(row.status,'pending');
+  assert.equal(row.paid,0);
+  assert.equal(inTransaction,false);
+  if(index===0)approvedId=receipt.id;
+ }
+ const review=`/api/receipts/${approvedId}/review`;
+ assert.equal((await f.request(review,{decision:'approve',confirmed_amount_cents:18000})).status,400);
+ assert.deepEqual(messages,[]);
+ const completed=await f.request(review,{decision:'approve',confirmed_received:true,confirmed_amount_cents:18000});
+ assert.equal(completed.status,200);
+ assert.equal(completed.data.match_status,'exact');
+ assert.equal(completed.data.status,'approved');
+ assert.equal(messages.length,1);
+ assert.equal(messages[0].number,'5511999887766');
+ assert.match(messages[0].text,/Reserva confirmada/);
+});
+
+test('Pix: leitura em segundo plano retoma uma tarefa interrompida sem sobrescrever uma conclusão',async t=>{
+ const releases=[],pendingTasks=[];
+ const f=await fixture(t,{
+  receiptReader:()=>new Promise(resolve=>releases.push(resolve)),
+  keepReceiptAlive:task=>pendingTasks.push(task)
+ });
+ await f.settings();
+ const {token}=await f.link(f.bookingId);
+ const original=file('segundo plano');
+ let recoveredDb;
+ try{
+  const submitted=await f.request(`/api/pix/payments/${token}/receipt`,original,{auth:false});
+  assert.equal(submitted.status,201);
+  assert.equal(submitted.data.match_status,'processing');
+  assert.equal(submitted.data.status,'pending');
+  assert.equal(pendingTasks.length,1);
+  assert.equal(releases.length,1);
+  const {id}=submitted.data;
+  // A fresh application may recover the lease left by the interrupted worker.
+  const received=[];
+  recoveredDb=new DatabaseSync(`${f.dataDir}/arena.sqlite`);
+  const recovered=createApplication({
+   db:recoveredDb,receiptReader:async(bytes,mime)=>{
+    received.push([Buffer.from(bytes),mime]);
+    return 17000;
+   }
+  });
+  await recovered.processReceiptReads();
+  assert.deepEqual(received,[],'Não executa outra leitura durante uma concessão ativa');
+  f.db.prepare('UPDATE pix_receipt_reads SET lease_until=0 WHERE receipt_id=?').run(id);
+  await Promise.all([recovered.processReceiptReads(),recovered.processReceiptReads()]);
+  assert.deepEqual(received,[[Buffer.from(original.content_base64,'base64'),'image/png']]);
+  releases[0](18000);
+  await pendingTasks[0];
+  const latest=(await f.request(`/api/pix/payments/${token}`,undefined,{auth:false})).data;
+  assert.equal(latest.paid,false);
+  assert.equal(latest.receipt.match_status,'different');
+  assert.equal(latest.receipt.amount_cents,17000);
+
+  const secondId=await f.reserve();
+  const secondLink=await f.link(secondId);
+  const secondUpload=await f.request(`/api/pix/payments/${secondLink.token}/receipt`,file('revisão durante leitura'),{auth:false});
+  assert.equal(secondUpload.status,201);
+  assert.equal(secondUpload.data.match_status,'processing');
+  const rejectedReceipt=await f.request(`/api/receipts/${secondUpload.data.id}/review`,{decision:'reject',note:'Crédito não localizado'});
+  assert.equal(rejectedReceipt.status,200);
+  assert.equal(rejectedReceipt.data.match_status,'manual');
+  releases[1](18000);
+  await pendingTasks[1];
+  const [reviewed]=(await f.request(`/api/bookings/${secondId}/receipts`)).data;
+  assert.equal(reviewed.status,'rejected');
+  assert.equal(reviewed.match_status,'manual');
+  assert.equal(reviewed.amount_cents,null);
+ }finally{
+  for(const release of releases)release(null);
+  await Promise.allSettled(pendingTasks);
+  recoveredDb?.close();
  }
 });
 

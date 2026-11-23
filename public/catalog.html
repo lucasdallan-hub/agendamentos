@@ -11,4 +11,14 @@
   <button id="catalog-misticpay-submit" class="primary">Gerar código Pix</button>
  </form>
 </dialog>
+<dialog id="catalog-split-modal" aria-labelledby="catalog-split-title">
+ <form id="catalog-split-form">
+  <div class="modal-heading"><h2 id="catalog-split-title">Dividir com amigos</h2><button type="button" id="catalog-split-close" class="icon-button" aria-label="Fechar">×</button></div>
+  <label>Quantidade de pessoas<input id="catalog-split-count" type="number" min="2" step="1" inputmode="numeric" aria-describedby="catalog-split-preview" required></label>
+  <p>Inclua você na quantidade se também for pagar uma cota.</p>
+  <p id="catalog-split-preview" class="catalog-split-preview"></p>
+  <p id="catalog-split-error" role="alert"></p>
+  <button id="catalog-split-submit" class="primary">Criar links das cotas</button>
+ </form>
+</dialog>
 </body></html>

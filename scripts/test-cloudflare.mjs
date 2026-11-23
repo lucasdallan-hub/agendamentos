@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const directory=await mkdtemp(path.join(os.tmpdir(),'arena-cloudflare-test-'));
-console.log('Cloudflare smoke: production Worker, SQLite and manual receipt review');
+console.log('Cloudflare smoke: production Worker, SQLite, receipt OCR and split Pix');
 const password='admin';
 const misticpayTestKey=` \r\n${randomBytes(32).toString('hex')}\n`;
 const configFile=path.join(directory,'wrangler.json');
@@ -66,6 +66,16 @@ async function api(route,body,{auth=true,headers={},method}={}){
  const data=response.headers.get('content-type')?.includes('application/json')?await response.json():Buffer.from(await response.arrayBuffer());
  return {status:response.status,headers:response.headers,data};
 }
+async function readReceiptResult(token){
+ const deadline=Date.now()+25_000;
+ while(Date.now()<deadline){
+  const result=await api(`/api/pix/payments/${token}`,undefined,{auth:false});
+  assert.equal(result.status,200,JSON.stringify(result.data));
+  if(result.data.receipt?.match_status!=='processing')return result.data;
+  await delay(300);
+ }
+ throw Error('A leitura do comprovante não terminou.\n'+logs());
+}
 
 try{
  await start({bootstrap:false});
@@ -113,10 +123,15 @@ try{
  const settings=await api('/api/pix/settings',{key:'pix@arena.example',receiver:'Arena de teste'},{method:'PUT'});assert.equal(settings.status,200,JSON.stringify(settings.data));
  const link=await api(`/api/bookings/${id}/pix-link`,{});assert.equal(link.status,200,JSON.stringify(link.data));
  const token=link.data.path.split('#')[1];
- const payer=await api(`/api/pix/payments/${token}`,undefined,{auth:false});assert.equal(payer.status,200);assert.equal(payer.data.total,18000);assert.equal(payer.data.phone,undefined);assert.equal(payer.data.notes,undefined);assert.equal(payer.data.ocr_ready,undefined);
+ const payer=await api(`/api/pix/payments/${token}`,undefined,{auth:false});assert.equal(payer.status,200);assert.equal(payer.data.total,18000);assert.equal(payer.data.phone,undefined);assert.equal(payer.data.notes,undefined);assert.equal(payer.data.ocr_ready,true);
  assert.equal((await api(`/api/bookings/${id}/checkout`,{})).status,409);
  passed('private Pix link, payer privacy and payment-provider exclusivity');
- const proof=await api(`/api/pix/payments/${token}/receipt`,{filename:'pix-receipt.png',content_base64:fixture.toString('base64')},{auth:false});assert.equal(proof.status,201,JSON.stringify(proof.data)+'\n'+logs());assert.equal(proof.data.amount_cents,null);assert.equal(proof.data.match_status,'manual');assert.equal(proof.data.status,'pending');
+ const proof=await api(`/api/pix/payments/${token}/receipt`,{filename:'pix-receipt.png',content_base64:fixture.toString('base64')},{auth:false});
+ assert.equal(proof.status,201,JSON.stringify(proof.data)+'\n'+logs());assert.equal(proof.data.status,'pending');
+ const analyzed=await readReceiptResult(token);
+ assert.equal(analyzed.receipt.amount_cents,18000,JSON.stringify(analyzed.receipt)+'\n'+logs());
+ assert.equal(analyzed.receipt.match_status,'exact');
+ assert.equal(analyzed.paid,false);
  assert.equal((await api('/api/bookings')).data.find(b=>b.id===id).paid,0);
  const receiptId=proof.data.id;
  assert.equal((await api(`/api/receipts/${receiptId}/file`,undefined,{auth:false})).status,401);
@@ -126,7 +141,18 @@ try{
  assert.equal((await api(`/api/receipts/${receiptId}/review`,{decision:'approve',confirmed_received:true,confirmed_amount_cents:1})).status,409);
  assert.equal((await api(`/api/receipts/${receiptId}/review`,{decision:'approve',confirmed_received:true,confirmed_amount_cents:18000})).status,200);
  assert.equal((await api(`/api/pix/payments/${token}`,undefined,{auth:false})).data.paid,true);
- passed('manual review, durable receipt BLOB, protected original and explicit approval');
+ passed('offline OCR recognizes a matching PNG amount and bank credit still requires approval');
+ const scannedReservation=await api('/api/bookings',{...reservation,date:'2026-12-03',end:'19:00'});assert.equal(scannedReservation.status,201);
+ const scannedLink=await api(`/api/bookings/${scannedReservation.data.id}/pix-link`,{});assert.equal(scannedLink.status,200);
+ const scannedToken=scannedLink.data.path.split('#')[1];
+ const scannedFixture=await readFile(path.join(root,'test/fixtures/pix-scanned.pdf'));
+ const scan=await api(`/api/pix/payments/${scannedToken}/receipt`,{filename:'pix-scanned.pdf',content_base64:scannedFixture.toString('base64')},{auth:false});
+ assert.equal(scan.status,201,JSON.stringify(scan.data)+'\n'+logs());
+ const analyzedScan=await readReceiptResult(scannedToken);
+ assert.equal(analyzedScan.receipt.amount_cents,18000,JSON.stringify(analyzedScan.receipt)+'\n'+logs());
+ assert.equal(analyzedScan.receipt.match_status,'different');
+ assert.equal(analyzedScan.paid,false);
+ passed('offline PDF rasterization and OCR detect the exact difference without changing payment state');
  const largeReservation=await api('/api/bookings',{...reservation,date:'2026-12-02'});assert.equal(largeReservation.status,201);
  const largeLink=await api(`/api/bookings/${largeReservation.data.id}/pix-link`,{});assert.equal(largeLink.status,200);
  const largeToken=largeLink.data.path.split('#')[1];
@@ -134,6 +160,7 @@ try{
  const largeProof=await api(`/api/pix/payments/${largeToken}/receipt`,{filename:'large-pix-receipt.png',content_base64:large.toString('base64')},{auth:false});
  assert.equal(largeProof.status,201,JSON.stringify(largeProof.data)+'\n'+logs());assert.equal(largeProof.data.amount_cents,null);
  const largeOriginal=await api(`/api/receipts/${largeProof.data.id}/file`);assert.equal(largeOriginal.status,200);assert.deepEqual(largeOriginal.data,large);
+ await readReceiptResult(largeToken);
  passed('advertised 5 MiB receipt limit supported by Durable SQLite BLOB storage');
  const publicDate=new Date(Date.now()+4*86400000).toISOString().slice(0,10);
  const onlineCatalog=await api(`/api/public/catalog?date=${publicDate}`,undefined,{auth:false});
@@ -141,6 +168,15 @@ try{
  const publicReservation=await api('/api/public/bookings',{court_id:court,date:publicDate,start:'10:00',end:'11:00',customer:'Cliente público',phone:'11999887766',request_key:randomBytes(32).toString('hex')},{auth:false});
  assert.equal(publicReservation.status,201,JSON.stringify(publicReservation.data));
  passed('public catalog and automatic booking run without administrator authentication');
+ const splitRoute='/api/public/bookings/'+publicReservation.data.token+'/split';
+ const split=await api(splitRoute,{count:21},{auth:false});
+ assert.equal(split.status,200,JSON.stringify(split.data));
+ assert.deepEqual([split.data.total,split.data.count,split.data.paid_count,split.data.shares.length],[12000,21,0,20]);
+ const lastShare=(await api(splitRoute+'?page=2',undefined,{auth:false})).data.shares[0];
+ const share=await api('/api/public/split/'+lastShare.path.split('#cota:')[1],undefined,{auth:false});
+ assert.deepEqual([share.status,share.data.index,share.data.amount_cents,share.data.status],[200,21,571,'uncreated']);
+ assert.equal((await api(splitRoute,undefined,{auth:false,method:'DELETE'})).status,200);
+ passed('public split payment in Durable SQLite issues private links without charging');
  assert.equal((await api('/api/notifications/config',undefined,{auth:false})).status,401);
  const notificationConfig={enabled:false,base_url:'https://evolution.example.com',api_key:'fake-smoke-instance-key',target:'arena',arena_number:'(21) 98888-7777',country_code:'55'};
  assert.equal((await api('/api/notifications/check',{})).status,409);

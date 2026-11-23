@@ -32,7 +32,9 @@ npm run deploy:cloudflare
 
 ## Comprovantes Pix
 
-O cliente pode enviar um arquivo JPG, PNG ou PDF de até 5 MB. Na reserva, abra **Ver comprovante**, confira o crédito na conta e informe o valor recebido. A aprovação exige valor igual ao total da reserva e confirmação de recebimento. O arquivo original e a decisão ficam no histórico da arena.
+O cliente pode enviar um arquivo JPG, PNG ou PDF de até 5 MB. A leitura automática compara o valor identificado com o total da reserva. Na reserva, abra **Ver comprovante** para consultar o valor lido e o arquivo original, confira o crédito na conta e informe o valor recebido. A aprovação exige valor igual ao total e confirmação de recebimento. Comprovantes ilegíveis ou ambíguos ficam disponíveis para revisão. O arquivo original e a decisão ficam no histórico da arena.
+
+O Worker executa a leitura de imagens e PDFs dentro da própria arena com Tesseract e PDFium em WebAssembly. A leitura usa as primeiras páginas do PDF e deixa arquivos de difícil leitura para revisão. No servidor Node, a leitura local fica disponível com Tesseract e, para PDF, Poppler instalados.
 
 ## Pix via MisticPay
 
