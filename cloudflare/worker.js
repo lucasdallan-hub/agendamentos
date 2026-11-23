@@ -114,7 +114,8 @@ const publicFiles=new Map([
  ['/catalogo','/catalog.html'],['/catalog.js','/catalog.js'],['/','/index.html'],['/pix','/pix.html'],['/pagamento','/payment.html'],
  ['/branding.js','/branding.js'],['/app.js','/app.js'],['/pdv.js','/pdv.js'],['/pix.js','/pix.js'],['/style.css','/style.css'],
  ['/pagar-comanda','/pagar-comanda.html'],['/pagar-comanda.js','/pagar-comanda.js'],['/pagar-comanda.css','/pagar-comanda.css'],
- ['/refresh.css','/refresh.css'],['/refresh-public.css','/refresh-public.css'],['/arena-hero.webp','/arena-hero.webp']
+ ['/refresh.css','/refresh.css'],['/refresh-public.css','/refresh-public.css'],['/arena-hero.webp','/arena-hero.webp'],
+ ['/catalogo-hero.webp','/catalogo-hero.webp']
 ]);
 
 export default {

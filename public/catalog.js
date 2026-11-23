@@ -3,7 +3,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const money=n=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(n/100);
 const dateLabel=date=>new Date(date+'T12:00:00Z').toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'});
 const key=()=>Array.from(crypto.getRandomValues(new Uint8Array(32)),b=>b.toString(16).padStart(2,'0')).join('');
-let catalog,selection,requestKey,reservationView,misticpayBusy=false;
+let catalog,searchRequest,selection,requestKey,reservationView,misticpayBusy=false;
 let paymentCheck,paymentTimer,pageSuspended=false;
 let splitCheck,splitTimer;
 const splitTokenPattern=/^[a-f0-9]{32}\.[1-9]\d{0,15}\.[a-f0-9]{64}$/;
@@ -51,15 +51,51 @@ function changeCourtPhoto(button){
  image.hidden=false;
  gallery.querySelector('.catalog-photo-count').textContent=`${index+1} de ${photos.length}`;
 }
+function renderCourt(court){
+ const slots=court.slots.map((slot,index)=>`<button type="button" class="catalog-slot" data-court="${esc(court.id)}" data-slot="${index}" aria-label="Reservar ${esc(court.name)}, ${esc(slot.start)} a ${esc(slot.end)}, ${esc(money(slot.total))}">
+  <strong>${esc(slot.start)} – ${esc(slot.end)}</strong><span>${esc(money(slot.total))}</span>
+ </button>`);
+ return `<article class="catalog-court">
+  ${courtVisual(court)}
+  <div class="court-info">
+   <div class="catalog-court-heading">
+    <div><span class="catalog-court-type">${esc(court.type)}</span><h3>${esc(court.name)}</h3></div>
+    <div class="catalog-court-rate"><strong>${money(court.price)}</strong><small>por hora</small></div>
+   </div>
+   ${slots.length?`<div class="catalog-slots">${slots.slice(0,6).join('')}</div>`
+    :'<p class="catalog-empty-slots">Sem horários livres nesta data e duração. Tente outra data.</p>'}
+   ${slots.length>6?`<details class="catalog-extra-slots">
+    <summary>Ver mais ${slots.length-6} ${slots.length===7?'horário':'horários'}</summary>
+    <div class="catalog-slots">${slots.slice(6).join('')}</div>
+   </details>`:''}
+  </div>
+ </article>`;
+}
 async function search(){
+ searchRequest?.abort();
+ const request=new AbortController();
+ searchRequest=request;
  $('#catalog-error').textContent='';$('#catalog-message').textContent='Buscando quadras e horários…';$('#catalog-courts').replaceChildren();
  try{
-  catalog=await api(`catalog?date=${encodeURIComponent($('#catalog-date').value)}&duration=${$('#catalog-duration').value}`);
-  $('#catalog-message').textContent=catalog.courts.length?'Escolha um horário disponível. O valor exibido corresponde ao tempo de jogo selecionado.':'Nenhuma quadra disponível para agendamento online.';
-  $('#catalog-courts').innerHTML=catalog.courts.map(c=>`<article class="catalog-court">${courtVisual(c)}<div class="court-info"><span class="eyebrow">${esc(c.type)}</span><h2>${esc(c.name)}</h2><p>${money(c.price)} / hora</p><div class="catalog-slots">${c.slots.length?c.slots.map((s,i)=>`<button class="catalog-slot" data-court="${c.id}" data-slot="${i}"><strong>${s.start} – ${s.end}</strong><span>${money(s.total)}</span></button>`).join(''):'<p>Sem horários livres nesta data e duração. Tente outra data.</p>'}</div></div></article>`).join('');
- }catch(error){$('#catalog-message').textContent='';$('#catalog-error').textContent=error.message;}
+  const result=await api(`catalog?date=${encodeURIComponent($('#catalog-date').value)}&duration=${$('#catalog-duration').value}`,undefined,request.signal);
+  if(request.signal.aborted)return;
+  catalog=result;
+  const count=catalog.courts.reduce((total,court)=>total+court.slots.length,0);
+  $('#catalog-message').textContent=catalog.courts.length
+   ? `${dateLabel(catalog.date)} · ${count} ${count===1?'horário disponível':'horários disponíveis'}`
+   : 'Nenhuma quadra disponível para agendamento online.';
+  $('#catalog-courts').innerHTML=catalog.courts.map(renderCourt).join('');
+ }catch(error){
+  if(request.signal.aborted)return;
+  $('#catalog-message').textContent='';
+  $('#catalog-error').textContent=error.message;
+ }
 }
 $('#catalog-filter').onsubmit=e=>{e.preventDefault();search();};
+$('#catalog-hero-cta').onclick=()=>{
+ $('#catalog-date').focus({preventScroll:true});
+ $('.catalog-search-panel').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+};
 $('#catalog-courts').addEventListener('error',e=>{
  if(e.target.matches('.catalog-court-photo'))e.target.hidden=true;
 },true);
@@ -656,6 +692,7 @@ function showCatalogView(){
  if(misticpayDialog.open)misticpayDialog.close();
  if(splitDialog.open)splitDialog.close();
  const token=currentToken();
+ if(token)searchRequest?.abort();
  $('.catalog-hero').hidden=Boolean(token);
  if(token.startsWith('cota:'))showSplitShare(token);
  else if(token)showConfirmation(token);

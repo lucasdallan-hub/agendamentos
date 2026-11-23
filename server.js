@@ -13,6 +13,7 @@ const files={'/sidebar.js':['sidebar.js','text/javascript; charset=utf-8'],'/the
  '/pagar-comanda.css':['pagar-comanda.css','text/css; charset=utf-8'],
  '/refresh.css':['refresh.css','text/css; charset=utf-8'],
  '/refresh-public.css':['refresh-public.css','text/css; charset=utf-8'],
+ '/catalogo-hero.webp':['catalogo-hero.webp','image/webp'],
  '/arena-hero.webp':['arena-hero.webp','image/webp']};
 function serveStatic(req,res,url){
  const file=files[url.pathname];

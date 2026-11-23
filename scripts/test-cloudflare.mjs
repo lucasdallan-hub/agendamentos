@@ -87,7 +87,7 @@ try{
  passed('default admin login works without a bootstrap secret and rejects other usernames');
  await stop();
  await start({bootstrap:true});
- for(const route of ['/','/catalogo','/pix','/pagamento','/pagar-comanda','/pagar-comanda.js','/pagar-comanda.css','/theme.js','/sidebar.js','/app.js','/pdv.js','/pix.js','/style.css','/refresh.css','/refresh-public.css','/arena-hero.webp']){
+ for(const route of ['/','/catalogo','/pix','/pagamento','/pagar-comanda','/pagar-comanda.js','/pagar-comanda.css','/theme.js','/sidebar.js','/app.js','/pdv.js','/pix.js','/style.css','/refresh.css','/refresh-public.css','/arena-hero.webp','/catalogo-hero.webp']){
   const response=await api(route);assert.equal(response.status,200,`Asset ${route}: ${response.status}`);assert.equal(response.headers.get('x-content-type-options'),'nosniff');
  }
  assert.equal((await api('/missing')).status,404);
