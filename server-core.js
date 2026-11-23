@@ -9,7 +9,8 @@ import {publicCatalog} from './public-catalog.js';
 import {createCourtPhotos,courtPhotoBodyLimit} from './court-photos.js';
 import {financialSettings} from './financial-settings.js';
 import {createMisticPay} from './misticpay.js';
-import {createPdv} from './pdv.js';
+import {createPdv,pdvOnlyCourtId} from './pdv.js';
+import {createPdvReceipt} from './pdv-receipt.js';
 import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
 export function createApplication({db,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch,misticpayFetch=fetch,misticpayEncryptionKey,misticpayManagedEncryptionKey,scheduleMisticpayConfirmation,keepNotificationAlive,receiptReader,keepReceiptAlive=keepNotificationAlive}={}) {
@@ -43,6 +44,7 @@ const pdv=createPdv(db);
 const pdvPix=misticpay.createPdvPix(pdv);
 const notifications=bookingNotifications(db,{fetchImpl:notificationFetch});
 const pdvLinkDeliveries=new Set();
+const pdvReceiptDeliveries=new Set();
 const pdvMoney=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'});
 const sessions = sessionStore;
 const attempts = attemptStore;
@@ -56,7 +58,7 @@ function courtPrice(value){
 }
 const minutes = t => /^([01]\d|2[0-3]):[0-5]\d$/.test(t) ? Number(t.slice(0,2))*60+Number(t.slice(3)) : fail('Horário inválido.');
 function booking(body) {
- const court = db.prepare('SELECT * FROM courts WHERE id=? AND active=1').get(Number(body.court_id));
+ const court = db.prepare('SELECT * FROM courts WHERE id=? AND active=1 AND id<>?').get(Number(body.court_id),pdvOnlyCourtId);
  if(!court) fail('Selecione uma quadra ativa.');
  const customer=str(body.customer), phone=str(body.phone,30), date=str(body.date,10), start=str(body.start,5), end=str(body.end,5);
  if(!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date+'T12:00:00Z').toISOString().slice(0,10)!==date) fail('Data inválida.');
@@ -193,8 +195,32 @@ const server=http.createServer(async(req,res)=>{
    return json(res,200,{ok:true});
   }
   if(!authenticated) fail('Entre como administrador.',401);
+  const bookingRoute=/^\/api\/bookings\/(\d+)(?:\/|$)/.exec(url.pathname);
+  if(bookingRoute&&db.prepare("SELECT 1 FROM bookings WHERE id=? AND status='pdv'").get(Number(bookingRoute[1]))){
+   fail('Agendamento não encontrado.',404);
+  }
+  const privateCourt=/^\/api\/courts\/(\d+)(?:\/|$)/.exec(url.pathname);
+  if(privateCourt&&Number(privateCourt[1])===pdvOnlyCourtId)fail('Quadra não encontrada.',404);
   if(req.method==='GET'&&url.pathname==='/api/pdv')return json(res,200,pdv.daily(url.searchParams.get('date')??undefined));
+  if(req.method==='POST'&&url.pathname==='/api/pdv/tabs')return json(res,201,pdv.openStandalone(body));
   if(req.method==='POST'&&url.pathname==='/api/pdv/tabs/archive')return json(res,200,pdv.archiveDay(body.date));
+  const pdvReceipt=/^\/api\/pdv\/tabs\/(\d+)(?:\/participants\/(\d+))?\/receipt\/send$/.exec(url.pathname);
+  if(req.method==='POST'&&pdvReceipt){
+   const bookingId=Number(pdvReceipt[1]),participantId=pdvReceipt[2]===undefined?undefined:Number(pdvReceipt[2]);
+   const deliveryKey=`${bookingId}/${participantId??''}`;
+   if(pdvReceiptDeliveries.has(deliveryKey))fail('Já existe um envio de comprovante em andamento.',409);
+   const receipt=pdv.receipt(bookingId,participantId);
+   const send=notifications.preparePdvReceiptDelivery(receipt.phone);
+   const suffix=participantId===undefined?'':`-subcomanda-${participantId}`;
+   pdvReceiptDeliveries.add(deliveryKey);
+   try{
+    const bytes=await createPdvReceipt(receipt,branding(db).name);
+    await send(bytes,`comprovante-comanda-${bookingId}${suffix}.pdf`);
+   }finally{
+    pdvReceiptDeliveries.delete(deliveryKey);
+   }
+   return json(res,200,pdv.tab(bookingId));
+  }
   if(req.method==='POST'&&url.pathname==='/api/pdv/products')return json(res,201,pdv.createProduct(body));
   const pdvProduct=/^\/api\/pdv\/products\/(\d+)$/.exec(url.pathname);
   if(req.method==='PATCH'&&pdvProduct)return json(res,200,pdv.updateProduct(Number(pdvProduct[1]),body));
@@ -219,7 +245,7 @@ const server=http.createServer(async(req,res)=>{
      await send(`Olá, ${person.name}! 👋
 
 🧾 *Comanda #${bookingId}*
-📍 *Quadra:* ${tab.court_name}
+📍 ${tab.standalone?'*Comanda avulsa*':`*Quadra:* ${tab.court_name}`}
 💰 *Sua parte:* ${amount}
 
 📲 *Pague por Pix pelo link abaixo*
@@ -327,7 +353,7 @@ ${paymentUrl}
   const adminPhoto=/^\/api\/courts\/(\d+)\/photos\/([a-f0-9]{32})$/.exec(url.pathname);
   if(adminPhoto&&req.method==='GET')return sendCourtPhoto(res,adminPhoto,false);
   if(req.method==='GET' && url.pathname==='/api/courts'){
-   const courts=db.prepare('SELECT * FROM courts ORDER BY id').all();
+   const courts=db.prepare('SELECT * FROM courts WHERE id<>? ORDER BY id').all(pdvOnlyCourtId);
    return json(res,200,courts.map(court=>({...court,photos:courtPhotos.list(court.id)})));
   }
   if(req.method==='POST' && url.pathname==='/api/courts') {
@@ -369,7 +395,7 @@ ${paymentUrl}
    LEFT JOIN misticpay_orders m ON m.booking_id=b.id
    LEFT JOIN misticpay_split_plans s ON s.booking_id=b.id
    LEFT JOIN pix_receipts r ON r.id=(SELECT id FROM pix_receipts WHERE booking_id=b.id ORDER BY id DESC LIMIT 1)
-   ORDER BY date,start,b.id`).all());
+   WHERE b.status<>'pdv' ORDER BY date,start,b.id`).all());
   }
   if(req.method==='POST' && url.pathname==='/api/bookings'){
    const result=transaction(db,()=>booking(body));

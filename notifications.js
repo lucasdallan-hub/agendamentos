@@ -302,21 +302,24 @@ ${arenaName} · Reserva #${bookingId}
 
 📋 Acompanhe a reserva e o pagamento no painel.`;
  }
- function sendText(id,c,number,text,messageId){
+ function sendMessage(id,c,path,body){
   const provider=providerFor(id);
+  return fetchImpl(c.base_url+path,{method:'POST',headers:{'Content-Type':'application/json',[provider.header]:c.api_key},body:JSON.stringify(body),redirect:'manual',signal:AbortSignal.timeout(8000)});
+ }
+ function sendText(id,c,number,text,messageId){
   const body=id==='wuzapi'
    ? {Phone:number,Body:text,Id:messageId}
    : {number,text,id:messageId,formatJid:true};
-  return fetchImpl(c.base_url+provider.send,{method:'POST',headers:{'Content-Type':'application/json',[provider.header]:c.api_key},body:JSON.stringify(body),redirect:'manual',signal:AbortSignal.timeout(8000)});
+  return sendMessage(id,c,providerFor(id).send,body);
  }
- function preparePdvLinkDelivery(number){
+ function preparePdvDelivery(number){
   const config=stored('evolution');
   if(!config.base_url||!config.api_key)fail('Configure a conexão da Evolution Go em Notificações WhatsApp.',409);
   if(!/^[1-9]\d{7,14}$/.test(number))fail('Informe um WhatsApp válido para a pessoa.');
-  return async text=>{
+  return async (path,body)=>{
    let response;
    try{
-    response=await sendText('evolution',config,number,text,randomBytes(16).toString('hex'));
+    response=await sendMessage('evolution',config,path,{...body,number,id:randomBytes(16).toString('hex'),formatJid:true});
    }catch{
     fail('A Evolution Go não confirmou o envio. Confira o WhatsApp antes de tentar novamente.',502);
    }
@@ -324,6 +327,17 @@ ${arenaName} · Reserva #${bookingId}
    const result=await response.json().catch(()=>null);
    if(result?.message!=='success')fail('A Evolution Go não confirmou o envio. Confira o WhatsApp antes de tentar novamente.',502);
   };
+ }
+ function preparePdvLinkDelivery(number){
+  const send=preparePdvDelivery(number);
+  return text=>send(PROVIDERS.evolution.send,{text});
+ }
+ function preparePdvReceiptDelivery(number){
+  const send=preparePdvDelivery(number);
+  return (bytes,filename)=>send('/send/media',{
+   type:'document',filename,caption:'Comprovante de pagamento da sua comanda.',
+   url:Buffer.from(bytes).toString('base64')
+  });
  }
  async function deliver(event){
   try{
@@ -556,5 +570,5 @@ ${arenaName} · Reserva #${bookingId}
   // not a guarantee of validity; the user may request a fresh code at any time.
   return {...session,qr_code:code,expires_at:new Date(Date.now()+20000).toISOString()};
  }
- return {summary,save,enqueue,dispatch,enqueuePaidClient,dispatchPaidClient,enqueueDepositClient,dispatchDepositClient,events,recoverPending,processBookingAlerts,check,connect,syncWebhook,preparePdvLinkDelivery};
+ return {summary,save,enqueue,dispatch,enqueuePaidClient,dispatchPaidClient,enqueueDepositClient,dispatchDepositClient,events,recoverPending,processBookingAlerts,check,connect,syncWebhook,preparePdvLinkDelivery,preparePdvReceiptDelivery};
 }

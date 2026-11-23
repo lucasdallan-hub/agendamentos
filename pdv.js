@@ -9,6 +9,7 @@ const requestKeyPattern=/^(?:[a-f0-9]{32,64}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}
 const dayMilliseconds=86_400_000;
 const activePix="(state IN ('creating','pending','unknown','review') OR (state='ready' AND expires_at>?))";
 const pixMethod='MisticPay';
+export const pdvOnlyCourtId=0;
 
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 function selectedDay(value){
@@ -62,7 +63,7 @@ const selectTabs=`SELECT b.id booking_id,b.customer,c.name court_name,b.date,b.s
 
 function tabSummary({closed_at,...row}){
  const status=closed_at?'closed':row.booking_status==='cancelled'&&!row.quantity?'cancelled':'open';
- return {...row,booking_paid:!!row.booking_paid,booking_uses_deposit:!!row.booking_uses_deposit,status,
+ return {...row,standalone:row.booking_status==='pdv',booking_paid:!!row.booking_paid,booking_uses_deposit:!!row.booking_uses_deposit,status,
   consumption_balance_cents:closed_at?0:row.consumption_cents-row.participant_paid_cents,
   division_locked:row.participant_paid_cents>0};
 }
@@ -75,7 +76,7 @@ export function createPdv(db){
  );
  CREATE TABLE IF NOT EXISTS pdv_tabs(
   booking_id INTEGER PRIMARY KEY REFERENCES bookings(id),opened_at TEXT NOT NULL,
-  closed_at TEXT,paid_at TEXT,method TEXT,paid_cents INTEGER NOT NULL DEFAULT 0 CHECK(paid_cents>=0),archived_at TEXT
+  closed_at TEXT,paid_at TEXT,method TEXT,paid_cents INTEGER NOT NULL DEFAULT 0 CHECK(paid_cents>=0),archived_at TEXT,open_request_key TEXT
  );
  CREATE TABLE IF NOT EXISTS pdv_participants(
   id INTEGER PRIMARY KEY,booking_id INTEGER NOT NULL REFERENCES pdv_tabs(booking_id),
@@ -100,9 +101,11 @@ export function createPdv(db){
  CREATE INDEX IF NOT EXISTS pdv_tabs_payment_dates ON pdv_tabs(paid_at) WHERE paid_at IS NOT NULL;
  CREATE INDEX IF NOT EXISTS pdv_booking_payment_dates ON bookings(paid_at) WHERE paid=1;`);
  transaction(db,()=>{
-  if(!db.prepare('PRAGMA table_info(pdv_tabs)').all().some(column=>column.name==='archived_at')){
-   db.exec('ALTER TABLE pdv_tabs ADD COLUMN archived_at TEXT');
+  const tabColumns=new Set(db.prepare('PRAGMA table_info(pdv_tabs)').all().map(column=>column.name));
+  for(const column of ['archived_at','open_request_key']){
+   if(!tabColumns.has(column))db.exec(`ALTER TABLE pdv_tabs ADD COLUMN ${column} TEXT`);
   }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS pdv_tab_open_requests ON pdv_tabs(open_request_key) WHERE open_request_key IS NOT NULL');
   const columns=new Set(db.prepare('PRAGMA table_info(pdv_items)').all().map(column=>column.name));
   for(const column of ['participant_id','requested_participant_id']){
    if(!columns.has(column))db.exec(`ALTER TABLE pdv_items ADD COLUMN ${column} INTEGER REFERENCES pdv_participants(id)`);
@@ -110,6 +113,9 @@ export function createPdv(db){
  });
 
  const insertTab=db.prepare('INSERT INTO pdv_tabs(booking_id,opened_at) VALUES(?,?) ON CONFLICT(booking_id) DO NOTHING');
+ const openedByRequest=db.prepare(`SELECT b.id,b.customer,b.phone FROM pdv_tabs t
+  JOIN bookings b ON b.id=t.booking_id WHERE t.open_request_key=?`);
+ const bookingPhone=db.prepare('SELECT phone FROM bookings WHERE id=?');
  const lookupTab=db.prepare(`${selectTabs} WHERE b.id=? GROUP BY b.id`);
  const listTabs=db.prepare(`${selectTabs} WHERE b.date=? GROUP BY b.id ORDER BY b.start,c.name,b.id`);
  const archiveTabs=db.prepare(`INSERT INTO pdv_tabs(booking_id,opened_at,archived_at)
@@ -153,6 +159,28 @@ export function createPdv(db){
   insertTab.run(bookingId,new Date().toISOString());
  }
 
+ function openStandalone(body){
+  const customer=participantName(body.customer),phone=participantWhatsApp(body.phone);
+  const key=typeof body.request_key==='string'?body.request_key.toLowerCase():'';
+  if(!requestKeyPattern.test(key))fail('Atualize o PDV antes de abrir a comanda.');
+  return transaction(db,()=>{
+   const existing=openedByRequest.get(key);
+   if(existing){
+    if(existing.customer!==customer||existing.phone!==phone)fail('Esta abertura já foi usada para outra comanda.',409);
+    return tab(existing.id);
+   }
+   // Reserve a private parent row for the existing PDV and Pix foreign keys.
+   // Neither the inactive court nor the PDV-only row is available in the agenda.
+   db.prepare(`INSERT INTO courts(id,name,type,price,active) VALUES(?,'Comanda avulsa','PDV',1,0)
+    ON CONFLICT(id) DO NOTHING`).run(pdvOnlyCourtId);
+   const now=new Date();
+   const {lastInsertRowid:id}=db.prepare(`INSERT INTO bookings(court_id,customer,phone,date,start,end,total,status)
+    VALUES(?,?,?,?,'','',0,'pdv')`).run(pdvOnlyCourtId,customer,phone,dateFormatter.format(now));
+   db.prepare('INSERT INTO pdv_tabs(booking_id,opened_at,open_request_key) VALUES(?,?,?)').run(id,now.toISOString(),key);
+   return tab(id);
+  });
+ }
+
  function tab(bookingId){
   const row=lookupTab.get(bookingId);
   if(!row)fail('Comanda não encontrada.',404);
@@ -187,8 +215,10 @@ export function createPdv(db){
     const status=participant.paid_at||row.closed_at?'closed':'open';
     const payment_link=order?{path:'/pagar-comanda#'+order.token,status:order.state,amount_cents:order.amount_cents}:null;
     const pix_status=lastOrder?.state==='ready'&&!lastOrder.active_link?'expired':lastOrder?.state??null;
+    const receipt_available=!!(participant.paid_at&&participant.method&&participant.paid_cents>0&&
+     (participant.method!==pixMethod||pix_status==='approved'));
     return {...participant,individual_cents,shared_cents,amount_cents:order&&!participant.paid_at?order.amount_cents:individual_cents+shared_cents,status,
-     payment_link,pix_status,pix_pending:!!order?.active_link};
+     payment_link,pix_status,pix_pending:!!order?.active_link,receipt_available};
    })};
  }
 
@@ -218,6 +248,24 @@ export function createPdv(db){
   const {date}=selectedDay(value??'');
   const now=new Date().toISOString();
   return {archived:Number(archiveTabs.run(now,now,date).changes)};
+ }
+
+ function receipt(bookingId,participantId){
+  const current=tab(bookingId);
+  const person=participantId===undefined?null:current.participants.find(row=>row.id===participantId);
+  if(participantId!==undefined&&!person)fail('Participante não encontrado nesta comanda.',404);
+  const amount=person?person.paid_cents:current.general_paid_cents;
+  const payment=person??current;
+  const available=person?person.receipt_available:current.paid_at&&current.method&&amount>0;
+  if(!available){
+   fail('O comprovante fica disponível após a confirmação do pagamento.',409);
+  }
+  return {
+   bookingId,participantId,name:person?.name??current.customer,
+   phone:participantWhatsApp(person?.whatsapp??bookingPhone.get(bookingId).phone),
+   amount,method:payment.method,paidAt:payment.paid_at,
+   court:current.standalone?null:current.court_name
+  };
  }
 
  function getProduct(id){
@@ -469,6 +517,6 @@ export function createPdv(db){
   });
  }
 
- return {open,daily,archiveDay,tab,createProduct,updateProduct,addItem,updateItem,removeItem,close,
+ return {open,openStandalone,daily,archiveDay,tab,receipt,createProduct,updateProduct,addItem,updateItem,removeItem,close,
   addParticipant,updateParticipant,removeParticipant,payParticipant,preparePix,settlePix,reversePix};
 }

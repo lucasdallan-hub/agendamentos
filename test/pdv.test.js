@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {once} from 'node:events';
 import {DatabaseSync} from 'node:sqlite';
+import {PDFDocument} from 'pdf-lib';
 import {createApplication} from '../server-core.js';
 
 const today='2026-11-23';
@@ -16,12 +17,12 @@ const revenue=(courts=0,consumption=0,open=0)=>({
 });
 const status=(response,expected)=>assert.equal(response.status,expected,JSON.stringify(response.data));
 
-async function fixture(t){
+async function fixture(t,{notificationFetch}={}){
  // Nov 24 in UTC is still Nov 23 in São Paulo.
  t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-24T01:30:00Z')});
  const db=new DatabaseSync(':memory:');
  db.exec('PRAGMA foreign_keys=ON');
- const {server}=createApplication({db,paymentConfig:{ready:false,mode:'test'}});
+ const {server}=createApplication({db,notificationFetch,paymentConfig:{ready:false,mode:'test'}});
  server.listen(0,'127.0.0.1');
  await once(server,'listening');
  t.after(async()=>{await new Promise(resolve=>server.close(resolve));db.close();});
@@ -94,6 +95,72 @@ test('PDV: abre uma comanda por reserva e restringe o acesso ao administrador',a
   status(detail,200);
   assert.deepEqual(detail.data.items,[]);
  }
+});
+
+test('PDV: abre comandas avulsas fora da agenda e envia PDFs para o WhatsApp de quem pagou',async t=>{
+ const messages=[];
+ const {request,product,add}=await fixture(t,{notificationFetch:async(url,options)=>{
+  assert.equal(url,'https://evolution.example/send/media');
+  assert.equal(options.headers.apikey,'test-instance');
+  messages.push(JSON.parse(options.body));
+  return Response.json({message:'success'});
+ }});
+ status(await request('/api/notifications/config',{
+  enabled:false,base_url:'https://evolution.example',api_key:'test-instance'
+ },{method:'PUT'}),200);
+ const before=await request('/api/courts');
+ const catalogBefore=(await request('/api/public/catalog?date='+today,{auth:false})).data;
+ const opening={customer:'João Gonçalves',phone:'(62) 99999-1234',request_key:randomUUID()};
+ status(await request('/api/pdv/tabs',opening,{auth:false}),401);
+ status(await request('/api/pdv/tabs',{...opening,phone:'inválido'}),400);
+ const result=await request('/api/pdv/tabs',opening);
+ status(result,201);
+ const tab=result.data;
+ assert.equal(tab.standalone,true);
+ assert.equal(tab.date,today);
+ assert.equal(tab.booking_id,(await request('/api/pdv/tabs',opening)).data.booking_id);
+ status(await request('/api/pdv/tabs',{...opening,customer:'Outro cliente'}),409);
+ assert.deepEqual((await request('/api/bookings')).data,[]);
+ assert.deepEqual((await request('/api/courts')).data,before.data);
+ assert.deepEqual((await request('/api/public/catalog?date='+today,{auth:false})).data,catalogBefore);
+ status(await request(`/api/bookings/${tab.booking_id}/payment`,{method:'Pix'}),404);
+ status(await request('/api/courts/0',{active:true},{method:'PATCH'}),404);
+
+ const id=tab.booking_id;
+ const receiptPath=tabPath(id)+'/receipt/send';
+ status(await request(receiptPath,{}, {auth:false}),401);
+ status(await request(receiptPath,{}),409);
+ const item=await product();
+ status(await add(id,item.id),201);
+ status(await request(tabPath(id)+'/close',{method:'Dinheiro',expected_total_cents:500}),200);
+ status(await request(receiptPath,{phone:'5562999999999'}),200);
+ assert.equal(messages[0].number,'5562999991234');
+ assert.equal(messages[0].filename,`comprovante-comanda-${id}.pdf`);
+
+ const split=await request('/api/pdv/tabs',{...opening,request_key:randomUUID()});
+ status(split,201);
+ const splitId=split.data.booking_id;
+ const participant=await request(participantsPath(splitId),{
+  name:'Luana',whatsapp:'62988887777',request_key:randomUUID()
+ });
+ status(participant,201);
+ const [person]=participant.data.participants;
+ const personPath=`${participantsPath(splitId)}/${person.id}`;
+ status(await add(splitId,item.id),201);
+ status(await request(personPath+'/receipt/send',{}),409);
+ status(await request(personPath+'/payment',{method:'Pix',expected_cents:500}),200);
+ status(await request(personPath+'/receipt/send',{}),200);
+ assert.equal(messages[1].number,'5562988887777');
+ assert.equal(messages[1].filename,`comprovante-comanda-${splitId}-subcomanda-${person.id}.pdf`);
+ assert.equal(messages.length,2);
+ for(const message of messages){
+  assert.equal(message.type,'document');
+  assert.equal(message.formatJid,true);
+  const pdf=await PDFDocument.load(Buffer.from(message.url,'base64'));
+  assert.equal(pdf.getTitle(),'Comprovante de pagamento');
+  assert.equal(pdf.getPageCount(),1);
+ }
+ assert.deepEqual((await request(dayPath(today))).data.revenue,revenue(0,1000));
 });
 
 test('PDV: preserva o preço cadastrado no lançamento e recupera repetições sem duplicar itens',async t=>{

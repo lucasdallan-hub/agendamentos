@@ -37,7 +37,13 @@
  <section id="pdv-comandas-panel" role="tabpanel" aria-labelledby="pdv-comandas-tab">
   <div id="pdv-stats" class="stats" aria-label="Faturamento do dia"></div>
   <section aria-labelledby="pdv-tabs-heading">
-   <div class="section-heading"><div><h2 id="pdv-tabs-heading">Comandas</h2><p id="pdv-tabs-description" role="status"></p></div><button type="button" class="outline" id="pdv-archive-tabs" disabled>Limpar comandas encerradas</button></div>
+   <div class="section-heading">
+    <div><h2 id="pdv-tabs-heading">Comandas</h2><p id="pdv-tabs-description" role="status"></p></div>
+    <div class="pdv-list-actions">
+     <button type="button" class="primary" id="pdv-new-tab">Abrir comanda avulsa</button>
+     <button type="button" class="outline" id="pdv-archive-tabs" disabled>Limpar comandas encerradas</button>
+    </div>
+   </div>
    <div id="pdv-tabs" class="pdv-tabs"></div>
   </section>
  </section>

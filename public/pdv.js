@@ -57,13 +57,14 @@ const pdv=(()=>{
  function tabCards(tabs){
   return tabs.map(tab=>`<article class="pdv-tab-card">
    <div class="pdv-card-heading"><h3>${esc(tab.customer)}</h3>${tabBadge(tab.status)}</div>
-   <p>${esc(tab.court_name)} · ${esc(tab.start)}–${esc(tab.end)}</p>
+   <p>${tabLocation(tab)}</p>
    <small>Comanda #${esc(tab.booking_id)}</small>
    ${tab.participant_count?`<small>${esc(tab.participant_count)} ${tab.participant_count===1?'participante':'participantes'} · saldo ${money(tab.consumption_balance_cents)}</small>`:''}
    ${tab.archived_at?`<small>Arquivada em ${dateTime.format(new Date(tab.archived_at))}</small>`:''}
    <div class="pdv-card-footer"><div><small>Consumo</small><strong>${money(tab.consumption_cents)}</strong></div><button type="button" class="outline" data-pdv-tab="${esc(tab.booking_id)}">Ver comanda</button></div>
   </article>`).join('');
  }
+ const tabLocation=tab=>tab.standalone?'Comanda avulsa':`${esc(tab.court_name)} · ${esc(tab.start)}–${esc(tab.end)}`;
 
  function updateArchiveButton(){
   archiveButton.disabled=archiving||dashboard?.date!==dateField.value||!dashboard.tabs.some(tab=>tab.status==='closed'||tab.status==='cancelled');
@@ -75,11 +76,11 @@ const pdv=(()=>{
    stat('Total recebido',money(revenue.total_cents),'Quadras e consumo','↑')+
    stat('Quadras recebidas',money(revenue.courts_cents),'Pagamentos e entradas no dia','▱')+
    stat('Consumo recebido',money(revenue.consumption_cents),'Baixas do dia','▤')+
-   stat('Consumo em aberto',money(revenue.open_consumption_cents),'Nas reservas desta data','◷');
-  $('#pdv-tabs-description').textContent=`${data.tabs.length} ${data.tabs.length===1?'comanda':'comandas'} das reservas desta data`;
+   stat('Consumo em aberto',money(revenue.open_consumption_cents),'Nas comandas desta data','◷');
+  $('#pdv-tabs-description').textContent=`${data.tabs.length} ${data.tabs.length===1?'comanda':'comandas'} nesta data`;
   $('#pdv-tabs').innerHTML=tabCards(data.tabs)||'<div class="empty"><p>Nenhuma comanda para exibir nesta data.</p></div>';
   const archived=data.archived_tabs??[];
-  $('#pdv-history-description').textContent=`${archived.length} ${archived.length===1?'comanda arquivada':'comandas arquivadas'} das reservas desta data`;
+  $('#pdv-history-description').textContent=`${archived.length} ${archived.length===1?'comanda arquivada':'comandas arquivadas'} para esta data`;
   $('#pdv-history-tabs').innerHTML=tabCards(archived)||'<div class="empty"><p>Nenhuma comanda arquivada para esta data.</p></div>';
   updateArchiveButton();
   renderProducts(data.products);
@@ -180,6 +181,22 @@ const pdv=(()=>{
   return new URL(path,location.origin).href;
  }
 
+ function openStandalone(){
+  let attempt;
+  openModal('Abrir comanda avulsa',participantFields(),async form=>{
+   const {name:customer,whatsapp:phone}=form;
+   const value=JSON.stringify([customer.trim(),phone.trim()]);
+   if(attempt?.value!==value)attempt={value,key:requestKey()};
+   const created=await api('pdv/tabs',{customer,phone,request_key:attempt.key});
+   $('#modal').close();
+   dateField.value=created.date;
+   void refresh({force:true});
+   await openTab(created.booking_id,created.date);
+   toast('Comanda avulsa aberta.');
+   return false;
+  },'Abrir comanda');
+ }
+
  function paymentSelect(){
   return `<label>Forma de pagamento <select name="method" required><option value="">Selecione</option>${paymentMethods.map(method=>`<option>${method}</option>`).join('')}</select></label>`;
  }
@@ -187,6 +204,9 @@ const pdv=(()=>{
  const participantClosed=person=>person.status==='closed'||Boolean(person.paid_at);
  const pixStatus=person=>person.payment_link?.status||person.pix_status;
  const pixLocked=person=>person.pix_pending===true||activePixStatuses.has(pixStatus(person));
+ function receiptButton(name,id=''){
+  return `<button type="button" class="outline" data-pdv-send-receipt="${id}" aria-label="Enviar comprovante em PDF para ${esc(name)} pelo WhatsApp">Enviar comprovante em PDF</button>`;
+ }
 
  function pixActions(person,id,canSettle){
   const status=pixStatus(person),url=pixPaymentUrl(person);
@@ -247,6 +267,7 @@ const pdv=(()=>{
     <details><summary>Editar contato</summary><form data-pdv-participant-edit="${id}" class="pdv-participant-form">
      ${participantFields(person)}<button type="submit" class="outline">Salvar contato</button>
     </form></details>`:actions}
+    ${person.receipt_available?`<div class="pdv-participant-actions">${receiptButton(person.name,id)}</div>`:''}
     ${canSettle?`<details class="pdv-subcommand-close"><summary>Fechar subcomanda</summary><form data-pdv-participant-pay="${id}" class="pdv-settle-form">
      ${paymentSelect()}<button type="submit" class="primary">Confirmar ${money(person.amount_cents)}</button>
     </form></details>`:''}
@@ -278,14 +299,15 @@ const pdv=(()=>{
   const canSettle=generalBalance>0;
   const closeWhole=open&&!participants.some(person=>pixLocked(person)||(!participantClosed(person)&&person.amount_cents>0));
   const options=products.map(product=>`<option value="${esc(product.id)}">${esc(product.name)} · ${money(product.price_cents)}</option>`).join('');
-  detail.innerHTML=`<div class="pdv-detail-header"><div><h3>${esc(tab.customer)}</h3><p>${esc(tab.court_name)} · ${dateLabel(tab.date)} · ${esc(tab.start)}–${esc(tab.end)}</p></div>${tabBadge(tab.status)}</div>
+  detail.innerHTML=`<div class="pdv-detail-header"><div><h3>${esc(tab.customer)}</h3><p>${dateLabel(tab.date)} · ${tabLocation(tab)}</p></div>${tabBadge(tab.status)}</div>
    <dl class="pdv-tab-totals">
-    <div><dt>Quadra · ${bookingCancelled?'cancelada':tab.booking_paid?'paga':'pendente'}</dt><dd>${bookingCancelled?'—':money(tab.booking_total_cents)}</dd>
-     ${!bookingCancelled&&tab.booking_uses_deposit&&!tab.booking_paid&&tab.booking_received_cents>0?`<small>${money(tab.booking_received_cents)} recebidos · saldo ${money(tab.booking_total_cents-tab.booking_received_cents)}</small>`:''}</div>
+    ${tab.standalone?'':`<div><dt>Quadra · ${bookingCancelled?'cancelada':tab.booking_paid?'paga':'pendente'}</dt><dd>${bookingCancelled?'—':money(tab.booking_total_cents)}</dd>
+     ${!bookingCancelled&&tab.booking_uses_deposit&&!tab.booking_paid&&tab.booking_received_cents>0?`<small>${money(tab.booking_received_cents)} recebidos · saldo ${money(tab.booking_total_cents-tab.booking_received_cents)}</small>`:''}</div>`}
     <div><dt>Consumo</dt><dd>${money(tab.consumption_cents)}</dd></div>
-    ${bookingCancelled?'':`<div><dt>Total da reserva e consumo</dt><dd>${money(tab.booking_total_cents+tab.consumption_cents)}</dd></div>`}
+    ${bookingCancelled||tab.standalone?'':`<div><dt>Total da reserva e consumo</dt><dd>${money(tab.booking_total_cents+tab.consumption_cents)}</dd></div>`}
    </dl>
-   ${tab.paid_at&&tab.method?`<p class="pdv-paid-info">Consumo recebido por ${esc(tab.method)} em ${dateTime.format(new Date(tab.paid_at))}.</p>`:''}
+   ${tab.paid_at&&tab.method?`<p class="pdv-paid-info">Consumo recebido por ${esc(tab.method)} em ${dateTime.format(new Date(tab.paid_at))}.</p>
+    ${tab.general_paid_cents>0?receiptButton(tab.customer):''}`:''}
    ${renderParticipants(tab,assignableParticipants,bookingCancelled)}
    <section aria-label="Itens da comanda">
     <h3>${participants.length?'Itens compartilhados':'Itens'}</h3>
@@ -386,6 +408,7 @@ const pdv=(()=>{
  }
 
  dateField.onchange=()=>refresh();
+ $('#pdv-new-tab').onclick=openStandalone;
  $('#pdv-today').onclick=()=>{dateField.value=today();void refresh();};
  archiveButton.onclick=async()=>{
   const date=dateField.value;
@@ -459,6 +482,13 @@ const pdv=(()=>{
   }
  });
  detail.onclick=event=>{
+  const sendReceipt=event.target.closest('[data-pdv-send-receipt]');
+  if(sendReceipt){
+   const participantId=sendReceipt.dataset.pdvSendReceipt;
+   const action=participantId?`/participants/${participantId}/receipt/send`:'/receipt/send';
+   void updateTab(path=>api(path+action,{}),'Comprovante aceito pela Evolution Go para envio.');
+   return;
+  }
   const sendPix=event.target.closest('[data-pdv-send-pix]');
   if(sendPix){
    const person=activeTab?.participants?.find(row=>String(row.id)===sendPix.dataset.pdvSendPix);
