@@ -215,7 +215,16 @@ const server=http.createServer(async(req,res)=>{
     const amount=pdvMoney.format(link.amount_cents/100);
     pdvLinkDeliveries.add(deliveryKey);
     try{
-     await send(`Olá, ${person.name}! Sua parte do consumo na comanda #${bookingId} da quadra ${tab.court_name} é de ${amount}.\n\nPague por Pix pelo link abaixo. O recibo fica disponível na mesma página após a confirmação.\n${paymentUrl}`);
+     await send(`Olá, ${person.name}! 👋
+
+🧾 *Comanda #${bookingId}*
+📍 *Quadra:* ${tab.court_name}
+💰 *Sua parte:* ${amount}
+
+📲 *Pague por Pix pelo link abaixo*
+${paymentUrl}
+
+✅ Após a confirmação do pagamento, seu recibo fica disponível no mesmo link.`);
     }finally{
      pdvLinkDeliveries.delete(deliveryKey);
     }

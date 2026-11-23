@@ -125,8 +125,9 @@ test('PDV Pix: envio usa a Evolution Go e reutiliza o link após falha do proved
  for(const message of deliveries){
   assert.equal(message.number,f.ana.whatsapp);
   assert.equal(message.formatJid,true);
-  assert.match(message.text,/Olá, Ana!.*8,01/);
-  assert.ok(message.text.endsWith(paymentLink.path));
+  assert.match(message.text,/^Olá, Ana! 👋\n\n🧾 \*Comanda #\d+\*\n📍 \*Quadra:\* Quadra Teste\n💰 \*Sua parte:\* R\$\s8,01/m);
+  const paymentUrl=new URL(message.text.split('\n')[7]);
+  assert.equal(paymentUrl.pathname+paymentUrl.hash,paymentLink.path);
   assert.doesNotMatch(message.text,/outra\.example|Bruno/);
  }
  assert.equal(f.charges.length,0);
