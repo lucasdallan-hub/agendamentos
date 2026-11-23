@@ -183,8 +183,8 @@ const pdv=(()=>{
 
  function renderParticipants(tab,assignableParticipants,bookingCancelled){
   const participants=tab.participants||[];
-  if(!participants.length)return '';
   const open=tab.status==='open';
+  if(!open&&!participants.length)return '';
   const itemsByPerson=new Map();
   for(const item of tab.items){
    if(item.participant_id==null)continue;
@@ -230,8 +230,14 @@ const pdv=(()=>{
   }).join('');
   return `<section class="pdv-participants" aria-labelledby="pdv-participants-heading">
    <h3 id="pdv-participants-heading">Subcomandas</h3>
-   <p class="pdv-participants-summary">${participants.length} ${participants.length===1?'participante':'participantes'} · ${money(tab.participant_paid_cents)} recebido · ${money(tab.consumption_balance_cents)} em aberto</p>
-   <ul class="pdv-participants-list">${rows}</ul>
+   ${participants.length?`<p class="pdv-participants-summary">${participants.length} ${participants.length===1?'participante':'participantes'} · ${money(tab.participant_paid_cents)} recebido · ${money(tab.consumption_balance_cents)} em aberto</p>
+   <ul class="pdv-participants-list">${rows}</ul>`:''}
+   ${open?`<details class="pdv-person-entry">
+    <summary>Adicionar pessoa</summary>
+    <form data-pdv-participant-add class="pdv-participant-form">
+     ${participantFields()}<button type="submit" class="outline">Salvar pessoa</button>
+    </form>
+   </details>`:''}
   </section>`;
  }
 
@@ -256,13 +262,7 @@ const pdv=(()=>{
     ${bookingCancelled?'':`<div><dt>Total da reserva e consumo</dt><dd>${money(tab.booking_total_cents+tab.consumption_cents)}</dd></div>`}
    </dl>
    ${tab.paid_at&&tab.method?`<p class="pdv-paid-info">Consumo recebido por ${esc(tab.method)} em ${dateTime.format(new Date(tab.paid_at))}.</p>`:''}
-   ${open?`<section class="pdv-person-entry" aria-labelledby="pdv-person-entry-heading">
-    <h3 id="pdv-person-entry-heading">Pessoas da comanda</h3>
-    <p>Adicione a pessoa e selecione o nome dela em <strong>Consumo de</strong> para vincular um item.</p>
-    <form data-pdv-participant-add class="pdv-participant-form">
-     ${participantFields()}<button type="submit" class="outline">Adicionar pessoa</button>
-    </form>
-   </section>`:''}
+   ${renderParticipants(tab,assignableParticipants,bookingCancelled)}
    <section aria-label="Itens da comanda">
     <h3>${participants.length?'Itens compartilhados':'Itens'}</h3>
     ${itemRows(sharedItems,assignableParticipants,open,bookingCancelled)}
@@ -273,7 +273,6 @@ const pdv=(()=>{
     ${participantSelect(assignableParticipants,null)}
     <button type="submit" class="outline">Adicionar item</button>
    </form>`:'<button type="button" class="outline pdv-add-product" data-pdv-create-product>Cadastrar produto</button>':''}
-   ${renderParticipants(tab,assignableParticipants,bookingCancelled)}
    ${open&&!closeWhole?'<p class="pdv-muted pdv-close-hint">Feche as subcomandas com saldo para poder fechar a comanda geral.</p>':''}
    ${closeWhole?`<form data-pdv-close class="pdv-settle-form">
     ${canSettle?`<p>Registre o recebimento de <strong>${money(generalBalance)}</strong> ${participants.length?'em consumo compartilhado':'em consumo'}.</p>

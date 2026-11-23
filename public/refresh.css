@@ -369,10 +369,8 @@ dialog::backdrop, :root[data-theme="dark"] dialog::backdrop { background: #0a102
 .pdv-settle-form { grid-template-columns: minmax(0,1fr) auto; margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
 .pdv-settle-form p { grid-column: 1 / -1; margin: 0; }
 .pdv-settle-form button:only-child { grid-column: 1 / -1; justify-self: end; }
-.pdv-person-entry { margin: 0 0 16px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
-.pdv-person-entry h3 { margin: 0; }
-.pdv-person-entry p { margin: 4px 0 0; color: var(--muted); font-size: 0.85rem; }
-.pdv-participants { margin-top: 20px; }
+.pdv-person-entry { margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.pdv-participants { margin-block: 20px 16px; }
 .pdv-participants-summary { color: var(--muted); }
 .pdv-participants-list { list-style: none; padding: 0; margin: 0; }
 .pdv-participants-list > li { display: grid; gap: 10px; padding: 14px 12px; border: 1px solid var(--line); border-radius: 12px; }
