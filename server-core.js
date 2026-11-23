@@ -322,7 +322,26 @@ ${paymentUrl}
     if(req.method==='PATCH')return json(res,200,pdv.updateItem(id,Number(itemId),body));
     if(req.method==='DELETE')return json(res,200,pdv.removeItem(id,Number(itemId)));
    }
-   if(req.method==='POST'&&action==='close'&&!itemId)return json(res,200,pdv.close(id,body));
+   if(req.method==='POST'&&action==='close'&&!itemId){
+    const {tab,closedAt}=pdv.close(id,body);
+    if(!closedAt||tab.booking_status!=='confirmed')return json(res,200,tab);
+    let closing_notice='accepted';
+    try{
+     const bookingReceived=misticpay.splitSummary(id)?.paid_cents??tab.booking_received_cents;
+     const receipt=pdv.closingReceipt(tab,closedAt,bookingReceived);
+     const send=notifications.preparePdvReceiptDelivery(receipt.phone);
+     const total=pdvMoney.format(receipt.amount/100);
+     const pending=receipt.closure.pending;
+     const status=pending>0
+      ? `Ainda há ${pdvMoney.format(pending/100)} em aberto.`
+      : 'Tudo certo. Os pagamentos estão confirmados!';
+     await send(await createPdvReceipt(receipt,branding(db).name),`fechamento-comanda-${id}.pdf`,
+      `Olá, ${receipt.name}! 👋\n\n🧾 A comanda #${id} foi fechada.\n💰 Total recebido: ${total}\n${status}\n\n📎 Confira os detalhes no PDF em anexo.`);
+    }catch{
+     closing_notice='failed';
+    }
+    return json(res,200,{...tab,closing_notice});
+   }
    fail('Método não permitido.',405);
   }
   const whatsappProvider=url.searchParams.get('provider')??'evolution';

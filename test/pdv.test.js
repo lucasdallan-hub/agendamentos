@@ -163,6 +163,47 @@ test('PDV: abre comandas avulsas fora da agenda e envia PDFs para o WhatsApp de 
  assert.deepEqual((await request(dayPath(today))).data.revenue,revenue(0,1000));
 });
 
+test('PDV: envia ao titular um único PDF de fechamento com a quadra e o consumo recebidos',async t=>{
+ const messages=[];
+ let rejectDelivery=false;
+ const {db,request,reserve,product,add}=await fixture(t,{notificationFetch:async(url,options)=>{
+  assert.equal(url,'https://evolution.example/send/media');
+  assert.equal(db.isTransaction,false);
+  messages.push(JSON.parse(options.body));
+  return rejectDelivery?new Response(null,{status:503}):Response.json({message:'success'});
+ }});
+ status(await request('/api/notifications/config',{
+  enabled:false,base_url:'https://evolution.example',api_key:'test-instance'
+ },{method:'PUT'}),200);
+ const booking=await reserve();
+ const item=await product({price_cents:501});
+ status(await request(`/api/bookings/${booking}/payment`,{method:'Pix'}),200);
+ status(await add(booking,item.id),201);
+ const closePath=tabPath(booking)+'/close';
+ const payment={method:'Dinheiro',expected_total_cents:501,expected_balance_cents:501};
+ const closed=await request(closePath,payment);
+ status(closed,200);
+ assert.equal(closed.data.closing_notice,'accepted');
+ status(await request(closePath,payment),200);
+ assert.equal(messages.length,1);
+ const [receipt]=messages;
+ assert.equal(receipt.number,'5511999887766');
+ assert.equal(receipt.type,'document');
+ assert.equal(receipt.filename,`fechamento-comanda-${booking}.pdf`);
+ assert.match(receipt.caption,/R\$\s125,01/);
+ assert.match(receipt.caption,/Tudo certo. Os pagamentos estão confirmados!/);
+ assert.equal((await PDFDocument.load(Buffer.from(receipt.url,'base64'))).getTitle(),'Comprovante de pagamento');
+
+ rejectDelivery=true;
+ const second=await reserve({start:'19:00',end:'20:00'});
+ const failed=await request(tabPath(second)+'/close',{expected_total_cents:0});
+ status(failed,200);
+ assert.equal(failed.data.status,'closed');
+ assert.equal(failed.data.closing_notice,'failed');
+ assert.match(messages[1].caption,/R\$\s120,00 em aberto/);
+ assert.equal((await PDFDocument.load(Buffer.from(messages[1].url,'base64'))).getTitle(),'Resumo de fechamento');
+});
+
 test('PDV: preserva o preço cadastrado no lançamento e recupera repetições sem duplicar itens',async t=>{
  const {request,reserve,product,add}=await fixture(t);
  const booking=await reserve();

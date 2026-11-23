@@ -233,7 +233,13 @@ test('PDV Pix: somente consulta autenticada com o valor exato quita a pessoa e d
  const settled=(await f.admin(f.tab)).data;
  assert.equal(settled.status,'open');
  assert.equal(settled.consumption_balance_cents,0);
- checkStatus(await f.admin(f.tab+'/close',{method:null,expected_total_cents:1051,expected_balance_cents:0}),200);
+ const closed=await f.admin(f.tab+'/close',{method:null,expected_total_cents:1051,expected_balance_cents:0});
+ checkStatus(closed,200);
+ assert.equal(closed.data.closing_notice,'accepted');
+ const closingMessage=f.messages[1];
+ assert.equal(closingMessage.type,'document');
+ assert.match(closingMessage.caption,/Total recebido: R\$\s10,51/);
+ assert.match(closingMessage.caption,/R\$\s120,00 em aberto/);
  assert.equal((await f.admin('/api/pdv')).data.revenue.consumption_cents,1051);
 
  const courtPix=await f.api(f.bookingPath+'/misticpay',{cpf});
@@ -245,7 +251,7 @@ test('PDV Pix: somente consulta autenticada com o valor exato quita a pessoa e d
  assert.equal((await f.admin(f.tab)).data.booking_paid,true);
  assert.equal((await f.admin('/api/pdv')).data.revenue.courts_cents,12000);
  assert.equal((await f.admin('/api/pdv')).data.revenue.consumption_cents,1051);
- assert.equal(f.messages.length,2);
+ assert.equal(f.messages.length,3);
 
  charge.transaction.transactionState='DEVOLVIDO';
  checkStatus(await f.api(webhook,{...eventFor(charge),status:'DEVOLVIDO'}),200);

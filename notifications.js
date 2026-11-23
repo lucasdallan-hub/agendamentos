@@ -334,8 +334,8 @@ ${arenaName} · Reserva #${bookingId}
  }
  function preparePdvReceiptDelivery(number){
   const send=preparePdvDelivery(number);
-  return (bytes,filename)=>send('/send/media',{
-   type:'document',filename,caption:'Comprovante de pagamento da sua comanda.',
+  return (bytes,filename,caption='Comprovante de pagamento da sua comanda.')=>send('/send/media',{
+   type:'document',filename,caption,
    url:Buffer.from(bytes).toString('base64')
   });
  }

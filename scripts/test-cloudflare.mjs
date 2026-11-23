@@ -286,11 +286,15 @@ try{
  assert.equal(childOriginal.status,200);assert.deepEqual(childOriginal.data,fixture);
  const childTab=await api(tabRoute,undefined,{headers:childHeaders});
  assert.equal(childTab.status,200,JSON.stringify(childTab.data));
- assert.deepEqual(childTab.data,tabClose.data);
+ const {closing_notice:tabNotice,...closedTab}=tabClose.data;
+ assert.equal(tabNotice,'failed');
+ assert.deepEqual(childTab.data,closedTab);
  const childDividedTab=await api(dividedTabRoute,undefined,{headers:childHeaders});
  assert.equal(childDividedTab.status,200,JSON.stringify(childDividedTab.data));
+ const {closing_notice:dividedNotice,...closedDividedTab}=dividedClose.data;
+ assert.equal(dividedNotice,'failed');
  assert.deepEqual(childDividedTab.data,{
-  ...dividedClose.data,participants:dividedClose.data.participants.map(person=>({...person,pix_status:null}))
+  ...closedDividedTab,participants:closedDividedTab.participants.map(person=>({...person,pix_status:null}))
  });
  assert.equal((await api(publicPdvLink,undefined,{auth:false,headers:childHeaders})).status,404);
  assert.equal((await api('/api/courts',{name:'Só no filho',type:'Vôlei',price:50},{headers:childHeaders})).status,201);

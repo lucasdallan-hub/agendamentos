@@ -406,7 +406,7 @@ const pdv=(()=>{
    addAttempt=null;
    activeTab=updated;
    renderTab(updated);
-   toast(success);
+   toast(typeof success==='function'?success(updated):success);
   }catch(error){
    if(request!==tabRequest||!dialog.open)return;
    if(reloadOnError){
@@ -514,11 +514,20 @@ const pdv=(()=>{
     const closed=await api(path+'/close',{method:data.get('method'),expected_total_cents,expected_balance_cents});
     if(!sendDeposit)return closed;
     try{
-     return await api(path+'/deposit-balance/send',{participant_id:depositRecipient(data)});
+     const updated=await api(path+'/deposit-balance/send',{participant_id:depositRecipient(data)});
+     return {...updated,closing_notice:closed.closing_notice};
     }catch(error){
-     throw new Error(`Comanda fechada. ${error.message}`,{cause:error});
+     const notice=closed.closing_notice==='failed'?' O envio do comprovante não foi confirmado.':'';
+     throw new Error(`Comanda fechada.${notice} ${error.message}`,{cause:error});
     }
-   },sendDeposit?'Comanda fechada. Link do saldo aceito pela Evolution Go para envio.':'Comanda fechada.',
+   },closed=>{
+    const notice={
+     accepted:' Comprovante aceito pela Evolution Go para envio.',
+     failed:' O envio do comprovante não foi confirmado.'
+    }[closed.closing_notice]??'';
+    const balance=sendDeposit?' Link do saldo aceito pela Evolution Go para envio.':'';
+    return `Comanda fechada.${notice}${balance}`;
+   },
    {reloadOnError:sendDeposit});
   }
   if(form.hasAttribute('data-pdv-participant-add')){

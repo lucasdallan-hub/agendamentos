@@ -269,6 +269,17 @@ export function createPdv(db,{depositBalance}={}){
   };
  }
 
+ function closingReceipt(current,closedAt,bookingReceived){
+  const consumption=current.participants.reduce((total,person)=>total+(person.receipt_available?person.paid_cents:0),current.general_paid_cents);
+  const amount=safeAmount(bookingReceived+consumption);
+  const pending=safeAmount(Math.max(0,current.booking_total_cents-bookingReceived)+Math.max(0,current.consumption_cents-consumption));
+  return {
+   bookingId:current.booking_id,name:current.customer,court:current.court_name,
+   phone:participantWhatsApp(bookingPhone.get(current.booking_id).phone),amount,
+   closure:{closedAt,bookingReceived,consumption,pending}
+  };
+ }
+
  function getProduct(id){
   const product=lookupProduct.get(id);
   if(!product)fail('Produto não encontrado.',404);
@@ -506,7 +517,7 @@ export function createPdv(db,{depositBalance}={}){
    const method=amount>0?body.method:null;
    if(current.status==='closed'){
     if(current.method!==method)fail('Esta comanda já foi fechada com outra forma de pagamento.',409);
-    return current;
+    return {tab:current,closedAt:null};
    }
    requireOpen(current);
    if(amount>0&&!paymentMethods.has(method))fail('Selecione a forma de recebimento do consumo.');
@@ -514,10 +525,10 @@ export function createPdv(db,{depositBalance}={}){
    open(bookingId);
    db.prepare('UPDATE pdv_tabs SET closed_at=?,paid_at=?,method=?,paid_cents=? WHERE booking_id=?')
     .run(now,amount>0?now:null,method,amount,bookingId);
-   return tab(bookingId);
+   return {tab:tab(bookingId),closedAt:now};
   });
  }
 
- return {open,openStandalone,daily,archiveDay,tab,receipt,createProduct,updateProduct,addItem,updateItem,removeItem,close,
+ return {open,openStandalone,daily,archiveDay,tab,receipt,closingReceipt,createProduct,updateProduct,addItem,updateItem,removeItem,close,
   addParticipant,updateParticipant,removeParticipant,payParticipant,preparePix,settlePix,reversePix};
 }
