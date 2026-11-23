@@ -286,6 +286,15 @@ const pdv=(()=>{
   </section>`;
  }
 
+ function depositRecipientField(tab,participants,chooseRecipient=false){
+  const options=participants.map(person=>`<option value="${esc(person.id)}">${esc(person.name)} · ${esc(person.whatsapp)}</option>`).join('');
+  return `<label>Enviar saldo para <select name="recipient" required>
+   ${chooseRecipient&&options?'<option value="">Selecione uma pessoa</option>':''}
+   <option value="holder">${esc(tab.customer)} (titular da reserva)</option>
+   ${options}
+  </select></label>`;
+ }
+
  function renderDepositBalance(tab,participants){
   const balance=tab.booking_deposit_balance;
   if(!balance)return '';
@@ -295,16 +304,11 @@ const pdv=(()=>{
    uncreated:'Aguardando pagamento.',
    approved:'Saldo quitado.'
   }[balance.status]??pixLabels[balance.status]??'Saldo em consulta.';
-  const options=participants.map(person=>`<option value="${esc(person.id)}">${esc(person.name)} · ${esc(person.whatsapp)}</option>`).join('');
   return `<section class="pdv-deposit-balance" aria-labelledby="pdv-deposit-heading">
    <h3 id="pdv-deposit-heading">Saldo da quadra</h3>
    <p><strong>${money(balance.amount_cents)}</strong> · ${esc(status)}</p>
    ${balance.can_send?`<form class="pdv-deposit-form" data-pdv-deposit-send>
-    <label>Enviar para <select name="recipient" required>
-     ${options?'<option value="">Selecione uma pessoa</option>':''}
-     <option value="holder">${esc(tab.customer)} (titular da reserva)</option>
-     ${options}
-    </select></label>
+    ${depositRecipientField(tab,participants,true)}
     <button type="submit" class="outline">Enviar saldo pelo WhatsApp</button>
    </form>`:''}
   </section>`;
@@ -322,6 +326,8 @@ const pdv=(()=>{
   const generalBalance=tab.general_balance_cents??tab.consumption_balance_cents??tab.consumption_cents;
   const canSettle=generalBalance>0;
   const closeWhole=open&&!participants.some(person=>pixLocked(person)||(!participantClosed(person)&&person.amount_cents>0));
+  const deposit=tab.booking_deposit_balance;
+  const closeLabel=participants.length?'Fechar comanda geral':canSettle?'Confirmar recebimento e fechar':'Fechar sem consumo';
   const options=products.map(product=>`<option value="${esc(product.id)}">${esc(product.name)} · ${money(product.price_cents)}</option>`).join('');
   detail.innerHTML=`<div class="pdv-detail-header"><div><h3>${esc(tab.customer)}</h3><p>${dateLabel(tab.date)} · ${tabLocation(tab)}</p></div>${tabBadge(tab.status)}</div>
    <dl class="pdv-tab-totals">
@@ -348,7 +354,14 @@ const pdv=(()=>{
    ${closeWhole?`<form data-pdv-close class="pdv-settle-form">
     ${canSettle?`<p>Registre o recebimento de <strong>${money(generalBalance)}</strong> ${participants.length?'em consumo compartilhado':'em consumo'}.</p>
     ${paymentSelect()}`:''}
-    <button type="submit" class="primary">${participants.length?'Fechar comanda geral':canSettle?'Confirmar recebimento e fechar':'Fechar sem consumo'}</button>
+    ${deposit?.can_send?`<div class="pdv-close-balance">
+     <p>Saldo da quadra a cobrar pelo WhatsApp <strong>${money(deposit.amount_cents)}</strong></p>
+     ${depositRecipientField(tab,participants)}
+     <div class="pdv-participant-actions">
+      <button type="submit" class="outline">Fechar sem enviar</button>
+      <button type="submit" class="primary" value="send-deposit">Fechar e enviar saldo</button>
+     </div>
+    </div>`:`<button type="submit" class="primary">${closeLabel}</button>`}
    </form>`:''}`;
  }
 
@@ -422,6 +435,7 @@ const pdv=(()=>{
 
  const requestKey=()=>Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
  const selectedParticipant=form=>form.get('participant_id')?Number(form.get('participant_id')):null;
+ const depositRecipient=form=>form.get('recipient')==='holder'?null:Number(form.get('recipient'));
  const participantValues=form=>({name:String(form.get('name')||'').trim(),whatsapp:String(form.get('whatsapp')||'').trim()});
  async function sendParticipant(path,form){
   const values=participantValues(form),value=JSON.stringify(values);
@@ -483,9 +497,7 @@ const pdv=(()=>{
   event.preventDefault();
   const form=event.target,data=new FormData(form);
   if(form.hasAttribute('data-pdv-deposit-send')){
-   const recipient=data.get('recipient');
-   const participant_id=recipient==='holder'?null:Number(recipient);
-   void updateTab(path=>api(path+'/deposit-balance/send',{participant_id}),
+   void updateTab(path=>api(path+'/deposit-balance/send',{participant_id:depositRecipient(data)}),
     'Link do saldo aceito pela Evolution Go para envio.',{reloadOnError:true});
   }
   if(form.hasAttribute('data-pdv-add'))void updateTab(path=>sendAdd(path,data),'Item adicionado.');
@@ -497,7 +509,17 @@ const pdv=(()=>{
   if(form.hasAttribute('data-pdv-close')){
    const expected_total_cents=activeTab.consumption_cents;
    const expected_balance_cents=activeTab.general_balance_cents??activeTab.consumption_balance_cents??expected_total_cents;
-   void updateTab(path=>api(path+'/close',{method:data.get('method'),expected_total_cents,expected_balance_cents}),'Comanda fechada.');
+   const sendDeposit=event.submitter?.value==='send-deposit';
+   void updateTab(async path=>{
+    const closed=await api(path+'/close',{method:data.get('method'),expected_total_cents,expected_balance_cents});
+    if(!sendDeposit)return closed;
+    try{
+     return await api(path+'/deposit-balance/send',{participant_id:depositRecipient(data)});
+    }catch(error){
+     throw new Error(`Comanda fechada. ${error.message}`,{cause:error});
+    }
+   },sendDeposit?'Comanda fechada. Link do saldo aceito pela Evolution Go para envio.':'Comanda fechada.',
+   {reloadOnError:sendDeposit});
   }
   if(form.hasAttribute('data-pdv-participant-add')){
    void updateTab(path=>sendParticipant(path,data),'Subcomanda criada.');

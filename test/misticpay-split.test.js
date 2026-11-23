@@ -164,7 +164,7 @@ test('Pix dividido: separa centavos e links e só confirma a reserva quando toda
  assert.equal(f.charges.length,3);
  assert.equal(new Set(f.charges.map(charge=>charge.body.transactionId)).size,3);
  assert.deepEqual(f.messages.map(({number})=>number),['5511998877665','5511999887766']);
- assert.match(f.messages[1].text,/Reserva confirmada/);
+ assert.match(f.messages[1].text,/Pagamento confirmado/);
  assert.equal(f.messages[1].isTransaction,false);
 
  const refunded=f.charges[1];
@@ -328,7 +328,8 @@ test('Entrada Pix: confirma a reserva com o primeiro pagamento e só dá baixa t
  assert.equal(settled.paid,1);
  assert.deepEqual([settled.split.status,settled.split.remaining_cents],['approved',0]);
  assert.deepEqual(f.messages.map(({number})=>number),['5511998877665','5511999887766','5562999991234','5511999887766']);
- assert.match(f.messages[3].text,/reserva confirmada|pagamento integral confirmado/i);
+ assert.match(f.messages[3].text,/^✅ \*Pagamento confirmado!\*/u);
+ assert.match(f.messages[3].text,/Valor da reserva: R\$\s180,01/);
  assert.equal(f.messages[3].isTransaction,false);
  assert.deepEqual((await admin(tabPath)).data.booking_deposit_balance,{amount_cents:0,status:'approved',can_send:false});
  assert.equal((await admin(sendPath,{})).status,409);

@@ -212,7 +212,7 @@ test('Pix: OCR compara centavos e conserva o pagamento pendente até a conferên
  assert.equal(completed.data.status,'approved');
  assert.equal(messages.length,1);
  assert.equal(messages[0].number,'5511999887766');
- assert.match(messages[0].text,/Reserva confirmada/);
+ assert.match(messages[0].text,/Pagamento confirmado/);
 });
 
 test('Pix: leitura em segundo plano retoma uma tarefa interrompida sem sobrescrever uma conclusão',async t=>{

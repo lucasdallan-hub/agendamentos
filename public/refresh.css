@@ -359,6 +359,7 @@ dialog::backdrop, :root[data-theme="dark"] dialog::backdrop { background: #0a102
 .pdv-deposit-balance p { margin: 6px 0 0; }
 .pdv-deposit-form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-top: 10px; }
 .pdv-deposit-form label { flex: 1 1 12rem; min-width: 0; }
+.pdv-close-balance { grid-column: 1 / -1; display: grid; gap: 10px; }
 .pdv-paid-info { padding: 10px 12px; border-radius: 10px; background: var(--success-bg); color: var(--success-text); }
 .pdv-add-form, .pdv-item-form, .pdv-settle-form {
   display: grid;

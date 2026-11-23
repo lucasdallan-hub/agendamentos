@@ -69,7 +69,7 @@ test('Evolution Go: agendamento administrativo avisa a arena na criação e o cl
  assert.match(recipients['5521988887777'].body.text,/👤 \*Cliente:\* Cliente Teste/u);
  assert.match(recipients['5521988887777'].body.text,/\n\n💰 \*Valor da reserva:\*/u);
  const customerText=recipients['5511999998888'].body.text;
- assert.match(customerText,/^✅ \*Reserva confirmada!\*\n🏐 Arena Vôlei/u);
+ assert.match(customerText,/^✅ \*Pagamento confirmado!\*\n🏐 Arena Vôlei/u);
  assert.match(customerText,/Olá, Cliente Teste!/u);
  assert.ok(customerText.includes(`🎟️ *Reserva #${booking.data.id}*`));
  assert.ok(customerText.includes(`📅 *Data:* ${date.split('-').reverse().join('/')}`));
@@ -202,7 +202,7 @@ test('WhatsApp: preserva avisos da arena e só lembra o cliente depois do pagame
 
  assert.equal((await f.api(`bookings/${upcoming.data.id}/payment`,{method:'Dinheiro'})).status,200);
  assert.equal(f.requests.length,2);
- assert.match(f.requests[1].body.text,/Reserva confirmada/u);
+ assert.match(f.requests[1].body.text,/Pagamento confirmado/u);
  await f.processBookingAlerts();
  assert.deepEqual(f.requests.map(({body})=>body.number),['5521988887777','5511999998888','5511999998888']);
  assert.match(f.requests[2].body.text,/Seu horário está acabando/u);
@@ -437,7 +437,7 @@ test('WUZAPI: mantém uma sessão separada, pareia por QR e assume os novos envi
  const messages=Object.fromEntries(f.requests.slice(3).map(({body})=>[body.Phone,body]));
  assert.deepEqual(Object.keys(messages).sort(),['5511999998888','5521988887777']);
  assert.match(messages['5521988887777'].Body,/Cliente Teste/);
- assert.match(messages['5511999998888'].Body,/^✅ \*Reserva confirmada!\*\n🏐 Arena Vôlei/u);
+ assert.match(messages['5511999998888'].Body,/^✅ \*Pagamento confirmado!\*\n🏐 Arena Vôlei/u);
  assert.deepEqual(Object.fromEntries((await f.api('notifications/events')).data.map(({role,status})=>[role,status])),{arena:'accepted',client:'accepted'});
  assert.equal(JSON.stringify(captureSystem(f.db)).includes('fake-wuzapi-token'),false);
 });

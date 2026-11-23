@@ -276,7 +276,7 @@ Olá, ${b.customer}! Sua reserva #${bookingId} está confirmada.
   }
   const amount=money.format(b.total/100);
   if(role==='client'){
-   return `✅ *Reserva confirmada!*
+   return `✅ *Pagamento confirmado!*
 🏐 ${arenaName}
 
 Olá, ${b.customer}! 👋
