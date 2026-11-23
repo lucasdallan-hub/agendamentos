@@ -112,7 +112,7 @@ const publicFiles=new Map([
  ['/sidebar.js','/sidebar.js'],
  ['/theme.js','/theme.js'],
  ['/catalogo','/catalog.html'],['/catalog.js','/catalog.js'],['/','/index.html'],['/pix','/pix.html'],['/pagamento','/payment.html'],
- ['/branding.js','/branding.js'],['/app.js','/app.js'],['/pix.js','/pix.js'],['/style.css','/style.css'],
+ ['/branding.js','/branding.js'],['/app.js','/app.js'],['/pdv.js','/pdv.js'],['/pix.js','/pix.js'],['/style.css','/style.css'],
  ['/refresh.css','/refresh.css'],['/refresh-public.css','/refresh-public.css'],['/arena-hero.webp','/arena-hero.webp']
 ]);
 

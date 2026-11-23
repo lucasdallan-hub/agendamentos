@@ -1,0 +1,220 @@
+import {transaction} from './storage.js';
+
+const paymentMethods=new Set(['Pix','Dinheiro','Cartão de crédito','Cartão de débito','Transferência']);
+const dateFormatter=new Intl.DateTimeFormat('en-CA',{
+ timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'
+});
+const requestKeyPattern=/^(?:[a-f0-9]{32,64}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i;
+const dayMilliseconds=86_400_000;
+
+const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
+function selectedDay(value){
+ const date=value??dateFormatter.format(new Date());
+ const time=typeof date==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(date)?Date.parse(`${date}T00:00:00.000Z`):NaN;
+ if(!Number.isFinite(time)||new Date(time).toISOString().slice(0,10)!==date)fail('Informe uma data válida para o PDV.');
+ return {date,time};
+}
+function productName(value){
+ const name=typeof value==='string'?value.trim():'';
+ if(!name||name.length>100||/[\u0000-\u001f\u007f]/.test(name))fail('Informe um nome de produto de até 100 caracteres.');
+ return name;
+}
+function positiveInteger(value,message){
+ if(!Number.isSafeInteger(value)||value<1)fail(message);
+ return value;
+}
+const itemQuantity=value=>positiveInteger(value,'Informe uma quantidade inteira maior que zero.');
+const productPrice=value=>positiveInteger(value,'Informe um preço maior que zero em centavos.');
+function safeAmount(value,message='O total da comanda excede o limite suportado.'){
+ if(!Number.isSafeInteger(value))fail(message,409);
+ return value;
+}
+
+const selectTabs=`SELECT b.id booking_id,b.customer,c.name court_name,b.date,b.start,b.end,
+ b.status booking_status,b.total booking_total_cents,b.paid booking_paid,t.closed_at,t.paid_at,t.method,
+ p.booking_id IS NOT NULL booking_uses_deposit,
+ CASE WHEN p.archived=1 THEN p.archived_paid_cents
+  WHEN p.booking_id IS NOT NULL THEN (
+   SELECT COALESCE(SUM(s.amount_cents),0) FROM misticpay_split_shares s
+   WHERE s.booking_id=p.booking_id AND s.state='approved'
+  )
+  WHEN b.paid=1 THEN b.total ELSE 0 END booking_received_cents,
+ COALESCE(SUM(i.price_cents*i.quantity),0) consumption_cents,COALESCE(SUM(i.quantity),0) quantity
+ FROM bookings b JOIN courts c ON c.id=b.court_id
+ LEFT JOIN misticpay_split_plans p ON p.booking_id=b.id AND p.mode='deposit'
+ LEFT JOIN pdv_tabs t ON t.booking_id=b.id
+ LEFT JOIN pdv_items i ON i.booking_id=b.id AND i.removed=0`;
+
+function tabSummary({closed_at,...row}){
+ const status=closed_at?'closed':row.booking_status==='cancelled'&&!row.quantity?'cancelled':'open';
+ return {...row,booking_paid:!!row.booking_paid,booking_uses_deposit:!!row.booking_uses_deposit,status};
+}
+const productSummary=row=>({...row,active:!!row.active});
+
+export function createPdv(db){
+ db.exec(`CREATE TABLE IF NOT EXISTS pdv_products(
+  id INTEGER PRIMARY KEY,name TEXT NOT NULL,price_cents INTEGER NOT NULL CHECK(price_cents>0),
+  active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1))
+ );
+ CREATE TABLE IF NOT EXISTS pdv_tabs(
+  booking_id INTEGER PRIMARY KEY REFERENCES bookings(id),opened_at TEXT NOT NULL,
+  closed_at TEXT,paid_at TEXT,method TEXT,paid_cents INTEGER NOT NULL DEFAULT 0 CHECK(paid_cents>=0)
+ );
+ CREATE TABLE IF NOT EXISTS pdv_items(
+  id INTEGER PRIMARY KEY,booking_id INTEGER NOT NULL REFERENCES pdv_tabs(booking_id),
+  product_id INTEGER NOT NULL REFERENCES pdv_products(id),name TEXT NOT NULL,
+  price_cents INTEGER NOT NULL CHECK(price_cents>0),quantity INTEGER NOT NULL CHECK(quantity>0),
+  request_key TEXT NOT NULL,requested_quantity INTEGER NOT NULL CHECK(requested_quantity>0),
+  removed INTEGER NOT NULL DEFAULT 0 CHECK(removed IN (0,1)),UNIQUE(booking_id,request_key)
+ );
+ CREATE INDEX IF NOT EXISTS pdv_items_tab_active ON pdv_items(booking_id) WHERE removed=0;
+ CREATE INDEX IF NOT EXISTS pdv_tabs_payment_dates ON pdv_tabs(paid_at) WHERE paid_at IS NOT NULL;
+ CREATE INDEX IF NOT EXISTS pdv_booking_payment_dates ON bookings(paid_at) WHERE paid=1;`);
+
+ const insertTab=db.prepare('INSERT INTO pdv_tabs(booking_id,opened_at) VALUES(?,?) ON CONFLICT(booking_id) DO NOTHING');
+ const lookupTab=db.prepare(`${selectTabs} WHERE b.id=? GROUP BY b.id`);
+ const listTabs=db.prepare(`${selectTabs} WHERE b.date=? GROUP BY b.id ORDER BY b.start,c.name,b.id`);
+ const listItems=db.prepare(`SELECT id,product_id,name,price_cents,quantity,price_cents*quantity total_cents
+  FROM pdv_items WHERE booking_id=? AND removed=0 ORDER BY id`);
+ const listProducts=db.prepare('SELECT id,name,price_cents,active FROM pdv_products ORDER BY active DESC,name COLLATE NOCASE,id');
+ const lookupProduct=db.prepare('SELECT id,name,price_cents,active FROM pdv_products WHERE id=?');
+ const lookupItem=db.prepare('SELECT id,price_cents,quantity,removed FROM pdv_items WHERE id=? AND booking_id=?');
+ const requestItem=db.prepare('SELECT product_id,requested_quantity FROM pdv_items WHERE booking_id=? AND request_key=?');
+ const courtPayments=db.prepare(`SELECT b.total cents,b.paid_at FROM bookings b
+  WHERE b.paid=1 AND b.paid_at>=? AND b.paid_at<? AND NOT EXISTS(
+   SELECT 1 FROM misticpay_split_plans p WHERE p.booking_id=b.id AND p.mode='deposit' AND p.archived=0
+  )
+  UNION ALL
+  SELECT s.amount_cents cents,s.paid_at FROM misticpay_split_shares s JOIN misticpay_split_plans p USING(booking_id)
+  WHERE s.state='approved' AND s.paid_at>=? AND s.paid_at<? AND p.mode='deposit' AND p.archived=0`);
+ const consumptionPayments=db.prepare('SELECT paid_cents cents,paid_at FROM pdv_tabs WHERE paid_at>=? AND paid_at<?');
+
+ function open(bookingId){
+  insertTab.run(bookingId,new Date().toISOString());
+ }
+
+ function tab(bookingId){
+  const row=lookupTab.get(bookingId);
+  if(!row)fail('Comanda não encontrada.',404);
+  return {...tabSummary(row),items:listItems.all(bookingId)};
+ }
+
+ function receivedForDay(rows,date){
+  let cents=0;
+  for(const row of rows){
+   const paidAt=new Date(row.paid_at);
+   if(Number.isFinite(paidAt.getTime())&&dateFormatter.format(paidAt)===date)cents+=row.cents;
+  }
+  return safeAmount(cents,'O faturamento do dia excede o limite suportado.');
+ }
+ function daily(value){
+  const {date,time}=selectedDay(value);
+  const tabs=listTabs.all(date).map(tabSummary);
+  // Use an indexed UTC window and check its local dates, including days with a historical offset change.
+  const start=new Date(time-dayMilliseconds).toISOString(),end=new Date(time+2*dayMilliseconds).toISOString();
+  const courts_cents=receivedForDay(courtPayments.all(start,end,start,end),date);
+  const consumption_cents=receivedForDay(consumptionPayments.all(start,end),date);
+  const total_cents=safeAmount(courts_cents+consumption_cents,'O faturamento do dia excede o limite suportado.');
+  const open_consumption_cents=safeAmount(tabs.reduce((sum,row)=>sum+(row.status==='open'?row.consumption_cents:0),0));
+  return {date,tabs,products:listProducts.all().map(productSummary),revenue:{
+   courts_cents,consumption_cents,total_cents,open_consumption_cents
+  }};
+ }
+
+ function getProduct(id){
+  const product=lookupProduct.get(id);
+  if(!product)fail('Produto não encontrado.',404);
+  return productSummary(product);
+ }
+ function createProduct(body){
+  const name=productName(body.name),price_cents=productPrice(body.price_cents);
+  const active=Object.hasOwn(body,'active')?body.active:true;
+  if(typeof active!=='boolean')fail('Informe se o produto está ativo.');
+  const created=db.prepare('INSERT INTO pdv_products(name,price_cents,active) VALUES(?,?,?)').run(name,price_cents,Number(active));
+  return {id:Number(created.lastInsertRowid),name,price_cents,active};
+ }
+ function updateProduct(id,body){
+  return transaction(db,()=>{
+   const product=getProduct(id);
+   const name=Object.hasOwn(body,'name')?productName(body.name):product.name;
+   const price_cents=Object.hasOwn(body,'price_cents')?productPrice(body.price_cents):product.price_cents;
+   const active=Object.hasOwn(body,'active')?body.active:product.active;
+   if(typeof active!=='boolean')fail('Informe se o produto está ativo.');
+   db.prepare('UPDATE pdv_products SET name=?,price_cents=?,active=? WHERE id=?').run(name,price_cents,Number(active),id);
+   return {id,name,price_cents,active};
+  });
+ }
+
+ function requireOpen(current){
+  if(current.status!=='open')fail('Esta comanda não está aberta.',409);
+ }
+ function addItem(bookingId,body){
+  const productId=positiveInteger(body.product_id,'Selecione um produto.');
+  const quantity=itemQuantity(body.quantity);
+  const key=typeof body.request_key==='string'?body.request_key.toLowerCase():'';
+  if(!requestKeyPattern.test(key))fail('Atualize o PDV antes de lançar o consumo.');
+  return transaction(db,()=>{
+   const current=tab(bookingId);
+   const existing=requestItem.get(bookingId,key);
+   if(existing){
+    if(existing.product_id!==productId||existing.requested_quantity!==quantity)fail('Este lançamento já foi utilizado para outro item.',409);
+    return current;
+   }
+   requireOpen(current);
+   if(current.booking_status==='cancelled')fail('A reserva está cancelada e não recebe novos consumos.',409);
+   const product=getProduct(productId);
+   if(!product.active)fail('Este produto está desativado.',409);
+   safeAmount(current.consumption_cents+safeAmount(product.price_cents*quantity));
+   open(bookingId);
+   db.prepare(`INSERT INTO pdv_items(booking_id,product_id,name,price_cents,quantity,request_key,requested_quantity)
+    VALUES(?,?,?,?,?,?,?)`).run(bookingId,productId,product.name,product.price_cents,quantity,key,quantity);
+   return tab(bookingId);
+  });
+ }
+ function updateItem(bookingId,itemId,body){
+  const quantity=itemQuantity(body.quantity);
+  return transaction(db,()=>{
+   const current=tab(bookingId),item=lookupItem.get(itemId,bookingId);
+   if(!item||item.removed)fail('Item não encontrado nesta comanda.',404);
+   requireOpen(current);
+   if(current.booking_status==='cancelled'&&quantity>item.quantity)fail('A reserva está cancelada e não recebe novos consumos.',409);
+   const previousTotal=item.price_cents*item.quantity;
+   safeAmount(current.consumption_cents-previousTotal+safeAmount(item.price_cents*quantity));
+   db.prepare('UPDATE pdv_items SET quantity=? WHERE id=? AND booking_id=?').run(quantity,itemId,bookingId);
+   return tab(bookingId);
+  });
+ }
+ function removeItem(bookingId,itemId){
+  return transaction(db,()=>{
+   const current=tab(bookingId),item=lookupItem.get(itemId,bookingId);
+   if(!item)fail('Item não encontrado nesta comanda.',404);
+   if(item.removed)return current;
+   requireOpen(current);
+   // Preserve the original request key so retrying an earlier add cannot bring this item back.
+   db.prepare('UPDATE pdv_items SET removed=1 WHERE id=? AND booking_id=?').run(itemId,bookingId);
+   return tab(bookingId);
+  });
+ }
+ function close(bookingId,body){
+  const expected=body.expected_total_cents;
+  if(!Number.isSafeInteger(expected)||expected<0)fail('Informe o total a receber nesta comanda.');
+  return transaction(db,()=>{
+   const current=tab(bookingId);
+   if(current.consumption_cents!==expected)fail('O total da comanda mudou. Confira os itens e tente novamente.',409);
+   const method=expected>0?body.method:null;
+   if(current.status==='closed'){
+    if(current.method!==method)fail('Esta comanda já foi fechada com outra forma de pagamento.',409);
+    return current;
+   }
+   requireOpen(current);
+   if(expected>0&&!paymentMethods.has(method))fail('Selecione a forma de recebimento do consumo.');
+   const now=new Date().toISOString();
+   open(bookingId);
+   db.prepare('UPDATE pdv_tabs SET closed_at=?,paid_at=?,method=?,paid_cents=? WHERE booking_id=?')
+    .run(now,expected>0?now:null,method,expected,bookingId);
+   return tab(bookingId);
+  });
+ }
+
+ return {open,daily,tab,createProduct,updateProduct,addItem,updateItem,removeItem,close};
+}

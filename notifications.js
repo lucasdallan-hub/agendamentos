@@ -17,7 +17,17 @@ const confirmedPayment=`b.status='confirmed' AND b.paid=1 AND (
  b.method IS NOT 'Mercado Pago' OR EXISTS(
   SELECT 1 FROM payment_orders p WHERE p.booking_id=b.id AND p.state='approved'
  ))`;
-const eligiblePending=`n.status='pending' AND (n.role NOT IN ('client','reminder') OR (${confirmedPayment}))`;
+const depositRecord=`misticpay_split_plans p
+ JOIN misticpay_split_shares s ON s.booking_id=p.booking_id AND s.share_index=1`;
+const verifiedDeposit=`p.archived=0 AND p.mode='deposit' AND p.share_count=2
+ AND p.amount_cents=b.total AND s.amount_cents=(b.total+1)/2
+ AND s.state='approved' AND s.provider_state='COMPLETO'`;
+const confirmedDeposit=`b.status='confirmed' AND EXISTS(
+ SELECT 1 FROM ${depositRecord} WHERE p.booking_id=b.id AND ${verifiedDeposit}
+)`;
+const eligiblePending=`n.status='pending'
+ AND (n.role NOT IN ('client','reminder') OR (${confirmedPayment}))
+ AND (n.role<>'client_deposit' OR (${confirmedDeposit}))`;
 const arenaClock=new Intl.DateTimeFormat('en-CA',{
  timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit',
  hour:'2-digit',minute:'2-digit',hourCycle:'h23'
@@ -89,13 +99,18 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
  initializeOutbox(db);
  db.exec(`CREATE INDEX IF NOT EXISTS bookings_confirmed_end ON bookings(date,end) WHERE status='confirmed';
  CREATE INDEX IF NOT EXISTS bookings_confirmed_start ON bookings(date,start) WHERE status='confirmed';
- CREATE INDEX IF NOT EXISTS booking_notifications_pending_clients ON booking_notifications(created_at)
-  WHERE status='pending' AND role='client';`);
+ DROP INDEX IF EXISTS booking_notifications_pending_clients;
+ CREATE INDEX IF NOT EXISTS booking_notifications_pending_payments ON booking_notifications(created_at)
+  WHERE status='pending' AND role IN ('client','client_deposit');`);
  const dueStarts=db.prepare(`SELECT b.id FROM bookings b
   WHERE b.status='confirmed' AND b.date=? AND b.start=? AND b.end>?
   AND NOT EXISTS(SELECT 1 FROM booking_notifications n WHERE n.booking_id=b.id AND n.role='arena_start')
   ORDER BY b.id`);
  const paidCustomer=db.prepare(`SELECT b.phone FROM bookings b WHERE b.id=? AND ${confirmedPayment}`);
+ const depositedCustomer=db.prepare(`SELECT b.phone,s.amount_cents deposit_cents,
+  CASE WHEN b.paid=1 THEN 0 ELSE b.total-s.amount_cents END remaining_cents
+  FROM ${depositRecord} JOIN bookings b ON b.id=p.booking_id
+  WHERE b.id=? AND b.status='confirmed' AND ${verifiedDeposit}`);
  const dueReminders=db.prepare(`SELECT b.id,b.phone,
   NOT EXISTS(SELECT 1 FROM booking_notifications n WHERE n.booking_id=b.id AND n.role='arena_reminder') AS arena_due,
   (${confirmedPayment}) AND NOT EXISTS(
@@ -197,18 +212,20 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   if(!c.enabled||!c.base_url||!c.api_key||!c.arena_number)return;
   recordEvent(bookingId,c.arena_number,'arena',provider,'pending');
  }
- function enqueuePaidClient(bookingId){
+ function enqueueClientPayment(bookingId,role,eligibleCustomer){
   const provider=sendingProvider(),c=stored(provider);
   if(!c.enabled||!c.base_url||!c.api_key||!c.arena_number)return;
-  const booking=paidCustomer.get(bookingId);
+  const booking=eligibleCustomer.get(bookingId);
   if(!booking)return;
   const recipient=customerNumber(booking.phone,c.country_code);
-  // A legacy pending row can be reused with the current WhatsApp connection.
+  // Reuse a pending row with the current WhatsApp connection.
   const updated=db.prepare(`UPDATE booking_notifications SET recipient=?,provider=?,status=?,error=?,updated_at=?
-   WHERE booking_id=? AND role='client' AND status='pending'`)
-   .run(recipient,provider,recipient?'pending':'failed',recipient?'':'O telefone do cliente não é um número válido para envio pelo WhatsApp.',new Date().toISOString(),bookingId);
-  if(!updated.changes)recordEvent(bookingId,recipient,'client',provider,'pending');
+   WHERE booking_id=? AND role=? AND status='pending'`)
+   .run(recipient,provider,recipient?'pending':'failed',recipient?'':'O telefone do cliente não é um número válido para envio pelo WhatsApp.',new Date().toISOString(),bookingId,role);
+  if(!updated.changes)recordEvent(bookingId,recipient,role,provider,'pending');
  }
+ const enqueuePaidClient=bookingId=>enqueueClientPayment(bookingId,'client',paidCustomer);
+ const enqueueDepositClient=bookingId=>enqueueClientPayment(bookingId,'client_deposit',depositedCustomer);
  function mark(id,status,error=''){
   db.prepare('UPDATE booking_notifications SET status=?,updated_at=?,error=? WHERE id=?').run(status,new Date().toISOString(),error,id);
  }
@@ -217,7 +234,7 @@ export function bookingNotifications(db,{fetchImpl=fetch}={}){
   db.prepare("UPDATE booking_notifications SET status='unknown',updated_at=?,error='O envio foi interrompido. Confira o provedor antes de tentar novamente.' WHERE status='sending' AND updated_at<?").run(new Date().toISOString(),stale);
   return db.prepare('SELECT id,booking_id,recipient,role,status,created_at,updated_at,error FROM booking_notifications ORDER BY created_at DESC,id DESC LIMIT 30').all();
  }
- function message(bookingId,role){
+ function message(bookingId,role,deposit){
   const b=db.prepare('SELECT b.customer,b.phone,b.date,b.start,b.end,b.total,b.status,c.name court_name FROM bookings b JOIN courts c ON c.id=b.court_id WHERE b.id=?').get(bookingId);
   if(!b||b.status!=='confirmed')return null;
   const arenaName=branding(db).name;
@@ -245,7 +262,19 @@ Olá, ${b.customer}!
 ⏱️ *Tempo restante: ${remaining} ${remaining===1?'minuto':'minutos'}*`;
   }
   const date=new Date(b.date+'T12:00:00Z').toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'});
-  const amount=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(b.total/100);
+  const money=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'});
+  if(role==='client_deposit'){
+   return `✅ *Entrada confirmada!*
+🏐 ${arenaName}
+
+Olá, ${b.customer}! Sua reserva #${bookingId} está confirmada.
+📍 ${b.court_name}
+📅 ${date} · ${b.start} às ${b.end}
+
+💰 *Entrada recebida* ${money.format(deposit.deposit_cents/100)}
+💳 *Saldo da quadra* ${money.format(deposit.remaining_cents/100)}`;
+  }
+  const amount=money.format(b.total/100);
   if(role==='client'){
    return `✅ *Reserva confirmada!*
 🏐 ${arenaName}
@@ -280,7 +309,12 @@ ${arenaName} · Reserva #${bookingId}
     else mark(event.id,'failed','A confirmação do pagamento foi retirada antes do envio do lembrete.');
     return;
    }
-   const provider=providerFor(event.provider),c=stored(event.provider),text=message(event.booking_id,event.role);
+   const deposit=event.role==='client_deposit'?depositedCustomer.get(event.booking_id):null;
+   if(event.role==='client_deposit'&&!deposit){
+    mark(event.id,'pending');
+    return;
+   }
+   const provider=providerFor(event.provider),c=stored(event.provider),text=message(event.booking_id,event.role,deposit);
    if(!text||!c.enabled){
     const reason=scheduledRoles.has(event.role)
      ? 'O horário deste aviso passou, a reserva foi cancelada ou as notificações foram desativadas.'
@@ -337,7 +371,7 @@ ${arenaName} · Reserva #${bookingId}
    await Promise.all(claimed.slice(index,index+alertBatchSize).map(deliver));
   }
   const confirmations=db.prepare(`SELECT n.* FROM booking_notifications n JOIN bookings b ON b.id=n.booking_id
-   WHERE n.role='client' AND ${eligiblePending} ORDER BY n.created_at LIMIT ?`).all(alertBatchSize);
+   WHERE n.role IN ('client','client_deposit') AND ${eligiblePending} ORDER BY n.created_at LIMIT ?`).all(alertBatchSize);
   await Promise.all(confirmations.map(dispatchEvent));
  }
  async function dispatch(bookingId){
@@ -349,15 +383,17 @@ ${arenaName} · Reserva #${bookingId}
    // A failure reading the notification queue must not fail a saved booking.
   }
  }
- async function dispatchPaidClient(bookingId){
+ async function dispatchClientPayment(bookingId,role){
   try{
    const pending=db.prepare(`SELECT n.* FROM booking_notifications n JOIN bookings b ON b.id=n.booking_id
-    WHERE n.booking_id=? AND n.role='client' AND ${eligiblePending}`).get(bookingId);
+    WHERE n.booking_id=? AND n.role=? AND ${eligiblePending}`).get(bookingId,role);
    if(pending)await dispatchEvent(pending);
   }catch{
    // The periodic job can recover a confirmed payment's pending message.
   }
  }
+ const dispatchPaidClient=bookingId=>dispatchClientPayment(bookingId,'client');
+ const dispatchDepositClient=bookingId=>dispatchClientPayment(bookingId,'client_deposit');
  async function recoverPending(){
   const pending=db.prepare(`SELECT n.* FROM booking_notifications n JOIN bookings b ON b.id=n.booking_id
    WHERE ${eligiblePending} ORDER BY n.created_at LIMIT 3`).all();
@@ -500,5 +536,5 @@ ${arenaName} · Reserva #${bookingId}
   // not a guarantee of validity; the user may request a fresh code at any time.
   return {...session,qr_code:code,expires_at:new Date(Date.now()+20000).toISOString()};
  }
- return {summary,save,enqueue,dispatch,enqueuePaidClient,dispatchPaidClient,events,recoverPending,processBookingAlerts,check,connect,syncWebhook};
+ return {summary,save,enqueue,dispatch,enqueuePaidClient,dispatchPaidClient,enqueueDepositClient,dispatchDepositClient,events,recoverPending,processBookingAlerts,check,connect,syncWebhook};
 }

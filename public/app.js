@@ -21,6 +21,7 @@ async function init(){
   const [session,identity]=await Promise.all([api('session'),api('system/branding')]);systemBranding=identity;applyBranding();setup=session.setup;
   $('#startup-error').hidden=true;$('#startup-error-message').textContent='';
   $('#auth').hidden=session.authenticated;$('#app').hidden=!session.authenticated;
+  if(!session.authenticated&&$('#pdv-tab-dialog').open)$('#pdv-tab-dialog').close();
   $('#auth-description').textContent=setup?'Bem-vindo! Crie a senha do administrador para começar.':'Bem-vindo de volta. Entre para gerenciar sua arena.';
   $('#auth-submit').textContent=setup?'Criar acesso e começar →':'Entrar na arena →';
   $('#auth-form input[name="password"]').minLength=setup?10:1;
@@ -34,7 +35,7 @@ async function init(){
 $('#startup-retry').onclick=()=>init();
 $('#auth-form').onsubmit=async e=>{e.preventDefault();$('#auth-error').textContent='';$('#auth-submit').disabled=true;try{await api(setup?'setup':'login',{username:new FormData(e.target).get('username'),password:new FormData(e.target).get('password')});e.target.reset();await init();}catch(e){$('#auth-error').textContent=e.message;}finally{$('#auth-submit').disabled=false;}};
 $('#logout').onclick=async()=>{if(qrSession){stopQrSession();$('#modal').close();}try{await api('logout',{});await init();}catch(e){toast(e.message);}};
-async function refresh(){[courts,bookings,paymentConfig,pixSettings,misticpayConfig,notificationConfig,notificationEvents]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings'),api('misticpay/config'),api(notificationRoute('config')),api('notifications/events')]);await loadSystems();render();}
+async function refresh(){[courts,bookings,paymentConfig,pixSettings,misticpayConfig,notificationConfig,notificationEvents]=await Promise.all([api('courts'),api('bookings'),api('payments/config'),api('pix/settings'),api('misticpay/config'),api(notificationRoute('config')),api('notifications/events')]);await loadSystems();render();if(view==='pdv')await pdv.refresh();}
 const stat=(title,value,note,icon)=>`<div class="stat"><div class="stat-top">${title}<span class="stat-icon">${icon}</span></div><strong>${value}</strong><small>${note}</small></div>`;
 const receiptMatchLabels={
  processing:'Lendo o comprovante…',
@@ -56,6 +57,7 @@ const misticpayLabels={
 };
 const misticpayInProgress=['pending','creating','unknown','review'];
 const misticpayHistorical=['cancelled','refunded','archived'];
+const depositBalance=b=>Math.max(0,b.total-(b.split_paid_cents||0));
 function bookingPaymentLabel(b){
  if(misticpayHistorical.includes(b.misticpay_status))return misticpayLabels[b.misticpay_status];
  if(b.status==='cancelled')return 'Cancelado';
@@ -63,6 +65,11 @@ function bookingPaymentLabel(b){
  if(b.online_status==='refunded')return 'Estornado';
  if(b.online_status==='charged_back')return 'Contestado';
  if(b.paid)return '✓ Pago';
+ if(b.split_mode==='deposit'){
+  if(b.split_archived)return 'Entrada Pix no histórico';
+  if(b.deposit_confirmed)return `Entrada confirmada · saldo ${money(depositBalance(b))}`;
+  return 'Aguardando entrada de 50%';
+ }
  if(b.split_count)return `${b.split_paid_count||0}/${b.split_count} cotas pagas`;
  if(b.misticpay_status)return misticpayLabels[b.misticpay_status]||'Consultar pagamento MisticPay';
  if(b.receipt_status)return receiptLabel(b);
@@ -72,7 +79,7 @@ function bookingPaymentLabel(b){
 function bookingActions(b){
  const receipts=b.receipt_status?`<button class="table-button" data-receipts="${b.id}">Ver comprovante</button>`:'';
  if(b.online_archived||b.misticpay_status==='archived'||b.split_archived)return '<span>Histórico do sistema mãe</span>'+receipts;
- if(b.split_count)return `<button class="table-button" data-misticpay-link="${b.id}">Ver divisão Pix</button>`;
+ if(b.split_count)return `<button class="table-button" data-misticpay-link="${b.id}">${b.split_mode==='deposit'?'Ver entrada e saldo':'Ver divisão Pix'}</button>`;
  if(b.misticpay_status){
   const link=!b.paid&&misticpayInProgress.includes(b.misticpay_status)?`<button class="table-button" data-misticpay-link="${b.id}">Ver link MisticPay</button>`:'';
   return link+`<button class="table-button" data-misticpay-sync="${b.id}">Consultar MisticPay</button>`+receipts;
@@ -156,11 +163,13 @@ function render(){
  renderMisticpayConfig();
  $('#pix-settings-description').textContent=pixSettings.ready?`Chave cadastrada para ${pixSettings.receiver}. ${pixSettings.ocr_ready?'A leitura compara o valor do comprovante com o total da reserva.':'A arena confere o recebimento na conta.'}`:'Cadastre a chave da arena para que o cliente pague por Pix e envie o comprovante.';
  const sum=a=>a.reduce((s,b)=>s+b.total,0);
- $('#stats').innerHTML=stat('Agendamentos hoje',daily.length,'Reservas confirmadas','▤')+stat('Recebido hoje',money(sum(paid.filter(b=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo'}).format(new Date(b.paid_at))===today()))),'Pagamentos registrados hoje','↑')+stat('A receber',money(sum(pending)),'Reservas ativas não pagas','◷')+stat('Quadras ativas',courts.filter(c=>c.active).length,'Prontas para receber jogos','▱');
- $('#finance-stats').innerHTML=stat('Total recebido',money(sum(paid)),'Todos os recebimentos','↑')+stat('A receber',money(sum(pending)),'Reservas ativas não pagas','◷')+stat('Pagamentos',paid.length,'Recebimentos confirmados','✓')+stat('Reservas pendentes',pending.length,'Aguardando pagamento','▤');
+ const pendingTotal=pending.reduce((total,b)=>total+(b.split_mode==='deposit'?depositBalance(b):b.total),0);
+ const receivedDeposits=active.reduce((total,b)=>total+(!b.paid&&b.split_mode==='deposit'?b.split_paid_cents||0:0),0);
+ $('#stats').innerHTML=stat('Agendamentos hoje',daily.length,'Reservas confirmadas','▤')+stat('Quadras quitadas hoje',money(sum(paid.filter(b=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo'}).format(new Date(b.paid_at))===today()))),'Total das reservas quitadas','↑')+stat('A receber',money(pendingTotal),'Saldo das reservas ativas','◷')+stat('Quadras ativas',courts.filter(c=>c.active).length,'Prontas para receber jogos','▱');
+ $('#finance-stats').innerHTML=stat('Recebido em quadras',money(sum(paid)+receivedDeposits),'Reservas quitadas e entradas','↑')+stat('A receber',money(pendingTotal),'Saldo das reservas ativas','◷')+stat('Reservas quitadas',paid.length,'Pagamento integral confirmado','✓')+stat('Reservas pendentes',pending.length,'Aguardando pagamento','▤');
  const filtered=bookings.filter(b=>(!$('#filter-date').value||b.date===$('#filter-date').value)&&($('#filter-status').value==='all'||($('#filter-status').value==='cancelled'?b.status==='cancelled':b.status==='confirmed'&&Boolean(b.paid)===($('#filter-status').value==='paid'))));
  $('#booking-count').textContent=filtered.length;
- $('#booking-rows').innerHTML=filtered.map(b=>`<tr><td><div class="client"><span class="client-initials">${esc(b.customer.split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase())}</span><div>${esc(b.customer)}<small>${esc(b.phone)}</small></div></div></td><td>${esc(b.court_name)}<small>${dateLabel(b.date)} · ${esc(b.court_type)}</small></td><td>${b.start} — ${b.end}</td><td>${money(b.total)}</td><td><span class="badge ${b.status==='cancelled'?'cancelled':b.paid?'paid':''}">${bookingPaymentLabel(b)}</span>${b.paid?`<small>${esc(b.method)}</small>`:''}</td><td>${bookingActions(b)}</td></tr>`).join('');
+ $('#booking-rows').innerHTML=filtered.map(b=>`<tr><td><div class="client"><span class="client-initials">${esc(b.customer.split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase())}</span><div>${esc(b.customer)}<small>${esc(b.phone)}</small></div></div></td><td>${esc(b.court_name)}<small>${dateLabel(b.date)} · ${esc(b.court_type)}</small></td><td>${b.start} — ${b.end}</td><td>${money(b.total)}</td><td><span class="badge ${b.status==='cancelled'?'cancelled':b.paid?'paid':''}">${bookingPaymentLabel(b)}</span>${b.paid?`<small>${esc(b.method)}</small>`:''}</td><td><button type="button" class="table-button" data-booking-pdv="${b.id}">Comanda</button>${bookingActions(b)}</td></tr>`).join('');
  $('#booking-empty').hidden=filtered.length>0;
  $('#court-list').innerHTML=courts.length?courts.map(courtCard).join(''):'<div class="empty"><h3>A sua arena começa aqui</h3><p>Adicione a primeira quadra para criar agendamentos.</p></div>';
  const payments=bookings.filter(b=>b.paid||b.online_status||b.misticpay_status||b.pix_link||b.receipt_status||b.split_count);
@@ -205,8 +214,8 @@ for(const id of ['history-search','history-from','history-to','history-status'])
 $('#history-previous').onclick=()=>{historyPage--;renderHistory();};
 $('#history-next').onclick=()=>{historyPage++;renderHistory();};
 
-const titles={overview:['Tudo pronto para o próximo jogo.','Acompanhe sua arena e mantenha cada reserva em dia.','Visão geral'],bookings:['Cada jogo tem seu horário.','Organize as reservas e acompanhe os pagamentos.','Agendamentos'],history:['Histórico de agendamentos','Consulte as reservas registradas na arena.','Histórico'],courts:['A casa dos próximos jogos.','Gerencie os espaços e valores da sua arena.','Minhas quadras'],live:['Quadras ao vivo','Acompanhe o tempo restante de cada reserva pelo horário de São Paulo.','Quadras ao vivo'],systems:['Seu sistema, sua identidade.','Personalize sua arena e gerencie as cópias do sistema mãe.','Meu sistema'],finance:['Suas contas em dia.','Acompanhe os valores recebidos e os pagamentos pendentes.','Financeiro']};
-function setView(next){view=next;$('#new-booking').hidden=['systems','history','live'].includes(view);document.querySelectorAll('nav button').forEach(b=>{const active=b.dataset.view===view;b.classList.toggle('selected',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});$('#page-title').textContent=titles[view][0];$('#page-subtitle').textContent=titles[view][1];$('#breadcrumb').textContent=titles[view][2];$('#overview-content').hidden=view!=='overview';$('#bookings-content').hidden=!['overview','bookings'].includes(view);$('#history-content').hidden=view!=='history';$('#courts-content').hidden=view!=='courts';$('#live-courts-content').hidden=view!=='live';$('#finance-content').hidden=view!=='finance';$('#systems-content').hidden=view!=='systems';$('#filter-date').value=view==='overview'?today():'';$('#list-title').firstChild.textContent=view==='overview'?'Agenda de hoje ':'Agendamentos ';$('#list-description').textContent=view==='overview'?'Confira os horários e prepare a quadra.':'Use os filtros para encontrar uma reserva.';render();}
+const titles={overview:['Tudo pronto para o próximo jogo.','Acompanhe sua arena e mantenha cada reserva em dia.','Visão geral'],bookings:['Cada jogo tem seu horário.','Organize as reservas e acompanhe os pagamentos.','Agendamentos'],history:['Histórico de agendamentos','Consulte as reservas registradas na arena.','Histórico'],courts:['A casa dos próximos jogos.','Gerencie os espaços e valores da sua arena.','Minhas quadras'],live:['Quadras ao vivo','Acompanhe o tempo restante de cada reserva pelo horário de São Paulo.','Quadras ao vivo'],pdv:['PDV','Acompanhe comandas e recebimentos da arena.','PDV'],systems:['Seu sistema, sua identidade.','Personalize sua arena e gerencie as cópias do sistema mãe.','Meu sistema'],finance:['Suas contas em dia.','Acompanhe os valores recebidos e os pagamentos pendentes.','Financeiro']};
+function setView(next){view=next;$('#new-booking').hidden=['systems','history','live','pdv'].includes(view);document.querySelectorAll('nav button').forEach(b=>{const active=b.dataset.view===view;b.classList.toggle('selected',active);if(active)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});$('#page-title').textContent=titles[view][0];$('#page-subtitle').textContent=titles[view][1];$('#breadcrumb').textContent=titles[view][2];$('#overview-content').hidden=view!=='overview';$('#bookings-content').hidden=!['overview','bookings'].includes(view);$('#history-content').hidden=view!=='history';$('#courts-content').hidden=view!=='courts';$('#live-courts-content').hidden=view!=='live';$('#finance-content').hidden=view!=='finance';$('#pdv-content').hidden=view!=='pdv';$('#systems-content').hidden=view!=='systems';$('#filter-date').value=view==='overview'?today():'';$('#list-title').firstChild.textContent=view==='overview'?'Agenda de hoje ':'Agendamentos ';$('#list-description').textContent=view==='overview'?'Confira os horários e prepare a quadra.':'Use os filtros para encontrar uma reserva.';render();if(view==='pdv')void pdv.refresh();}
 document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>setView(b.dataset.view));
 $('#today-label').textContent=new Date().toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo',weekday:'long',day:'numeric',month:'long'}).toUpperCase();$('#filter-date').value=today();$('#filter-date').onchange=render;$('#filter-status').onchange=render;
 function openModal(title,fields,action,label='Salvar'){stopQrSession();$('#modal-fields').onclick=null;$('#modal-fields').onchange=null;$('#modal-title').textContent=title;$('#modal-fields').innerHTML=fields;$('#modal-error').textContent='';$('#save-modal').textContent=label;submitModal=action;$('#modal').showModal();}
@@ -280,9 +289,11 @@ async function openMisticpayLink(b){
  const {path}=await api(`bookings/${b.id}/misticpay-link`,{});
  const link=new URL(path,location.origin);
  if(link.origin!==location.origin||link.pathname!=='/catalogo')throw Error('Não foi possível abrir o link Pix da reserva.');
- const action=b.misticpay_status?'pagar ou acompanhar o Pix da reserva':'pagar o total ou dividir o valor em cotas';
- const instruction=b.split_count?'Use este link para acompanhar as cotas da reserva.':`Envie este link para <strong>${esc(b.customer)}</strong> ${action}.`;
- openModal(b.split_count?'Divisão Pix da reserva':'Enviar Pix via MisticPay',`<p>${instruction}</p><label>Link para o cliente<input id="misticpay-link" value="${esc(link.href)}" readonly></label><div class="checkout-actions"><button type="button" class="outline" id="copy-misticpay-link">Copiar link</button><a class="primary checkout-open" href="${esc(link.href)}" target="_blank" rel="noopener noreferrer">Abrir reserva ↗</a></div>`,async()=>{},'Concluir');
+ const action=b.misticpay_status?'pagar ou acompanhar o Pix da reserva':'escolher pagamento integral, entrada de 50% ou divisão com amigos';
+ const deposit=b.split_mode==='deposit';
+ const instruction=deposit?'Use este link para acompanhar a entrada e pagar o saldo da reserva.':b.split_count?'Use este link para acompanhar as cotas da reserva.':`Envie este link para <strong>${esc(b.customer)}</strong> ${action}.`;
+ const title=deposit?'Entrada e saldo da reserva':b.split_count?'Divisão Pix da reserva':'Enviar Pix via MisticPay';
+ openModal(title,`<p>${instruction}</p><label>Link para o cliente<input id="misticpay-link" value="${esc(link.href)}" readonly></label><div class="checkout-actions"><button type="button" class="outline" id="copy-misticpay-link">Copiar link</button><a class="primary checkout-open" href="${esc(link.href)}" target="_blank" rel="noopener noreferrer">Abrir reserva ↗</a></div>`,async()=>{},'Concluir');
  $('#copy-misticpay-link').onclick=async()=>{try{await navigator.clipboard.writeText(link.href);toast('Link copiado. Envie ao cliente.');}catch{$('#misticpay-link').select();toast('Selecione e copie o link Pix.');}};
 }
 $('#booking-rows').onclick=async e=>{
@@ -549,7 +560,7 @@ function renderNotifications(){
  $('#configure-evolution-webhook').disabled=!canConnect;
  $('#configure-evolution-webhook').textContent=notificationConfig.webhook_configured?'Atualizar webhook':'Sincronizar webhook';
  const labels={pending:'Aguardando envio',sending:'Envio em andamento',accepted:'Aceita pela API',failed:'Falha no envio',unknown:'Resultado incerto'};
- const roles={client:'Cliente',arena:'Administrador da arena',reminder:'Lembrete ao cliente',arena_start:'Início da quadra',arena_reminder:'Fim próximo da quadra'};
+ const roles={client:'Cliente',client_deposit:'Entrada confirmada ao cliente',arena:'Administrador da arena',reminder:'Lembrete ao cliente',arena_start:'Início da quadra',arena_reminder:'Fim próximo da quadra'};
  $('#notifications-rows').innerHTML=notificationEvents.map(event=>{
   const role=roles[event.role]||roles.arena;
   return `<tr><td>#${esc(event.booking_id)}</td><td>${role}<small>${esc(event.recipient||'Número indisponível')}</small></td><td><span class="badge ${event.status==='accepted'?'paid':event.status==='failed'?'cancelled':''}">${labels[event.status]||'Status desconhecido'}</span></td><td>${new Date(event.updated_at||event.created_at).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'})}</td><td>${esc(event.error|| (event.status==='unknown'?'Confira o provedor antes de enviar novamente.':event.status==='accepted'?'A entrega no WhatsApp ainda não foi confirmada.':''))}</td></tr>`;

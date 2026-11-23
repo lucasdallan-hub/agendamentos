@@ -87,7 +87,7 @@ try{
  passed('default admin login works without a bootstrap secret and rejects other usernames');
  await stop();
  await start({bootstrap:true});
- for(const route of ['/','/catalogo','/pix','/pagamento','/theme.js','/sidebar.js','/app.js','/pix.js','/style.css','/refresh.css','/refresh-public.css','/arena-hero.webp']){
+ for(const route of ['/','/catalogo','/pix','/pagamento','/theme.js','/sidebar.js','/app.js','/pdv.js','/pix.js','/style.css','/refresh.css','/refresh-public.css','/arena-hero.webp']){
   const response=await api(route);assert.equal(response.status,200,`Asset ${route}: ${response.status}`);assert.equal(response.headers.get('x-content-type-options'),'nosniff');
  }
  assert.equal((await api('/missing')).status,404);
@@ -142,6 +142,23 @@ try{
  assert.equal((await api(`/api/receipts/${receiptId}/review`,{decision:'approve',confirmed_received:true,confirmed_amount_cents:18000})).status,200);
  assert.equal((await api(`/api/pix/payments/${token}`,undefined,{auth:false})).data.paid,true);
  passed('offline OCR recognizes a matching PNG amount and bank credit still requires approval');
+ const tabRoute=`/api/pdv/tabs/${id}`;
+ assert.equal((await api(tabRoute,undefined,{auth:false})).status,401);
+ const initialTab=await api(tabRoute);
+ assert.equal(initialTab.status,200,JSON.stringify(initialTab.data));
+ assert.deepEqual([initialTab.data.status,initialTab.data.consumption_cents],['open',0]);
+ const product=await api('/api/pdv/products',{name:'Água',price_cents:800,active:true});
+ assert.equal(product.status,201,JSON.stringify(product.data));
+ const item={product_id:product.data.id,quantity:2,request_key:randomBytes(16).toString('hex')};
+ assert.equal((await api(tabRoute+'/items',item)).data.consumption_cents,1600);
+ assert.equal((await api(tabRoute+'/items',item)).data.consumption_cents,1600);
+ const tabClose=await api(tabRoute+'/close',{method:'Pix',expected_total_cents:1600});
+ assert.equal(tabClose.status,200,JSON.stringify(tabClose.data));
+ assert.equal(tabClose.data.status,'closed');
+ const pdvDashboard=await api('/api/pdv');
+ assert.equal(pdvDashboard.status,200,JSON.stringify(pdvDashboard.data));
+ assert.deepEqual([pdvDashboard.data.revenue.courts_cents,pdvDashboard.data.revenue.consumption_cents,pdvDashboard.data.revenue.total_cents],[18000,1600,19600]);
+ passed('automatic PDV tab, replay-safe item entry and separate court and consumption revenue');
  const scannedReservation=await api('/api/bookings',{...reservation,date:'2026-12-03',end:'19:00'});assert.equal(scannedReservation.status,201);
  const scannedLink=await api(`/api/bookings/${scannedReservation.data.id}/pix-link`,{});assert.equal(scannedLink.status,200);
  const scannedToken=scannedLink.data.path.split('#')[1];
@@ -177,6 +194,14 @@ try{
  assert.deepEqual([share.status,share.data.index,share.data.amount_cents,share.data.status],[200,21,571,'uncreated']);
  assert.equal((await api(splitRoute,undefined,{auth:false,method:'DELETE'})).status,200);
  passed('public split payment in Durable SQLite issues private links without charging');
+ const deposit=await api(splitRoute,{mode:'deposit'},{auth:false});
+ assert.equal(deposit.status,200,JSON.stringify(deposit.data));
+ assert.deepEqual([deposit.data.mode,deposit.data.deposit_confirmed,deposit.data.deposit_cents,deposit.data.remaining_cents],['deposit',false,6000,12000]);
+ const balanceRoute='/api/public/split/'+deposit.data.shares[1].path.split('#cota:')[1];
+ const balance=await api(balanceRoute,undefined,{auth:false});
+ assert.deepEqual([balance.status,balance.data.mode,balance.data.amount_cents,balance.data.locked],[200,'deposit',6000,true]);
+ assert.equal((await api(splitRoute,undefined,{auth:false,method:'DELETE'})).status,200);
+ passed('50 percent deposit plan keeps the balance locked until confirmed payment');
  assert.equal((await api('/api/notifications/config',undefined,{auth:false})).status,401);
  const notificationConfig={enabled:false,base_url:'https://evolution.example.com',api_key:'fake-smoke-instance-key',target:'arena',arena_number:'(21) 98888-7777',country_code:'55'};
  assert.equal((await api('/api/notifications/check',{})).status,409);
@@ -211,6 +236,9 @@ try{
  assert.equal((await api(misticpayConfigPath,undefined,{headers:childHeaders})).data.verification_state,'unconfigured');
  const childOriginal=await api(`/api/receipts/1/file`,undefined,{headers:childHeaders});
  assert.equal(childOriginal.status,200);assert.deepEqual(childOriginal.data,fixture);
+ const childTab=await api(tabRoute,undefined,{headers:childHeaders});
+ assert.equal(childTab.status,200,JSON.stringify(childTab.data));
+ assert.deepEqual(childTab.data,tabClose.data);
  assert.equal((await api('/api/courts',{name:'Só no filho',type:'Vôlei',price:50},{headers:childHeaders})).status,201);
  assert.equal((await api('/api/system/branding',{name:'Logo do filho',logo:''},{headers:childHeaders,method:'PUT'})).status,200);
  assert.equal((await api('/api/system/domain',{hostname:'mae.example.com'},{auth:false,headers:childHeaders,method:'PUT'})).status,401);

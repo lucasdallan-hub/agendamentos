@@ -222,3 +222,95 @@ test('Pix dividido: pagina milhares de cotas sem emitir cobranças antecipadas',
  assert.equal(f.charges[0].body.amount,9000.07);
  assert.equal((await f.api(path,{count:2})).status,409);
 });
+
+test('Entrada Pix: confirma a reserva com o primeiro pagamento e só dá baixa total após receber o saldo',async t=>{
+ // The entry and balance are received on different days in São Paulo.
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-24T02:58:00Z')});
+ const f=await fixture(t),booking=await f.reserve(180.01);
+ const path=booking.path+'/split';
+ async function courtRevenue(date){
+  const report=await f.api('/api/pdv?date='+date,undefined,{auth:true});
+  assert.equal(report.status,200,JSON.stringify(report.data));
+  return report.data.revenue.courts_cents;
+ }
+ const initial=await f.api(booking.path);
+ assert.equal(initial.data.paid,0);
+ assert.equal(initial.data.split_ready,true);
+ assert.equal(f.messages.length,1);
+
+ const unknownMode=await f.api(path,{count:2,mode:'unknown'});
+ assert.equal(unknownMode.status,400,JSON.stringify(unknownMode.data));
+ const plan=await f.api(path,{count:3,mode:'deposit',amount_cents:1});
+ assert.ok([200,201].includes(plan.status),JSON.stringify(plan.data));
+ assert.equal(plan.data.mode,'deposit');
+ assert.equal(plan.data.deposit_confirmed,false);
+ assert.equal(plan.data.deposit_cents,9001);
+ assert.equal(plan.data.count,2,'O servidor define as duas etapas e ignora os valores enviados pelo navegador');
+ assert.deepEqual(plan.data.shares.map(({index,amount_cents})=>[index,amount_cents]),[[1,9001],[2,9000]]);
+ const [entry,balance]=plan.data.shares.map(sharePath);
+ const entryDetails=await f.api(entry);
+ assert.equal(entryDetails.status,200);
+ assert.deepEqual([entryDetails.data.mode,entryDetails.data.index,entryDetails.data.amount_cents],['deposit',1,9001]);
+
+ assert.equal((await f.api(balance,payer)).status,409);
+ assert.equal(f.charges.length,0);
+ const firstCharge=await f.api(entry,{...payer,amount_cents:1});
+ assert.ok([200,201].includes(firstCharge.status),JSON.stringify(firstCharge.data));
+ assert.equal(firstCharge.data.status,'pending');
+ assert.equal(f.charges[0].body.amount,90.01);
+ assert.equal((await f.api(path,{count:2})).status,409);
+ assert.equal((await f.api(booking.path+'/misticpay',{cpf:payer.cpf})).status,409);
+
+ const firstHook=new URL(f.charges[0].body.projectWebhook).pathname;
+ await f.api(firstHook,eventFor(f.charges[0]));
+ assert.equal((await f.api(path)).data.deposit_confirmed,false,'O webhook sozinho não confirma a entrada');
+ f.charges[0].data.transactionState='COMPLETO';
+ f.charges[0].data.value=90.00;
+ await f.api(firstHook,eventFor(f.charges[0]));
+ assert.equal((await f.api(path)).data.deposit_confirmed,false,'Um centavo a menos não confirma a entrada');
+ assert.equal((await f.api(balance,payer)).status,409);
+ assert.equal(f.charges.length,1);
+ assert.equal(f.messages.length,1);
+
+ f.charges[0].data.value=90.01;
+ assert.equal((await f.api(firstHook,eventFor(f.charges[0]))).status,200);
+ assert.equal((await f.api(firstHook,eventFor(f.charges[0]))).status,200);
+ const partial=(await f.api(booking.path)).data;
+ assert.equal(partial.paid,0);
+ assert.deepEqual([partial.split.deposit_confirmed,partial.split.paid_cents,partial.split.remaining_cents],[true,9001,9000]);
+ assert.equal(f.db.prepare('SELECT paid_at FROM bookings WHERE id=?').get(booking.id).paid_at,null);
+ assert.deepEqual(f.messages.map(({number})=>number),['5511998877665','5511999887766']);
+ assert.match(f.messages[1].text,/entrada|sinal/i);
+ assert.match(f.messages[1].text,/90,01/);
+ assert.match(f.messages[1].text,/90,00/);
+ assert.equal(f.messages[1].isTransaction,false);
+ assert.equal(await courtRevenue('2026-11-23'),9001);
+ assert.equal(await courtRevenue('2026-11-24'),0);
+
+ t.mock.timers.setTime(Date.parse('2026-11-24T03:01:00Z'));
+ const secondCharge=await f.api(balance,payer);
+ assert.ok([200,201].includes(secondCharge.status),JSON.stringify(secondCharge.data));
+ assert.equal(secondCharge.data.status,'pending');
+ assert.equal(f.charges[1].body.amount,90);
+ const secondHook=new URL(f.charges[1].body.projectWebhook).pathname;
+ f.charges[1].data.transactionState='COMPLETO';
+ assert.equal((await f.api(secondHook,eventFor(f.charges[1]))).status,200);
+ assert.equal((await f.api(secondHook,eventFor(f.charges[1]))).status,200);
+ const settled=(await f.api(booking.path)).data;
+ assert.equal(settled.paid,1);
+ assert.deepEqual([settled.split.status,settled.split.remaining_cents],['approved',0]);
+ assert.deepEqual(f.messages.map(({number})=>number),['5511998877665','5511999887766','5511999887766']);
+ assert.match(f.messages[2].text,/reserva confirmada|pagamento integral confirmado/i);
+ assert.equal(f.messages[2].isTransaction,false);
+ assert.equal(await courtRevenue('2026-11-23'),9001);
+ assert.equal(await courtRevenue('2026-11-24'),9000);
+
+ f.charges[0].data.transactionState='DEVOLVIDO';
+ assert.equal((await f.api(firstHook,eventFor(f.charges[0],'DEVOLVIDO'))).status,200);
+ const refunded=(await f.api(booking.path)).data;
+ assert.equal(refunded.paid,0);
+ assert.deepEqual([refunded.split.deposit_confirmed,refunded.split.remaining_cents],[false,9001]);
+ assert.equal(f.messages.length,3);
+ assert.equal(await courtRevenue('2026-11-23'),0);
+ assert.equal(await courtRevenue('2026-11-24'),9000);
+});

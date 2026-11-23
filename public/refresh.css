@@ -257,6 +257,104 @@ dialog::backdrop, :root[data-theme="dark"] dialog::backdrop { background: #0a102
 }
 .receipt-analysis dt { color: var(--muted); font-size: 0.82rem; }
 .receipt-analysis dd { margin: 4px 0 0; font-weight: 700; }
+
+.pdv-toolbar {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.pdv-toolbar label { margin: 0; }
+.pdv-error { color: var(--danger-text); font-weight: 650; }
+.pdv-error:empty { display: none; }
+.pdv-tabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit,minmax(min(100%, 17rem),1fr));
+  gap: 14px;
+}
+.pdv-tab-card, .pdv-products-list, .pdv-items {
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.pdv-tab-card { padding: 16px; box-shadow: var(--shadow); }
+.pdv-card-heading, .pdv-detail-header {
+  display: flex;
+  align-items: start;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pdv-card-heading h3, .pdv-detail-header h3 { margin: 0; overflow-wrap: anywhere; }
+.pdv-tab-card p, .pdv-detail-header p { margin: 7px 0 4px; }
+.pdv-tab-card small, .pdv-items small, .pdv-products-list small, .pdv-muted { color: var(--muted); }
+.pdv-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.pdv-card-footer strong, .pdv-card-footer small, .pdv-items small, .pdv-products-list small { display: block; }
+.pdv-card-footer strong { margin-top: 3px; font-variant-numeric: tabular-nums; }
+.pdv-products { margin-top: 26px; }
+.pdv-products-list, .pdv-items { list-style: none; }
+.pdv-products-list li, .pdv-items li {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 14px;
+}
+.pdv-products-list li+li, .pdv-items li+li { border-top: 1px solid var(--line); }
+.pdv-products-list li strong, .pdv-items li strong { overflow-wrap: anywhere; }
+.pdv-products-list .outline, .pdv-items .outline { min-height: 36px; padding: 7px 11px; }
+#pdv-tab-dialog { width: min(680px,calc(100% - 26px)); max-height: calc(100dvh - 28px); }
+#pdv-tab-dialog .modal-heading { margin-bottom: 14px; }
+.pdv-dialog-controls { display: flex; gap: 8px; align-items: center; }
+.pdv-dialog-controls .outline { min-height: 36px; padding: 7px 10px; }
+#pdv-tab-dialog label { margin: 0; }
+.pdv-tab-totals {
+  display: grid;
+  grid-template-columns: repeat(2,minmax(0,1fr));
+  gap: 9px;
+  margin: 16px 0;
+}
+.pdv-tab-totals div {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+.pdv-tab-totals div:nth-child(3) { grid-column: 1 / -1; }
+.pdv-tab-totals dt { color: var(--muted); font-size: 12px; }
+.pdv-tab-totals dd { margin: 4px 0 0; font-size: 16px; font-weight: 750; }
+.pdv-paid-info { padding: 10px 12px; border-radius: 10px; background: var(--success-bg); color: var(--success-text); }
+.pdv-add-form, .pdv-item-form, .pdv-settle-form {
+  display: grid;
+  align-items: end;
+  gap: 10px;
+}
+.pdv-add-form { grid-template-columns: minmax(0,1fr) minmax(4.5rem,5.5rem) auto; margin-top: 12px; }
+.pdv-item-form { grid-template-columns: repeat(3,auto); }
+.pdv-item-form input { width: 4.75rem; }
+.pdv-item-form label input { min-height: 36px; padding: 7px; }
+.pdv-add-product { margin-top: 12px; }
+.pdv-settle-form { grid-template-columns: minmax(0,1fr) auto; margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
+.pdv-settle-form p { grid-column: 1 / -1; margin: 0; }
+.pdv-settle-form button:only-child { grid-column: 1 / -1; justify-self: end; }
+@media (max-width: 580px) {
+  .pdv-items li { grid-template-columns: minmax(0,1fr) auto; }
+  .pdv-item-form { grid-column: 1 / -1; justify-content: start; }
+  .pdv-add-form { grid-template-columns: minmax(0,1fr) minmax(4rem,5rem); }
+  .pdv-add-form button { grid-column: 1 / -1; justify-self: start; }
+  .pdv-settle-form { grid-template-columns: minmax(0,1fr); }
+  .pdv-settle-form button:only-child { justify-self: start; }
+}
 .stat { padding: 16px; }
 .stat-top, .stat small, :root[data-theme="dark"] .stat-top, :root[data-theme="dark"] .stat small { color: var(--muted); font-size: 12px; }
 .stat strong { font-weight: 750; color: var(--ink); font-size: clamp(1.25rem, 2.25vw, 1.8rem); margin: 9px 0 4px; }

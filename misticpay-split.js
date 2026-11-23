@@ -9,6 +9,7 @@ const firstRetryDelay=3_000;
 const retryInterval=20_000;
 const maxAttempts=4;
 const retryStates=new Set(['COMPLETO','DEVOLVIDO','DEVOLVIDO_PARCIAL']);
+const splitModes=new Set(['friends','deposit']);
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
 const hex=bytes=>randomBytes(bytes).toString('hex');
 const shareAmount=(plan,index)=>Math.floor(plan.amount_cents/plan.share_count)+(index<=plan.amount_cents%plan.share_count?1:0);
@@ -17,22 +18,35 @@ function shareSignature(plan,index){
  return createHmac('sha256',Buffer.from(plan.secret,'hex')).update(plan.id+'.'+index).digest('hex');
 }
 
-export function createMisticPaySplit(db,{connection,fetchImpl,readCharge,validateCpf,schedule,enqueuePaidClient,dispatchPaidClient}){
+export function createMisticPaySplit(db,{
+ connection,fetchImpl,readCharge,validateCpf,schedule,
+ enqueuePaidClient,dispatchPaidClient,enqueueDepositClient,dispatchDepositClient
+}){
  db.exec(`CREATE TABLE IF NOT EXISTS misticpay_split_plans(
   booking_id INTEGER PRIMARY KEY REFERENCES bookings(id),id TEXT NOT NULL UNIQUE,secret TEXT NOT NULL,
   share_count INTEGER NOT NULL CHECK(share_count>=2),amount_cents INTEGER NOT NULL CHECK(amount_cents>=share_count),
-  archived INTEGER NOT NULL DEFAULT 0,archived_paid_count INTEGER NOT NULL DEFAULT 0,archived_paid_cents INTEGER NOT NULL DEFAULT 0
+  archived INTEGER NOT NULL DEFAULT 0,archived_paid_count INTEGER NOT NULL DEFAULT 0,archived_paid_cents INTEGER NOT NULL DEFAULT 0,
+  mode TEXT NOT NULL DEFAULT 'friends' CHECK(mode IN ('friends','deposit'))
  );
  CREATE TABLE IF NOT EXISTS misticpay_split_shares(
   booking_id INTEGER NOT NULL REFERENCES misticpay_split_plans(booking_id),share_index INTEGER NOT NULL,
   id TEXT NOT NULL UNIQUE,provider_id TEXT UNIQUE,amount_cents INTEGER NOT NULL CHECK(amount_cents>0),
   state TEXT NOT NULL,webhook_token TEXT NOT NULL UNIQUE,qr_code TEXT,copy_paste TEXT,
   created_at INTEGER NOT NULL,checked_at INTEGER,provider_state TEXT,provider_updated_at TEXT,last_webhook_digest TEXT,
-  retry_state TEXT,retry_attempts INTEGER NOT NULL DEFAULT 0,next_check_at INTEGER,
+  retry_state TEXT,retry_attempts INTEGER NOT NULL DEFAULT 0,next_check_at INTEGER,paid_at TEXT,
   PRIMARY KEY(booking_id,share_index)
  );
  CREATE INDEX IF NOT EXISTS misticpay_split_due ON misticpay_split_shares(next_check_at) WHERE next_check_at IS NOT NULL;
  CREATE INDEX IF NOT EXISTS misticpay_split_created ON misticpay_split_shares(created_at DESC,id DESC);`);
+ transaction(db,()=>{
+  if(!db.prepare('PRAGMA table_info(misticpay_split_plans)').all().some(column=>column.name==='mode')){
+   db.exec("ALTER TABLE misticpay_split_plans ADD COLUMN mode TEXT NOT NULL DEFAULT 'friends' CHECK(mode IN ('friends','deposit'))");
+  }
+  if(!db.prepare('PRAGMA table_info(misticpay_split_shares)').all().some(column=>column.name==='paid_at')){
+   db.exec('ALTER TABLE misticpay_split_shares ADD COLUMN paid_at TEXT');
+  }
+ });
+ db.exec('CREATE INDEX IF NOT EXISTS misticpay_split_paid_dates ON misticpay_split_shares(paid_at) WHERE paid_at IS NOT NULL');
  const getPlan=db.prepare('SELECT * FROM misticpay_split_plans WHERE booking_id=?');
  const getCharge=db.prepare('SELECT * FROM misticpay_split_shares WHERE booking_id=? AND share_index=?');
  const getChargeState=db.prepare('SELECT state FROM misticpay_split_shares WHERE booking_id=? AND share_index=?');
@@ -71,10 +85,22 @@ export function createMisticPaySplit(db,{connection,fetchImpl,readCharge,validat
   const editable=!plan.archived&&booking?.status==='confirmed'&&!booking.paid&&!anyCharge.get(plan.booking_id);
   const paid=paid_count===plan.share_count&&paid_cents===plan.amount_cents;
   return {
-   count:plan.share_count,total:plan.amount_cents,paid_count,paid_cents,
+   mode:plan.mode,count:plan.share_count,total:plan.amount_cents,paid_count,paid_cents,
    status:plan.archived?'archived':paid?'approved':'pending',
-   editable,can_change:editable
+   editable,can_change:editable,
+   ...(plan.mode==='deposit'?{
+    deposit_confirmed:plan.archived?paid:depositApproved(plan),
+    deposit_cents:shareAmount(plan,1),remaining_cents:plan.amount_cents-paid_cents
+   }:{})
   };
+ }
+
+ function depositApproved(plan){
+  return getChargeState.get(plan.booking_id,1)?.state==='approved';
+ }
+
+ function balanceLocked(plan,index,status){
+  return plan.mode==='deposit'&&index===2&&status!=='approved'&&!depositApproved(plan);
  }
 
  function splitSummary(bookingId){
@@ -95,23 +121,27 @@ export function createMisticPaySplit(db,{connection,fetchImpl,readCharge,validat
   const states=new Map(charges.map(charge=>[charge.share_index,charge.state]));
   const shares=[];
   for(let index=start;index<=end;index++){
+   const status=states.get(index)??'uncreated';
    shares.push({
-    index,amount_cents:shareAmount(plan,index),status:states.get(index)??'uncreated',
+    index,amount_cents:shareAmount(plan,index),status,
+    ...(plan.mode==='deposit'?{locked:balanceLocked(plan,index,status)}:{}),
     path:`/catalogo#cota:${plan.id}.${index}.${shareSignature(plan,index)}`
    });
   }
   return {...summary(plan),page,pages,shares};
  }
 
- async function splitPlan(bookingId,count){
+ async function splitPlan(bookingId,count,mode='friends'){
+  if(!splitModes.has(mode))fail('Escolha uma forma válida de dividir o pagamento.');
+  if(mode==='deposit')count=2;
   const booking=getBooking.get(bookingId);
   if(!booking)fail('Reserva não encontrada.',404);
   if(!Number.isSafeInteger(count)||count<2||count>booking.total){
-   fail('Informe pelo menos duas cotas, com no mínimo um centavo por cota.');
+   fail(mode==='deposit'?'O valor desta reserva é insuficiente para pagar em duas etapas.':'Informe pelo menos duas cotas, com no mínimo um centavo por cota.');
   }
   const previous=getPlan.get(bookingId);
   rejectArchived(previous);
-  if(previous?.share_count===count)return splitBooking(bookingId);
+  if(previous?.share_count===count&&previous.mode===mode)return splitBooking(bookingId);
   const currentConnection=await connection.active();
   transaction(db,()=>{
    const current=getBooking.get(bookingId),plan=getPlan.get(bookingId);
@@ -121,11 +151,11 @@ export function createMisticPaySplit(db,{connection,fetchImpl,readCharge,validat
     fail('Esta reserva não aceita uma divisão de pagamento.',409);
    }
    assertFreePaymentLane(bookingId);
-   if(plan?.share_count===count)return;
-   if(plan&&anyCharge.get(bookingId))fail('A quantidade de cotas fica fixa após a primeira cobrança.',409);
-   db.prepare(`INSERT INTO misticpay_split_plans(booking_id,id,secret,share_count,amount_cents)
-    VALUES(?,?,?,?,?) ON CONFLICT(booking_id) DO UPDATE SET id=excluded.id,secret=excluded.secret,
-    share_count=excluded.share_count,amount_cents=excluded.amount_cents`).run(bookingId,hex(16),hex(32),count,booking.total);
+   if(plan?.share_count===count&&plan.mode===mode)return;
+   if(plan&&anyCharge.get(bookingId))fail('A forma de pagamento e a quantidade de cotas ficam fixas após a primeira cobrança.',409);
+   db.prepare(`INSERT INTO misticpay_split_plans(booking_id,id,secret,share_count,amount_cents,mode)
+    VALUES(?,?,?,?,?,?) ON CONFLICT(booking_id) DO UPDATE SET id=excluded.id,secret=excluded.secret,
+    share_count=excluded.share_count,amount_cents=excluded.amount_cents,mode=excluded.mode`).run(bookingId,hex(16),hex(32),count,booking.total,mode);
   });
   return splitBooking(bookingId);
  }
@@ -158,9 +188,11 @@ export function createMisticPaySplit(db,{connection,fetchImpl,readCharge,validat
  function shareDetails(plan,index){
   const charge=getCharge.get(plan.booking_id,index);
   const status=charge?.state??'uncreated';
+  const locked=balanceLocked(plan,index,status);
   return {
-   index,count:plan.share_count,amount_cents:shareAmount(plan,index),status,
-   qr_code:status==='pending'?charge.qr_code:null,copy_paste:status==='pending'?charge.copy_paste:null,
+   mode:plan.mode,index,count:plan.share_count,amount_cents:shareAmount(plan,index),status,
+   ...(plan.mode==='deposit'?{locked}:{}),
+   qr_code:status==='pending'&&!locked?charge.qr_code:null,copy_paste:status==='pending'&&!locked?charge.copy_paste:null,
    court_name:plan.court_name,date:plan.date,start:plan.start,end:plan.end
   };
  }
@@ -186,6 +218,7 @@ export function createMisticPaySplit(db,{connection,fetchImpl,readCharge,validat
   const {booking_id}=initial.plan;
   const index=initial.index;
   if(getCharge.get(booking_id,index))return shareDetails(initial.plan,index);
+  if(balanceLocked(initial.plan,index,'uncreated'))fail('O Pix do saldo fica disponível após a confirmação da entrada.',409);
   const name=typeof body.name==='string'?body.name.trim():'';
   if(name.length<2||name.length>120||/[\x00-\x1f\x7f]/.test(name))fail('Informe seu nome para gerar o Pix.');
   const cpf=validateCpf(body.cpf);
@@ -193,6 +226,7 @@ export function createMisticPaySplit(db,{connection,fetchImpl,readCharge,validat
   const claim=transaction(db,()=>{
    const {plan}=sharePlan(token);
    if(getCharge.get(booking_id,index))return null;
+   if(balanceLocked(plan,index,'uncreated'))fail('O Pix do saldo fica disponível após a confirmação da entrada.',409);
    const booking=getBooking.get(booking_id);
    if(!booking||booking.paid||booking.status!=='confirmed'||booking.total!==plan.amount_cents){
     fail('Esta reserva não aceita uma nova cobrança.',409);
@@ -202,13 +236,14 @@ export function createMisticPaySplit(db,{connection,fetchImpl,readCharge,validat
    const id=randomUUID(),webhook=hex(32),amount=shareAmount(plan,index);
    db.prepare(`INSERT INTO misticpay_split_shares(booking_id,share_index,id,amount_cents,state,webhook_token,created_at)
     VALUES(?,?,?,?,'creating',?,?)`).run(booking_id,index,id,amount,webhook,Date.now());
-   return {id,webhook,amount,count:plan.share_count};
+   return {id,webhook,amount,count:plan.share_count,mode:plan.mode};
   });
   if(!claim)return share(token);
   try{
+   const part=claim.mode==='deposit'?(index===1?'Entrada de 50%':'Saldo da quadra'):`Cota ${index} de ${claim.count}`;
    const charge=await requestMisticPay(fetchImpl,currentConnection,'create',{
     amount:claim.amount/100,payerName:name,payerDocument:cpf,transactionId:claim.id,
-    description:`Reserva #${booking_id} · Cota ${index} de ${claim.count}`,
+    description:`Reserva #${booking_id} · ${part}`,
     projectWebhook:`${currentConnection.base_url}/api/misticpay/split-webhook/${claim.webhook}`
    },{decode:result=>readCharge(result.data)});
    transaction(db,()=>{
@@ -237,7 +272,7 @@ export function createMisticPaySplit(db,{connection,fetchImpl,readCharge,validat
   if(payment.cents!==order.amount_cents||(order.provider_id&&![order.id,order.provider_id].includes(payment.id))){
    fail('A transação consultada não corresponde ao valor e à referência da cota.',409);
   }
-  const paidNow=transaction(db,()=>{
+  const confirmed=transaction(db,()=>{
    const current=getChargeById.get(id),plan=getPlan.get(order.booking_id),booking=getBooking.get(order.booking_id);
    if(!current||!plan||!booking||booking.total!==plan.amount_cents||
     shareAmount(plan,current.share_index)!==payment.cents||!connection.isCurrent(currentConnection)){
@@ -245,39 +280,45 @@ export function createMisticPaySplit(db,{connection,fetchImpl,readCharge,validat
    }
    assertUniqueTransaction(payment.id,id);
    connection.recordVerified();
-   if(payment.updatedAt&&current.provider_updated_at&&payment.updatedAt<current.provider_updated_at)return false;
+   if(payment.updatedAt&&current.provider_updated_at&&payment.updatedAt<current.provider_updated_at)return;
    let state;
    if(payment.state==='COMPLETO'){
-    if(['refunded','review'].includes(current.state)&&(!payment.updatedAt||!current.provider_updated_at||payment.updatedAt<=current.provider_updated_at))return false;
+    if(['refunded','review'].includes(current.state)&&(!payment.updatedAt||!current.provider_updated_at||payment.updatedAt<=current.provider_updated_at))return;
     state=booking.status==='confirmed'?'approved':'review';
    }else if(payment.state==='DEVOLVIDO'||payment.state==='DEVOLVIDO_PARCIAL'){
     state=payment.state==='DEVOLVIDO'?'refunded':'review';
    }else{
-    if(['approved','refunded','review'].includes(current.state))return false;
+    if(['approved','refunded','review'].includes(current.state))return;
     state=payment.state==='PENDENTE'?(current.qr_code?'pending':'unknown'):payment.state==='CANCELADO'?'cancelled':'failed';
    }
    const reachedRetry=current.retry_state===payment.state;
+   const newlyApproved=state==='approved'&&current.state!=='approved';
+   const paidAt=state==='approved'?(newlyApproved?new Date().toISOString():current.paid_at):null;
    db.prepare(`UPDATE misticpay_split_shares SET state=?,provider_id=COALESCE(provider_id,?),
-    provider_state=?,provider_updated_at=COALESCE(?,provider_updated_at),
+    provider_state=?,provider_updated_at=COALESCE(?,provider_updated_at),paid_at=?,
     last_webhook_digest=CASE WHEN provider_state=? THEN last_webhook_digest ELSE NULL END,
     next_check_at=CASE WHEN ? THEN NULL ELSE next_check_at END,
     retry_state=CASE WHEN ? THEN NULL ELSE retry_state END,
     retry_attempts=CASE WHEN ? THEN 0 ELSE retry_attempts END WHERE id=?`)
-    .run(state,payment.id,payment.state,payment.updatedAt,payment.state,reachedRetry?1:0,reachedRetry?1:0,reachedRetry?1:0,id);
+    .run(state,payment.id,payment.state,payment.updatedAt,paidAt,payment.state,reachedRetry?1:0,reachedRetry?1:0,reachedRetry?1:0,id);
    const {paid_count,paid_cents}=totals.get(plan.booking_id);
    const complete=booking.status==='confirmed'&&paid_count===plan.share_count&&paid_cents===plan.amount_cents;
    if(complete&&!booking.paid){
     db.prepare("UPDATE bookings SET paid=1,method='MisticPay',paid_at=? WHERE id=?")
      .run(new Date().toISOString(),plan.booking_id);
     enqueuePaidClient?.(plan.booking_id);
-    return true;
+    return 'paid';
    }
    if(!complete&&booking.paid&&booking.method==='MisticPay'){
     db.prepare("UPDATE bookings SET paid=0,paid_at=NULL WHERE id=?").run(plan.booking_id);
    }
-   return false;
+   if(plan.mode==='deposit'&&current.share_index===1&&newlyApproved){
+    enqueueDepositClient?.(plan.booking_id);
+    return 'deposit';
+   }
   });
-  if(paidNow)await dispatchPaidClient?.(order.booking_id);
+  if(confirmed==='paid')await dispatchPaidClient?.(order.booking_id);
+  if(confirmed==='deposit')await dispatchDepositClient?.(order.booking_id);
  }
 
  function checkCharge(id,fromWebhook=false){

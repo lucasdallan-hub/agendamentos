@@ -94,7 +94,7 @@ const misticpayStatus={
  unknown:'A confirmação da cobrança está pendente.',
  archived:'Cobrança registrada no histórico da arena.'
 };
-function misticpayDetails(payment,canAct,share=false){
+function misticpayDetails(payment,canAct,shareTitle=''){
  const pending=canAct&&payment.status==='pending';
  const qr=payment.qr_code;
  const qrImage=pending&&typeof qr==='string'&&qr.length<=200_000&&/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(qr)
@@ -103,13 +103,13 @@ function misticpayDetails(payment,canAct,share=false){
   ?payment.copy_paste:'';
  const canCheck=canAct&&['pending','review','creating','unknown'].includes(payment.status);
  return `<section class="misticpay-details" aria-labelledby="misticpay-title">
-  <h3 id="misticpay-title">${share?'Pix da cota':'Pix via MisticPay'}</h3>
+  <h3 id="misticpay-title">${shareTitle||'Pix via MisticPay'}</h3>
   <p>${misticpayStatus[payment.status]||'Consulte a arena sobre este pagamento.'}</p>
   ${qrImage}
   ${code?`<label>Pix copia e cola<input id="misticpay-copy-code" readonly value="${esc(code)}"></label>`:''}
   ${code||canCheck?`<div class="catalog-payment-actions">
    ${code?'<button type="button" class="primary" data-misticpay-copy>Copiar código Pix</button>':''}
-   ${canCheck?`<button type="button" class="outline" data-payment="${share?'split/check':'misticpay/check'}">Verificar pagamento</button>`:''}
+   ${canCheck?`<button type="button" class="outline" data-payment="${shareTitle?'split/check':'misticpay/check'}">Verificar pagamento</button>`:''}
   </div>`:''}
  </section>`;
 }
@@ -143,6 +143,24 @@ function splitSharePath(path){
  const prefix='/catalogo#cota:';
  return typeof path==='string'&&path.startsWith(prefix)&&splitTokenPattern.test(path.slice(prefix.length))?path:null;
 }
+function depositPlanDetails(plan){
+ if(!plan)return '<p>Carregando pagamento da entrada…</p>';
+ const steps=plan.shares.map(share=>{
+  const entry=share.index===1;
+  const path=splitSharePath(share.path);
+  const payable=path&&!share.locked&&(entry||plan.deposit_confirmed)&&share.status!=='approved';
+  const status=share.status==='approved'?'Pagamento confirmado':
+   !entry&&!plan.deposit_confirmed?'Disponível após confirmar a entrada':splitShareLabels[share.status];
+  return `<li>
+   <div><strong>${entry?'Entrada de 50%':'Saldo da quadra'}</strong><small>${status||'Em consulta'}</small></div>
+   <strong>${money(share.amount_cents)}</strong>
+   ${payable?`<a class="outline" href="${esc(path)}" target="_blank" rel="noopener noreferrer">${entry?'Pagar entrada':'Pagar saldo'} ↗</a>`:''}
+  </li>`;
+ }).join('');
+ return `<h3 id="catalog-split-heading" tabindex="-1">Entrada e saldo via Pix</h3>
+  <ul class="catalog-split-list">${steps}</ul>
+  ${plan.editable?'<button type="button" class="outline" data-cancel-split>Voltar ao pagamento total</button>':''}`;
+}
 function splitPlanDetails(plan){
  if(!plan)return '<p>Carregando cotas…</p>';
  const shares=plan.shares.map(share=>{
@@ -172,19 +190,31 @@ function splitPlanDetails(plan){
   <div data-split-copy-fallback></div>`;
 }
 function paymentChoices(view,booking){
- if(booking.split)return `<section class="catalog-split-panel" id="catalog-split-panel" aria-label="Pagamento dividido">${splitPlanDetails(view.plan)}</section>`;
+ if(booking.split){
+  const deposit=booking.split.mode==='deposit';
+  return `<section class="catalog-split-panel" id="catalog-split-panel" aria-label="${deposit?'Pagamento da entrada e do saldo':'Pagamento dividido'}">${deposit?depositPlanDetails(view.plan):splitPlanDetails(view.plan)}</section>`;
+ }
  const whole=wholePaymentChoices(booking);
  if(!booking.split_ready||booking.paid||booking.status!=='confirmed')return whole;
  return `<div class="catalog-payment-actions">
   <button type="button" class="primary" data-pay-whole aria-expanded="${Boolean(view.payWhole)}" aria-controls="catalog-whole-payment">Pagar o total</button>
+  ${booking.deposit_ready!==false?`<button type="button" class="outline" data-pay-deposit>Pagar 50% via Pix · ${money(Math.ceil(booking.total/2))}</button>`:''}
   <button type="button" class="outline" data-configure-split>Dividir com amigos</button>
  </div><div id="catalog-whole-payment" ${view.payWhole?'':'hidden'}>${whole}</div>`;
 }
 function renderConfirmation(view,b){
  view.booking=b;
- const summary=b.status==='cancelled'?'Esta reserva foi cancelada pela arena.':b.misticpay?'':b.paid?'Pagamento confirmado.':'Reserva confirmada. O pagamento ainda está pendente.';
- const privateLinkHelp=b.split?'Guarde o link privado da reserva e envie aos amigos os links das cotas.':'Guarde este link privado para consultar sua reserva.';
- $('#catalog-confirmation').innerHTML=`<span class="eyebrow">${b.status==='cancelled'?'RESERVA CANCELADA':'HORÁRIO RESERVADO'}</span><h2>${b.status==='cancelled'?'Entre em contato com a arena.':`Tudo certo, ${esc(b.customer)}!`}</h2><p>${esc(b.court_name)} · ${dateLabel(b.date)} · ${esc(b.start)} – ${esc(b.end)}</p><p class="catalog-total">${money(b.total)}</p>${summary?`<p>${summary}</p>`:''}${paymentChoices(view,b)}<p>${privateLinkHelp}</p><button id="copy-reservation" class="outline">Copiar link da reserva</button> <a class="outline" href="/catalogo">Fazer outra reserva</a>`;
+ const deposit=b.split?.mode==='deposit';
+ const confirmed=b.paid||b.split?.deposit_confirmed;
+ let summary='O horário está reservado. O pagamento está pendente.';
+ if(b.status==='cancelled')summary='Esta reserva foi cancelada pela arena.';
+ else if(b.paid)summary='Pagamento integral confirmado.';
+ else if(b.split?.deposit_confirmed)summary=`Entrada confirmada. Saldo pendente de ${money(b.split.remaining_cents)}.`;
+ else if(deposit)summary='Pague a entrada para confirmar a reserva.';
+ else if(b.misticpay)summary='';
+ const privateLinkHelp=b.split&&!deposit?'Guarde o link privado da reserva e envie aos amigos os links das cotas.':'Guarde este link privado para consultar sua reserva.';
+ const state=b.status==='cancelled'?'RESERVA CANCELADA':confirmed?'RESERVA CONFIRMADA':'HORÁRIO RESERVADO';
+ $('#catalog-confirmation').innerHTML=`<span class="eyebrow">${state}</span><h2>${b.status==='cancelled'?'Entre em contato com a arena.':`Tudo certo, ${esc(b.customer)}!`}</h2><p>${esc(b.court_name)} · ${dateLabel(b.date)} · ${esc(b.start)} – ${esc(b.end)}</p><p class="catalog-total">${money(b.total)}</p>${summary?`<p role="status">${summary}</p>`:''}${paymentChoices(view,b)}<p>${privateLinkHelp}</p><button id="copy-reservation" class="outline">Copiar link da reserva</button> <a class="outline" href="/catalogo">Fazer outra reserva</a>`;
  $('#copy-reservation').onclick=async()=>{try{await navigator.clipboard.writeText(location.href);$('#copy-reservation').textContent='Link copiado';}catch{$('#catalog-error').textContent='Copie o endereço desta página para guardar seu link.';}};
  schedulePaymentCheck();
  scheduleSplitRefresh();
@@ -279,17 +309,20 @@ function applySplitPlan(view,plan){
  view.plan=plan;
  const paid=plan.status==='approved';
  const booking=view.booking;
- if(!booking.split||Boolean(booking.paid)!==paid){
-  renderConfirmation(view,{...booking,paid,split:true});
+ const deposit=plan.mode==='deposit';
+ const depositChanged=deposit&&(Boolean(booking.split?.deposit_confirmed)!==Boolean(plan.deposit_confirmed)||
+  booking.split?.remaining_cents!==plan.remaining_cents);
+ if(!booking.split||Boolean(booking.paid)!==paid||booking.split.mode!==plan.mode||depositChanged){
+  renderConfirmation(view,{...booking,paid,split:plan});
  }else if(changed){
-  $('#catalog-split-panel').innerHTML=splitPlanDetails(plan);
+  $('#catalog-split-panel').innerHTML=deposit?depositPlanDetails(plan):splitPlanDetails(plan);
  }
 }
 function sharePaymentForm(){
  return `<form class="catalog-split-share-form" data-split-share-form>
   <label>Nome do pagador<input name="name" maxlength="120" autocomplete="name" required></label>
   <label>CPF do pagador<input name="cpf" inputmode="numeric" autocomplete="off" maxlength="14" placeholder="000.000.000-00" required></label>
-  <p>A MisticPay usa esses dados para emitir o Pix da cota.</p>
+  <p>A MisticPay usa esses dados para emitir o Pix.</p>
   <p id="catalog-split-share-error" role="alert"></p>
   <button class="primary" type="submit">Gerar código Pix</button>
  </form>`;
@@ -297,11 +330,18 @@ function sharePaymentForm(){
 function renderSplitShare(view,share){
  if(JSON.stringify(view.share)===JSON.stringify(share))return;
  view.share=share;
- $('#catalog-confirmation').innerHTML=`<span class="eyebrow">COTA ${esc(share.index)} DE ${esc(share.count)}</span>
-  <h2>${share.status==='approved'?'Cota paga':'Pague sua cota'}</h2>
+ const deposit=share.mode==='deposit',entry=deposit&&share.index===1;
+ const badge=deposit?(entry?'ENTRADA DE 50%':'SALDO DA QUADRA'):`COTA ${esc(share.index)} DE ${esc(share.count)}`;
+ const title=deposit?(entry?'Pague a entrada':'Pague o saldo'):'Pague sua cota';
+ const paidTitle=deposit?(entry?'Entrada confirmada':'Saldo confirmado'):'Cota paga';
+ const payment=share.locked?'<p>O Pix do saldo fica disponível após a confirmação da entrada.</p>':
+  share.status==='uncreated'?sharePaymentForm():misticpayDetails(share,true,deposit?(entry?'Pix da entrada':'Pix do saldo'):'Pix da cota');
+ $('#catalog-confirmation').innerHTML=`<span class="eyebrow">${badge}</span>
+  <h2>${share.status==='approved'?paidTitle:title}</h2>
   <p>${esc(share.court_name)} · ${dateLabel(share.date)} · ${esc(share.start)} – ${esc(share.end)}</p>
   <p class="catalog-total">${money(share.amount_cents)}</p>
-  ${share.status==='uncreated'?sharePaymentForm():misticpayDetails(share,true,true)}`;
+  ${payment}
+  ${deposit?`<p>${entry&&share.status==='approved'?'Sua reserva está confirmada. Consulte o saldo no link da reserva.':'Acompanhe o pagamento pelo link da reserva.'}</p>`:''}`;
  scheduleSplitRefresh();
 }
 function scheduleSplitRefresh(){
@@ -397,6 +437,16 @@ function showSplitDialog(view){
  updateSplitPreview();
  splitDialog.showModal();
 }
+async function saveSplitPlan(view,body){
+ const plan=await api(`bookings/${view.token}/split`,body);
+ if(!isCurrentReservation(view))return;
+ splitCheck?.abort();
+ splitCheck=null;
+ if(splitDialog.open)splitDialog.close();
+ applySplitPlan(view,plan);
+ scheduleSplitRefresh();
+ $('#catalog-split-heading')?.focus();
+}
 function updateSplitPreview(){
  const count=splitCount.valueAsNumber;
  const view=reservationView;
@@ -422,14 +472,7 @@ $('#catalog-split-form').onsubmit=async event=>{
  submit.disabled=true;close.disabled=true;message.textContent='';
  view.splitCreating=true;
  try{
-  const plan=await api(`bookings/${view.token}/split`,{count});
-  if(!isCurrentReservation(view))return;
-  splitCheck?.abort();
-  splitCheck=null;
-  splitDialog.close();
-  applySplitPlan(view,plan);
-  scheduleSplitRefresh();
-  $('#catalog-split-heading')?.focus();
+  await saveSplitPlan(view,{count});
  }catch(error){
   if(isCurrentReservation(view))message.textContent=error.message;
  }finally{
@@ -437,9 +480,18 @@ $('#catalog-split-form').onsubmit=async event=>{
   submit.disabled=false;close.disabled=false;
  }
 };
+async function startDeposit(view,button){
+ if(view.splitCreating||!view.booking?.split_ready||view.booking.split)return;
+ view.splitCreating=true;button.disabled=true;
+ $('#catalog-error').textContent='';
+ try{await saveSplitPlan(view,{count:2,mode:'deposit'});}
+ catch(error){if(isCurrentReservation(view))$('#catalog-error').textContent=error.message;}
+ finally{view.splitCreating=false;button.disabled=false;}
+}
 async function cancelSplitPlan(view,button){
  if(view.splitCreating||!view.plan?.editable)return;
- if(!window.confirm('Voltar ao pagamento total? Os links das cotas atuais vão expirar.'))return;
+ const prompt=view.plan.mode==='deposit'?'Voltar ao pagamento total? Os links da entrada e do saldo vão expirar.':'Voltar ao pagamento total? Os links das cotas atuais vão expirar.';
+ if(!window.confirm(prompt))return;
  button.disabled=true;
  view.splitCreating=true;
  try{
@@ -542,6 +594,9 @@ $('#catalog-confirmation').onclick=async e=>{
  }
  const view=reservationView;
  if(!isCurrentReservation(view))return;
+ if(view.splitCreating)return;
+ const deposit=e.target.closest('[data-pay-deposit]');
+ if(deposit){await startDeposit(view,deposit);return;}
  const configure=e.target.closest('[data-configure-split]');
  if(configure&&view.booking){showSplitDialog(view);return;}
  const cancelSplit=e.target.closest('[data-cancel-split]');

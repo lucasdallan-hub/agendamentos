@@ -32,7 +32,8 @@ function validateCpf(value){
 }
 
 export function createMisticPay(db,{
- fetchImpl=fetch,encryptionKey,managedEncryptionKey,scope='main',scheduleConfirmation,enqueuePaidClient,dispatchPaidClient
+ fetchImpl=fetch,encryptionKey,managedEncryptionKey,scope='main',scheduleConfirmation,
+ enqueuePaidClient,dispatchPaidClient,enqueueDepositClient,dispatchDepositClient
 }={}){
  db.exec(`CREATE TABLE IF NOT EXISTS misticpay_orders(
   booking_id INTEGER PRIMARY KEY REFERENCES bookings(id),id TEXT NOT NULL UNIQUE,provider_id TEXT UNIQUE,
@@ -60,7 +61,7 @@ export function createMisticPay(db,{
  }:undefined;
  const confirmationRetry=createMisticPayRetry(db,{schedule,sync});
  const split=createMisticPaySplit(db,{connection:connectionSettings,fetchImpl,readCharge,validateCpf,schedule,
-  enqueuePaidClient,dispatchPaidClient});
+  enqueuePaidClient,dispatchPaidClient,enqueueDepositClient,dispatchDepositClient});
  function details(id){
   const order=getOrder(id);
   if(!order)return null;

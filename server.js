@@ -7,6 +7,7 @@ import {nativeReceiptReader} from './receipt-ocr.js';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const files={'/sidebar.js':['sidebar.js','text/javascript; charset=utf-8'],'/theme.js':['theme.js','text/javascript; charset=utf-8'],'/catalogo':['catalog.html','text/html; charset=utf-8'],'/catalog.js':['catalog.js','text/javascript; charset=utf-8'],'/branding.js':['branding.js','text/javascript; charset=utf-8'],'/':['index.html','text/html; charset=utf-8'],'/pagamento':['payment.html','text/html; charset=utf-8'],'/pix':['pix.html','text/html; charset=utf-8'],'/pix.js':['pix.js','text/javascript; charset=utf-8'],'/app.js':['app.js','text/javascript; charset=utf-8'],'/style.css':['style.css','text/css; charset=utf-8'],
+ '/pdv.js':['pdv.js','text/javascript; charset=utf-8'],
  '/refresh.css':['refresh.css','text/css; charset=utf-8'],
  '/refresh-public.css':['refresh-public.css','text/css; charset=utf-8'],
  '/arena-hero.webp':['arena-hero.webp','image/webp']};

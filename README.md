@@ -30,6 +30,12 @@ Compartilhe `/catalogo` no domínio da mãe ou de qualquer filho. O cliente cons
 
 Em **Minhas quadras → Agendamento online**, configure abertura e fechamento ou pause novas reservas. O padrão é das 06h às 23h, com reservas de 30 minutos a 4 horas e até 180 dias de antecedência. Dados de outros clientes não aparecem no catálogo; conflitos são verificados novamente no servidor.
 
+## PDV e comandas
+
+Cada reserva abre uma comanda vinculada ao cliente e à quadra. Em **PDV**, cadastre os produtos e seus preços, selecione a comanda e lance os itens e as quantidades. Os lançamentos guardam o preço aplicado naquele atendimento.
+
+Ao receber o consumo, selecione a forma de pagamento e feche a comanda. A quadra tem seu próprio registro de pagamento. Ao escolher uma data no PDV, o painel mostra os valores recebidos pela quadra, pelo consumo e o total recebido naquele dia, no horário de São Paulo. O saldo das comandas da data também pode ser consultado.
+
 ## Notificações de agendamento por WhatsApp
 
 Em **Meu sistema → Notificações WhatsApp**, configure o servidor `https://api.dallan.pro` e o token da sua instância. A referência desta integração é o [Swagger da API](https://api.dallan.pro/swagger/index.html). Depois de salvar, use **Conectar WhatsApp** para exibir o QR Code no próprio painel e escaneá-lo em **WhatsApp → Aparelhos conectados → Conectar aparelho**. O painel solicita o QR Code à API. Se a Evolution Go exigir inicialização prévia e a instância estiver desconectada, o painel inicia a sessão com as opções padrão do provedor antes de buscar o código. A conexão por QR pode ser feita antes de habilitar os avisos. Cadastre o WhatsApp do administrador. Cada arena mantém sua própria configuração, e os sistemas filhos começam sem as credenciais e o histórico de notificações da arena de origem.
@@ -107,6 +113,8 @@ O link Pix vale por 7 dias. A chave e o favorecido são preservados ao gerar o l
 Em **Financeiro → Configurar MisticPay**, salve o Client ID e o Client Secret para habilitar novos pagamentos. No catálogo, o cliente seleciona **Pix via MisticPay** e informa o CPF para gerar o QR Code. O painel também pode compartilhar um link de pagamento para uma reserva existente. A Arena confirma o recebimento automaticamente pela API da MisticPay.
 
 No link privado da reserva, quem reservou pode **Pagar o total** ou **Dividir com amigos**. Cada cota tem um link individual e a MisticPay gera um Pix ao solicitar a cobrança. A soma das cotas fecha o total exato em centavos. Cada cota precisa respeitar o valor mínimo do provedor. A reserva fica paga quando todas as cotas são confirmadas. O link original mostra o progresso e permite alterar ou remover a divisão antes da primeira cobrança.
+
+Ao escolher **Entrada de 50%**, o cliente paga metade do valor pelo Pix da MisticPay. A arena confirma a reserva assim que a entrada é validada e o link da reserva mostra o saldo. A cobrança do saldo fica disponível nesse link e a quitação exige os dois pagamentos. Quando o total tem um número ímpar de centavos, a entrada fica com o centavo extra. O PDV registra a entrada e o saldo no dia de cada recebimento.
 
 Cada reserva usa uma única modalidade de cobrança. No Pix dividido, cada cota ativa tem seu próprio QR Code. As credenciais e os detalhes da configuração estão no [guia da Cloudflare](docs/cloudflare.md#pix-via-misticpay).
 

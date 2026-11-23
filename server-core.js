@@ -9,6 +9,7 @@ import {publicCatalog} from './public-catalog.js';
 import {createCourtPhotos,courtPhotoBodyLimit} from './court-photos.js';
 import {financialSettings} from './financial-settings.js';
 import {createMisticPay} from './misticpay.js';
+import {createPdv} from './pdv.js';
 import {initializeSystems,branding,saveBranding,setting,createChild} from './systems.js';
 
 export function createApplication({db,paymentConfig=paymentConfiguration(),paymentClient=new MercadoPago(paymentConfig),serveStatic,sessionStore=new Map(),attemptStore=new Map(),cookieSecure=false,clientKey=req=>req.socket.remoteAddress,notificationFetch=fetch,misticpayFetch=fetch,misticpayEncryptionKey,misticpayManagedEncryptionKey,scheduleMisticpayConfirmation,keepNotificationAlive,receiptReader,keepReceiptAlive=keepNotificationAlive}={}) {
@@ -17,14 +18,16 @@ CREATE TABLE IF NOT EXISTS courts(id INTEGER PRIMARY KEY, name TEXT NOT NULL, ty
 CREATE TABLE IF NOT EXISTS bookings(id INTEGER PRIMARY KEY, court_id INTEGER NOT NULL REFERENCES courts(id), customer TEXT NOT NULL, phone TEXT NOT NULL, date TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, total INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'confirmed', paid INTEGER NOT NULL DEFAULT 0, method TEXT, paid_at TEXT, notes TEXT NOT NULL DEFAULT '');`);
 initializeSystems(db);
 // The payment modules call these hooks only after the application is initialized.
+function deliverNotification(delivery){
+ if(keepNotificationAlive)keepNotificationAlive(delivery);
+ else return delivery;
+}
 const paidClientNotification={
  enqueuePaidClient:id=>notifications.enqueuePaidClient(id),
- dispatchPaidClient:id=>{
-  const delivery=notifications.dispatchPaidClient(id);
-  // Payment status responses can return while the Worker delivers the message.
-  if(keepNotificationAlive)keepNotificationAlive(delivery);
-  else return delivery;
- }
+ // Payment status responses can return while the Worker delivers a message.
+ dispatchPaidClient:id=>deliverNotification(notifications.dispatchPaidClient(id)),
+ enqueueDepositClient:id=>notifications.enqueueDepositClient(id),
+ dispatchDepositClient:id=>deliverNotification(notifications.dispatchDepositClient(id))
 };
 const payments=createPayments(db,paymentConfig,paymentClient,paidClientNotification);
 const financial=financialSettings(db,paymentConfig);
@@ -36,6 +39,7 @@ const misticpay=createMisticPay(db,{
 });
 const pix=createPix(db,{...paidClientNotification,receiptReader});
 const courtPhotos=createCourtPhotos(db);
+const pdv=createPdv(db);
 const notifications=bookingNotifications(db,{fetchImpl:notificationFetch});
 const sessions = sessionStore;
 const attempts = attemptStore;
@@ -58,7 +62,9 @@ function booking(body) {
  if(db.prepare("SELECT id FROM bookings WHERE court_id=? AND date=? AND status='confirmed' AND start<? AND end>?").get(court.id,date,end,start)) fail('Este horário já está reservado nesta quadra.',409);
  const total=Math.round(court.price*duration/60);
  const result=db.prepare('INSERT INTO bookings(court_id,customer,phone,date,start,end,total,notes) VALUES(?,?,?,?,?,?,?,?)').run(court.id,customer,phone,date,start,end,total,typeof body.notes==='string'?body.notes.slice(0,1000):'');
- const id=Number(result.lastInsertRowid);notifications.enqueue(id);
+ const id=Number(result.lastInsertRowid);
+ pdv.open(id);
+ notifications.enqueue(id);
  return {id};
 }
 const catalog=publicCatalog(db,{book:booking,pix,payments,misticpay,paymentConfig,attempts,courtPhotos});
@@ -140,7 +146,7 @@ const server=http.createServer(async(req,res)=>{
   const publicSplit=/^\/api\/public\/bookings\/([a-f0-9]{64})\/split$/.exec(url.pathname);
   if(publicSplit){
    const id=catalog.reservationId(publicSplit[1]);
-   if(req.method==='POST')return json(res,200,await misticpay.splitPlan(id,body.count));
+   if(req.method==='POST')return json(res,200,await misticpay.splitPlan(id,body.count,body.mode));
    if(req.method==='GET'){
     const result=misticpay.splitBooking(id,Number(url.searchParams.get('page')??1));
     if(!result)fail('Divisão Pix não encontrada.',404);
@@ -174,6 +180,23 @@ const server=http.createServer(async(req,res)=>{
    return json(res,200,{ok:true});
   }
   if(!authenticated) fail('Entre como administrador.',401);
+  if(req.method==='GET'&&url.pathname==='/api/pdv')return json(res,200,pdv.daily(url.searchParams.get('date')??undefined));
+  if(req.method==='POST'&&url.pathname==='/api/pdv/products')return json(res,201,pdv.createProduct(body));
+  const pdvProduct=/^\/api\/pdv\/products\/(\d+)$/.exec(url.pathname);
+  if(req.method==='PATCH'&&pdvProduct)return json(res,200,pdv.updateProduct(Number(pdvProduct[1]),body));
+  const pdvTab=/^\/api\/pdv\/tabs\/(\d+)(?:\/(items|close)(?:\/(\d+))?)?$/.exec(url.pathname);
+  if(pdvTab){
+   const [,bookingId,action,itemId]=pdvTab;
+   const id=Number(bookingId);
+   if(req.method==='GET'&&!action)return json(res,200,pdv.tab(id));
+   if(req.method==='POST'&&action==='items'&&!itemId)return json(res,201,pdv.addItem(id,body));
+   if(action==='items'&&itemId){
+    if(req.method==='PATCH')return json(res,200,pdv.updateItem(id,Number(itemId),body));
+    if(req.method==='DELETE')return json(res,200,pdv.removeItem(id,Number(itemId)));
+   }
+   if(req.method==='POST'&&action==='close'&&!itemId)return json(res,200,pdv.close(id,body));
+   fail('Método não permitido.',405);
+  }
   const whatsappProvider=url.searchParams.get('provider')??'evolution';
   if(url.pathname==='/api/notifications/config'){
    if(req.method==='GET')return json(res,200,notifications.summary(whatsappProvider));
@@ -267,9 +290,13 @@ const server=http.createServer(async(req,res)=>{
    EXISTS(SELECT 1 FROM pix_links p WHERE p.booking_id=b.id) pix_link,
    r.status receipt_status,r.match_status receipt_match,r.amount_cents receipt_amount,
    CASE WHEN m.archived=1 THEN 'archived' ELSE m.state END misticpay_status,
-   s.share_count split_count,s.archived split_archived,
+   s.share_count split_count,s.archived split_archived,s.mode split_mode,
    CASE WHEN s.archived=1 THEN s.archived_paid_count ELSE
-    (SELECT COUNT(*) FROM misticpay_split_shares c WHERE c.booking_id=s.booking_id AND c.state='approved') END split_paid_count
+    (SELECT COUNT(*) FROM misticpay_split_shares c WHERE c.booking_id=s.booking_id AND c.state='approved') END split_paid_count,
+   CASE WHEN s.archived=1 THEN s.archived_paid_cents ELSE
+    (SELECT COALESCE(SUM(c.amount_cents),0) FROM misticpay_split_shares c WHERE c.booking_id=s.booking_id AND c.state='approved') END split_paid_cents,
+   s.mode='deposit' AND s.archived=0 AND EXISTS(SELECT 1 FROM misticpay_split_shares c
+    WHERE c.booking_id=s.booking_id AND c.share_index=1 AND c.state='approved') deposit_confirmed
    FROM bookings b JOIN courts c ON c.id=b.court_id
    LEFT JOIN payment_orders o ON o.booking_id=b.id
    LEFT JOIN misticpay_orders m ON m.booking_id=b.id

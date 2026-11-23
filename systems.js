@@ -3,10 +3,10 @@ import {randomBytes,scryptSync} from 'node:crypto';
 import {transaction} from './storage.js';
 
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
-const tables=['courts','court_photos','bookings','payment_orders','provider_payments','pix_settings','pix_links','pix_receipts','misticpay_orders','misticpay_split_plans'];
+const tables=['courts','court_photos','bookings','payment_orders','provider_payments','pix_settings','pix_links','pix_receipts','misticpay_orders','misticpay_split_plans','pdv_products','pdv_tabs','pdv_items'];
 const archivedFields={
  misticpay_orders:'booking_id,id,provider_id,amount_cents,state,created_at,1 AS archived',
- misticpay_split_plans:`booking_id,id,'' AS secret,share_count,amount_cents,1 AS archived,
+ misticpay_split_plans:`booking_id,id,'' AS secret,share_count,amount_cents,mode,1 AS archived,
   CASE WHEN archived=1 THEN archived_paid_count ELSE (
    SELECT COUNT(*) FROM misticpay_split_shares s WHERE s.booking_id=misticpay_split_plans.booking_id AND s.state='approved'
   ) END AS archived_paid_count,
@@ -58,7 +58,7 @@ export function installSystem(db,{slug,name,password,snapshot}){
  if(setting(db,'identity'))return;
  transaction(db,()=>{
   if(db.prepare('SELECT id FROM admin').get()||db.prepare('SELECT id FROM courts').get())fail('O destino já contém dados e não pode ser sobrescrito.',409);
-  const snapshotTables={court_photos:[],misticpay_orders:[],misticpay_split_plans:[],...snapshot.tables};
+ const snapshotTables={court_photos:[],misticpay_orders:[],misticpay_split_plans:[],pdv_products:[],pdv_tabs:[],pdv_items:[],...snapshot.tables};
   for(const table of tables)for(const row of snapshotTables[table]){
    const columns=Object.keys(row);
    db.prepare(`INSERT INTO ${table}(${columns.join(',')}) VALUES(${columns.map(()=>'?').join(',')})`).run(...columns.map(key=>row[key]));
