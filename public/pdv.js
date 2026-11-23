@@ -195,6 +195,7 @@ const pdv=(()=>{
   const participants=tab.participants||[];
   if(!participants.length)return '';
   const open=tab.status==='open';
+  const expanded=new Set([...detail.querySelectorAll('[data-pdv-person-options][open]')].map(options=>options.dataset.pdvPersonOptions));
   const itemsByPerson=new Map();
   for(const item of tab.items){
    if(item.participant_id==null)continue;
@@ -210,12 +211,19 @@ const pdv=(()=>{
    const whatsapp=canSettle?participantWhatsApp(person,tab):'';
    const id=esc(person.id);
    const pix=pixStatus(person);
+   const canSend=open&&!closed&&(canSettle||(pix!=='review'&&Boolean(pixPaymentUrl(person))));
    const currentPixLabel=!closed||locked||pix==='approved'?pixLabels[pix]:'';
    const status=currentPixLabel||(closed?'Fechada':person.amount_cents>0?'Em aberto':'Sem saldo');
    const actions=pixActions(person,tab,id,canSettle);
    return `<li data-pdv-subcommand="${id}">
     <div class="pdv-participant-heading">
-     <div><h4>${esc(person.name)}</h4><small>${esc(person.whatsapp)}</small></div>
+     <div>
+      ${canSend?`<details class="pdv-person-options" data-pdv-person-options="${id}"${expanded.has(String(person.id))?' open':''}>
+       <summary>${esc(person.name)}</summary>
+       <small>${esc(person.whatsapp)}</small>
+       <button type="button" class="outline" data-pdv-send-pix="${id}">Enviar link Pix via Evolution Go</button>
+      </details>`:`<h4>${esc(person.name)}</h4><small>${esc(person.whatsapp)}</small>`}
+     </div>
      <div class="pdv-subcommand-total">
       <strong>${money(person.amount_cents)}</strong>
       <span class="pdv-subcommand-status${locked?' pix-awaiting':closed?' closed':''}">${status}</span>
@@ -321,7 +329,7 @@ const pdv=(()=>{
   }
  }
 
- async function updateTab(action,success){
+ async function updateTab(action,success,{reloadOnError=false}={}){
   if(tabBusy||!activeTab)return;
   const request=tabRequest;
   tabBusy=true;
@@ -338,6 +346,14 @@ const pdv=(()=>{
    toast(success);
   }catch(error){
    if(request!==tabRequest||!dialog.open)return;
+   if(reloadOnError){
+    const current=await api(`pdv/tabs/${activeTab.booking_id}`).catch(()=>null);
+    if(request!==tabRequest||!dialog.open)return;
+    if(current){
+     activeTab=current;
+     renderTab(current);
+    }
+   }
    tabError.textContent=error.message||'Não foi possível atualizar a comanda.';
   }finally{
    if(request===tabRequest)tabBusy=false;
@@ -423,6 +439,14 @@ const pdv=(()=>{
   }
  });
  detail.onclick=event=>{
+  const sendPix=event.target.closest('[data-pdv-send-pix]');
+  if(sendPix){
+   const person=activeTab?.participants?.find(row=>String(row.id)===sendPix.dataset.pdvSendPix);
+   if(person)void updateTab(path=>api(`${path}/participants/${person.id}/payment-link/send`,{
+    expected_cents:person.amount_cents
+   }),'Link aceito pela Evolution Go para envio.',{reloadOnError:true});
+   return;
+  }
   const createPix=event.target.closest('[data-pdv-create-pix]');
   if(createPix){
    const person=activeTab?.participants?.find(row=>String(row.id)===createPix.dataset.pdvCreatePix);

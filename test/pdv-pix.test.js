@@ -12,7 +12,7 @@ const qr='data:image/png;base64,'+(await readFile(new URL('./fixtures/pix-receip
 const copyPaste='00020101021226820014br.gov.bcb.pix';
 const checkStatus=(result,status)=>assert.equal(result.status,status,JSON.stringify(result.data));
 
-async function fixture(t,{scheduleMisticpayConfirmation}={}){
+async function fixture(t,{scheduleMisticpayConfirmation,sendNotification}={}){
  t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-24T01:30:00Z')});
  const db=new DatabaseSync(':memory:');
  const charges=[],lookups=[],messages=[];
@@ -35,9 +35,9 @@ async function fixture(t,{scheduleMisticpayConfirmation}={}){
  const {server,retryMisticpayConfirmations}=createApplication({
   db,misticpayFetch,misticpayEncryptionKey:'5a'.repeat(32),paymentConfig:{ready:false,mode:'test'},
   scheduleMisticpayConfirmation,
-  notificationFetch:async(_url,options)=>{
+  notificationFetch:async(url,options)=>{
    messages.push(JSON.parse(options.body));
-   return Response.json({message:'success'});
+   return sendNotification?.(url,options)??Response.json({message:'success'});
   }
  });
  server.listen(0,'127.0.0.1');
@@ -98,6 +98,39 @@ async function link(f,expected_cents=801){
 function eventFor(charge){
  return {transactionId:charge.providerId,transactionType:'DEPOSITO',transactionMethod:'PIX',status:'COMPLETO'};
 }
+
+test('PDV Pix: envio usa a Evolution Go e reutiliza o link após falha do provedor',async t=>{
+ let failSend=false;
+ const f=await fixture(t,{sendNotification:(url,options)=>{
+  assert.equal(url,'https://evolution.example/send/text');
+  assert.equal(options.headers.apikey,'fixture-key');
+  return failSend?Response.json({}, {status:503}):Response.json({message:'success'});
+ }});
+ const path=memberPath(f)+'/payment-link/send';
+ const before=f.messages.length;
+ checkStatus(await f.api(path,{expected_cents:801}),401);
+ checkStatus(await f.admin(path,{expected_cents:800}),409);
+ assert.equal(f.messages.length,before);
+
+ failSend=true;
+ checkStatus(await f.admin(path,{expected_cents:801}),502);
+ const paymentLink=(await f.admin(f.tab)).data.participants[0].payment_link;
+ assert.equal(paymentLink.status,'ready');
+ failSend=false;
+ const sent=await f.admin(path,{expected_cents:801,number:f.bruno.whatsapp,url:'https://outra.example'});
+ checkStatus(sent,200);
+ assert.deepEqual(sent.data.participants[0].payment_link,paymentLink);
+ const deliveries=f.messages.slice(before);
+ assert.equal(deliveries.length,2);
+ for(const message of deliveries){
+  assert.equal(message.number,f.ana.whatsapp);
+  assert.equal(message.formatJid,true);
+  assert.match(message.text,/Olá, Ana!.*8,01/);
+  assert.ok(message.text.endsWith(paymentLink.path));
+  assert.doesNotMatch(message.text,/outra\.example|Bruno/);
+ }
+ assert.equal(f.charges.length,0);
+});
 
 test('PDV Pix: link privado fixa a cota, impede dupla cobrança e pode ser retirado antes de gerar o Pix',async t=>{
  const f=await fixture(t),adminLink=memberPath(f)+'/payment-link';

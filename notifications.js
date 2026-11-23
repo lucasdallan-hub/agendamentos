@@ -302,6 +302,29 @@ ${arenaName} · Reserva #${bookingId}
 
 📋 Acompanhe a reserva e o pagamento no painel.`;
  }
+ function sendText(id,c,number,text,messageId){
+  const provider=providerFor(id);
+  const body=id==='wuzapi'
+   ? {Phone:number,Body:text,Id:messageId}
+   : {number,text,id:messageId,formatJid:true};
+  return fetchImpl(c.base_url+provider.send,{method:'POST',headers:{'Content-Type':'application/json',[provider.header]:c.api_key},body:JSON.stringify(body),redirect:'manual',signal:AbortSignal.timeout(8000)});
+ }
+ function preparePdvLinkDelivery(number){
+  const config=stored('evolution');
+  if(!config.base_url||!config.api_key)fail('Configure a conexão da Evolution Go em Notificações WhatsApp.',409);
+  if(!/^[1-9]\d{7,14}$/.test(number))fail('Informe um WhatsApp válido para a pessoa.');
+  return async text=>{
+   let response;
+   try{
+    response=await sendText('evolution',config,number,text,randomBytes(16).toString('hex'));
+   }catch{
+    fail('A Evolution Go não confirmou o envio. Confira o WhatsApp antes de tentar novamente.',502);
+   }
+   if(!response.ok)fail(`A Evolution Go retornou HTTP ${response.status}. Confira a conexão e o WhatsApp antes de tentar novamente.`,502);
+   const result=await response.json().catch(()=>null);
+   if(result?.message!=='success')fail('A Evolution Go não confirmou o envio. Confira o WhatsApp antes de tentar novamente.',502);
+  };
+ }
  async function deliver(event){
   try{
    if(customerRoles.has(event.role)&&!paidCustomer.get(event.booking_id)){
@@ -314,7 +337,7 @@ ${arenaName} · Reserva #${bookingId}
     mark(event.id,'pending');
     return;
    }
-   const provider=providerFor(event.provider),c=stored(event.provider),text=message(event.booking_id,event.role,deposit);
+   const c=stored(event.provider),text=message(event.booking_id,event.role,deposit);
    if(!text||!c.enabled){
     const reason=scheduledRoles.has(event.role)
      ? 'O horário deste aviso passou, a reserva foi cancelada ou as notificações foram desativadas.'
@@ -324,10 +347,7 @@ ${arenaName} · Reserva #${bookingId}
    }
    let response;
    try{
-    const body=event.provider==='wuzapi'
-     ? {Phone:event.recipient,Body:text,Id:event.id}
-     : {number:event.recipient,text,id:event.id,formatJid:true};
-    response=await fetchImpl(c.base_url+provider.send,{method:'POST',headers:{'Content-Type':'application/json',[provider.header]:c.api_key},body:JSON.stringify(body),redirect:'manual',signal:AbortSignal.timeout(8000)});
+    response=await sendText(event.provider,c,event.recipient,text,event.id);
    }catch{mark(event.id,'unknown','Não foi possível confirmar o envio. Confira o provedor antes de tentar novamente.');return;}
    if(!response.ok){
     const uncertain=response.status>=500||response.status===408||(response.status>=300&&response.status<400);
@@ -536,5 +556,5 @@ ${arenaName} · Reserva #${bookingId}
   // not a guarantee of validity; the user may request a fresh code at any time.
   return {...session,qr_code:code,expires_at:new Date(Date.now()+20000).toISOString()};
  }
- return {summary,save,enqueue,dispatch,enqueuePaidClient,dispatchPaidClient,enqueueDepositClient,dispatchDepositClient,events,recoverPending,processBookingAlerts,check,connect,syncWebhook};
+ return {summary,save,enqueue,dispatch,enqueuePaidClient,dispatchPaidClient,enqueueDepositClient,dispatchDepositClient,events,recoverPending,processBookingAlerts,check,connect,syncWebhook,preparePdvLinkDelivery};
 }

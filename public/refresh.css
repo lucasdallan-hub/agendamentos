@@ -380,6 +380,8 @@ dialog::backdrop, :root[data-theme="dark"] dialog::backdrop { background: #0a102
 .pdv-participant-heading, .pdv-participant-actions { display: flex; gap: 10px; justify-content: space-between; flex-wrap: wrap; }
 .pdv-participant-heading > div { min-width: 0; overflow-wrap: anywhere; }
 .pdv-participant-heading h4 { margin: 0; font-size: 1rem; }
+.pdv-person-options summary { cursor: pointer; font-weight: 700; }
+.pdv-person-options button { margin-top: 8px; }
 .pdv-participant-heading small { display: block; margin-top: 3px; color: var(--muted); }
 .pdv-subcommand-total { text-align: right; }
 .pdv-subcommand-status { display: block; margin-top: 3px; color: var(--muted); font-size: 0.8rem; font-weight: 650; }

@@ -42,6 +42,8 @@ const courtPhotos=createCourtPhotos(db);
 const pdv=createPdv(db);
 const pdvPix=misticpay.createPdvPix(pdv);
 const notifications=bookingNotifications(db,{fetchImpl:notificationFetch});
+const pdvLinkDeliveries=new Set();
+const pdvMoney=new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'});
 const sessions = sessionStore;
 const attempts = attemptStore;
 const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
@@ -195,11 +197,35 @@ const server=http.createServer(async(req,res)=>{
   if(req.method==='POST'&&url.pathname==='/api/pdv/products')return json(res,201,pdv.createProduct(body));
   const pdvProduct=/^\/api\/pdv\/products\/(\d+)$/.exec(url.pathname);
   if(req.method==='PATCH'&&pdvProduct)return json(res,200,pdv.updateProduct(Number(pdvProduct[1]),body));
-  const pdvPaymentLink=/^\/api\/pdv\/tabs\/(\d+)\/participants\/(\d+)\/payment-link$/.exec(url.pathname);
+  const pdvPaymentLink=/^\/api\/pdv\/tabs\/(\d+)\/participants\/(\d+)\/payment-link(\/send)?$/.exec(url.pathname);
   if(pdvPaymentLink){
    const bookingId=Number(pdvPaymentLink[1]),participantId=Number(pdvPaymentLink[2]);
+   const deliveryKey=`${bookingId}/${participantId}`;
+   if(pdvPaymentLink[3]){
+    if(req.method!=='POST')fail('Método não permitido.',405);
+    if(pdvLinkDeliveries.has(deliveryKey))fail('Já existe um envio em andamento para esta pessoa.',409);
+    const tab=pdv.tab(bookingId),person=tab.participants.find(row=>row.id===participantId);
+    if(!person)fail('Participante não encontrado nesta comanda.',404);
+    if(tab.status!=='open'||person.status!=='open'||person.payment_link?.status==='review'){
+     fail('Esta subcomanda não está disponível para envio do link Pix.',409);
+    }
+    const send=notifications.preparePdvLinkDelivery(person.whatsapp);
+    const link=pdvPix.openLink(bookingId,participantId,body.expected_cents);
+    const paymentUrl=new URL(link.path,requestOrigin).href;
+    const amount=pdvMoney.format(link.amount_cents/100);
+    pdvLinkDeliveries.add(deliveryKey);
+    try{
+     await send(`Olá, ${person.name}! Sua parte do consumo na comanda #${bookingId} da quadra ${tab.court_name} é de ${amount}.\n\nPague por Pix pelo link abaixo. O recibo fica disponível na mesma página após a confirmação.\n${paymentUrl}`);
+    }finally{
+     pdvLinkDeliveries.delete(deliveryKey);
+    }
+    return json(res,200,pdv.tab(bookingId));
+   }
    if(req.method==='POST')await pdvPix.openLink(bookingId,participantId,body.expected_cents);
-   else if(req.method==='DELETE')pdvPix.cancelLink(bookingId,participantId);
+   else if(req.method==='DELETE'){
+    if(pdvLinkDeliveries.has(deliveryKey))fail('Aguarde o envio do link antes de cancelar.',409);
+    pdvPix.cancelLink(bookingId,participantId);
+   }
    else fail('Método não permitido.',405);
    return json(res,200,pdv.tab(bookingId));
   }
